@@ -1,0 +1,178 @@
+/**
+ * MCP server over stdio, hand-rolled JSON-RPC so the tool stays dependency-free.
+ *
+ * Only stdout carries protocol traffic -- anything diagnostic must go to stderr
+ * or it corrupts the stream.
+ */
+import { resolve } from 'node:path';
+import { openDb } from './db.js';
+import { findProjectRoot, dbPathFor } from './project.js';
+import { indexProject } from './indexer.js';
+import { formatExplore, formatImpact } from './format.js';
+import { searchSymbols, projectStats } from './query.js';
+
+const SYNC_INTERVAL_MS = 30_000;
+const projects = new Map(); // root -> { db, lastSync }
+
+async function useProject(pathArg, defaultRoot) {
+  const start = pathArg ? resolve(pathArg) : defaultRoot;
+  if (!start) {
+    throw new Error(
+      'No project. Pass projectPath pointing at a directory that has been `codelens init`-ed.',
+    );
+  }
+  const root = findProjectRoot(start);
+  if (!root) throw new Error(`No .codelens/ index at or above ${start}. Run \`codelens init\` there.`);
+
+  let entry = projects.get(root);
+  if (!entry) {
+    entry = { db: openDb(dbPathFor(root)), lastSync: 0 };
+    projects.set(root, entry);
+  }
+  // Keep answers honest without rehashing the tree on every single call.
+  if (Date.now() - entry.lastSync > SYNC_INTERVAL_MS) {
+    try {
+      await indexProject(entry.db, root, { full: false });
+    } catch (err) {
+      process.stderr.write(`codelens: sync failed: ${err.message}\n`);
+    }
+    entry.lastSync = Date.now();
+  }
+  return { root, db: entry.db };
+}
+
+const TOOLS = [
+  {
+    name: 'codelens_explore',
+    description:
+      'Explore an area of the codebase in one call: returns the matching symbols\' verbatim ' +
+      'line-numbered source, who calls them, what they call, and their blast radius. ' +
+      'Prefer this over grep/read loops. Query with a symbol name, Type#method, or a short phrase.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Symbol name, Type#method, or a short phrase.' },
+        projectPath: {
+          type: 'string',
+          description: 'Path inside the project to query. Required when the server has no default.',
+        },
+        maxMatches: { type: 'number', description: 'How many matches to expand (default 3).' },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'codelens_impact',
+    description:
+      'Blast radius for a symbol: every caller that transitively reaches it, by depth. ' +
+      'Use before changing or deleting a method to see what breaks.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        symbol: { type: 'string', description: 'Symbol name or Type#method.' },
+        projectPath: { type: 'string', description: 'Path inside the project to query.' },
+      },
+      required: ['symbol'],
+    },
+  },
+  {
+    name: 'codelens_status',
+    description: 'Index coverage: files, symbols, edges and how many call sites resolved.',
+    inputSchema: {
+      type: 'object',
+      properties: { projectPath: { type: 'string' } },
+    },
+  },
+];
+
+async function callTool(name, args, defaultRoot) {
+  switch (name) {
+    case 'codelens_explore': {
+      const { root, db } = await useProject(args.projectPath, defaultRoot);
+      return formatExplore(db, root, args.query, { maxMatches: args.maxMatches ?? 3 });
+    }
+    case 'codelens_impact': {
+      const { db } = await useProject(args.projectPath, defaultRoot);
+      const matches = searchSymbols(db, args.symbol, { limit: 5 });
+      if (!matches.length) return `No symbol matches "${args.symbol}".`;
+      return formatImpact(db, matches[0].id);
+    }
+    case 'codelens_status': {
+      const { root, db } = await useProject(args.projectPath, defaultRoot);
+      const s = projectStats(db);
+      const pct = s.refs ? (((s.refs - s.unresolved) / s.refs) * 100).toFixed(1) : '0.0';
+      return [
+        `root: ${root}`,
+        `files: ${s.files}, symbols: ${s.symbols}, types: ${s.types}, edges: ${s.edges}`,
+        `call sites: ${s.refs}, resolved: ${pct}%`,
+        `by language: ${s.byLang.map((l) => `${l.lang}=${l.n}`).join(', ')}`,
+      ].join('\n');
+    }
+    default:
+      throw new Error(`Unknown tool: ${name}`);
+  }
+}
+
+export async function startMcpServer(pathArg) {
+  const defaultRoot = findProjectRoot(pathArg ? resolve(pathArg) : process.cwd());
+
+  const send = (msg) => process.stdout.write(`${JSON.stringify(msg)}\n`);
+  const reply = (id, result) => send({ jsonrpc: '2.0', id, result });
+  const fail = (id, message) => send({ jsonrpc: '2.0', id, error: { code: -32000, message } });
+
+  let buffer = '';
+  process.stdin.setEncoding('utf8');
+
+  process.stdin.on('data', async (chunk) => {
+    buffer += chunk;
+    let nl;
+    while ((nl = buffer.indexOf('\n')) !== -1) {
+      const line = buffer.slice(0, nl).trim();
+      buffer = buffer.slice(nl + 1);
+      if (!line) continue;
+
+      let msg;
+      try {
+        msg = JSON.parse(line);
+      } catch {
+        continue;
+      }
+
+      const { id, method, params } = msg;
+      try {
+        switch (method) {
+          case 'initialize':
+            reply(id, {
+              protocolVersion: params?.protocolVersion ?? '2024-11-05',
+              capabilities: { tools: {} },
+              serverInfo: { name: 'codelens', version: '0.1.0' },
+            });
+            break;
+          case 'notifications/initialized':
+            break;
+          case 'tools/list':
+            reply(id, { tools: TOOLS });
+            break;
+          case 'tools/call': {
+            const text = await callTool(params.name, params.arguments ?? {}, defaultRoot);
+            reply(id, { content: [{ type: 'text', text }] });
+            break;
+          }
+          case 'ping':
+            reply(id, {});
+            break;
+          default:
+            if (id !== undefined) fail(id, `Unknown method: ${method}`);
+        }
+      } catch (err) {
+        if (id !== undefined) fail(id, err.message);
+      }
+    }
+  });
+
+  process.stderr.write(
+    `codelens MCP ready${defaultRoot ? ` (default project: ${defaultRoot})` : ' (pass projectPath)'}\n`,
+  );
+
+  await new Promise(() => {}); // run until the client closes stdin
+}

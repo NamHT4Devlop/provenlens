@@ -1,0 +1,5 @@
+node_modules/
+.codelens/
+__fixtures__/.test-index.db*
+*.log
+.DS_Store

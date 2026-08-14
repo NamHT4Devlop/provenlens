@@ -1,0 +1,23 @@
+{
+  "name": "codelens",
+  "version": "0.1.0",
+  "description": "Personal pre-indexed code knowledge graph for Java, Ruby, TypeScript and JavaScript",
+  "type": "module",
+  "bin": {
+    "codelens": "./bin/codelens.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test --no-warnings \"test/*.test.js\""
+  },
+  "dependencies": {
+    "commander": "^15.0.0",
+    "ignore": "^7.0.6",
+    "tree-sitter-wasms": "^0.1.13",
+    "web-tree-sitter": "^0.25.10"
+  },
+  "license": "MIT",
+  "private": true
+}
