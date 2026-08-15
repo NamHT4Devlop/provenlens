@@ -331,6 +331,27 @@ export function extractJava(tree, src) {
       return;
     }
 
+    // Lambda parameters have no written type -- it comes from the functional
+    // interface, which usually lives in a library. Recording them without a
+    // type still matters: it stops the resolver guessing from the bare name.
+    if (node.type === 'lambda_expression' && scopeId != null) {
+      const params = childByField(node, 'parameters');
+      if (params) {
+        const names =
+          params.type === 'identifier'
+            ? [params]
+            : [
+                ...namedChildrenOfType(params, 'identifier'),
+                ...namedChildrenOfType(params, 'formal_parameter').map(
+                  (p) => childByField(p, 'name') ?? p,
+                ),
+              ];
+        for (const n of names) {
+          locals.push({ scopeTmpId: scopeId, name: text(n, src), type_name: null });
+        }
+      }
+    }
+
     if (node.type === 'enhanced_for_statement') {
       const typeNode = childByField(node, 'type');
       const nameNode = childByField(node, 'name');

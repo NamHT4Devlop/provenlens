@@ -199,32 +199,127 @@ export function resolveJava(db) {
     return null;
   }
 
-  /** Static type of a call receiver, or null when we genuinely cannot tell. */
+  /**
+   * Names the library a type belongs to, or null if it might be in this repo.
+   *
+   * The evidence is already in the file: an import whose FQN is not among the
+   * indexed types can only come from a JAR. This needs no list of frameworks,
+   * so it works for whatever the project happens to depend on.
+   */
+  function externalOwner(typeName, fileId) {
+    if (!typeName) return null;
+    const simple = typeName.includes('.') ? typeName.split('.').pop() : typeName;
+
+    for (const imp of importsByFile.get(fileId) ?? []) {
+      if (imp.is_wildcard || imp.simple !== simple) continue;
+      if (types.has(imp.fqn)) return null; // indexed after all
+      return imp.fqn.split('.').slice(0, 3).join('.');
+    }
+    if (JAVA_LANG.has(simple)) return 'java.lang';
+    if (typeName.startsWith('java.') || typeName.startsWith('javax.')) {
+      return typeName.split('.').slice(0, 2).join('.');
+    }
+    return null;
+  }
+
+  /**
+   * The first supertype in a chain that is not indexed. When a call cannot be
+   * found on a type, an unindexed ancestor is almost always where it lives --
+   * `extends RouteBuilder` gives Camel's from(), `extends JpaRepository` gives
+   * findById(), `extends ActionController::Base` gives render().
+   */
+  function externalAncestor(typeFqn) {
+    for (const t of typeChain(typeFqn)) {
+      for (const raw of t.supertypes) {
+        if (resolveTypeName(raw, t.file_id)) continue;
+        return externalOwner(raw, t.file_id) ?? raw;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Static type of a call receiver.
+   *   string    -> resolved type FQN
+   *   {external}-> provably a library call, with the owner named where possible
+   *   null      -> unknown
+   */
+  /** `import static org.assertj...Assertions.assertThat` -> the owning library. */
+  function staticImportOwner(methodName, fileId) {
+    let wildcard = null;
+    for (const imp of importsByFile.get(fileId) ?? []) {
+      if (!imp.is_static) continue;
+      if (!imp.is_wildcard && imp.simple === methodName) {
+        return imp.fqn.split('.').slice(0, 3).join('.');
+      }
+      if (imp.is_wildcard) wildcard ??= imp.fqn.split('.').slice(0, 3).join('.');
+    }
+    // A wildcard static import is the usual source of an otherwise unknown
+    // bare call in a test: assertThat, status(), view(), post().
+    return wildcard;
+  }
+
   function receiverType(ref, fromSymbol) {
     const enclosing = fromSymbol?.container_fqn ?? null;
-    const raw = ref.receiver;
+    let raw = ref.receiver;
 
     if (!raw || raw === 'this') return enclosing;
+
+    // `this.repository.save(...)` is ordinary Java; treat it as the field.
+    const thisField = /^this\.([A-Za-z_$][\w$]*)$/.exec(raw);
+    if (thisField) raw = thisField[1];
 
     if (raw === 'super') {
       const t = types.get(enclosing);
       const first = t?.supertypes?.[0];
-      return first ? resolveTypeName(first, t.file_id) : null;
+      if (!first) return null;
+      return (
+        resolveTypeName(first, t.file_id) ?? { external: externalOwner(first, t.file_id) ?? first }
+      );
     }
 
-    if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(raw)) return undefined; // chained/complex
+    if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(raw)) {
+      // A chain such as `view().name(...)` or `Foo.bar().baz()`. If the token
+      // it starts from is itself a library call or type, so is the whole chain.
+      // `new NotifyBuilder(ctx).whenDone(...)` starts from the constructed type.
+      const head =
+        /^new\s+([A-Za-z_$][\w$.]*)/.exec(raw)?.[1] ?? /^([A-Za-z_$][\w$]*)/.exec(raw)?.[1];
+      if (head) {
+        const inRepo = resolveTypeName(head, ref.file_id);
+        if (!inRepo) {
+          const owner = externalOwner(head, ref.file_id) ?? staticImportOwner(head, ref.file_id);
+          if (owner) return { external: owner };
+        }
+      }
+      return { complex: true };
+    }
 
-    const local = localsByScope.get(ref.from_symbol_id)?.get(raw);
-    if (local) return resolveTypeName(local, ref.file_id);
+    const scope = localsByScope.get(ref.from_symbol_id);
+    if (scope?.has(raw)) {
+      const local = scope.get(raw);
+      // A declared name with no type -- a lambda parameter. Guessing from the
+      // bare method name here would invent edges, so stop instead.
+      if (!local) return { complex: true };
+      const hit = resolveTypeName(local, ref.file_id);
+      if (hit) return hit;
+      const owner = externalOwner(local, ref.file_id);
+      return owner ? { external: owner } : null;
+    }
 
     for (const t of typeChain(enclosing)) {
       const fieldType = fieldsByContainer.get(t.fqn)?.get(raw);
-      if (fieldType) return resolveTypeName(fieldType, ref.file_id);
+      if (!fieldType) continue;
+      const hit = resolveTypeName(fieldType, ref.file_id);
+      if (hit) return hit;
+      const owner = externalOwner(fieldType, ref.file_id);
+      return owner ? { external: owner } : null;
     }
 
     if (/^[A-Z]/.test(raw)) {
-      if (JAVA_LANG.has(raw)) return undefined; // JDK type, deliberately out of scope
-      return resolveTypeName(raw, ref.file_id);
+      const hit = resolveTypeName(raw, ref.file_id);
+      if (hit) return hit;
+      const owner = externalOwner(raw, ref.file_id);
+      return owner ? { external: owner } : { external: null };
     }
 
     return null;
@@ -243,11 +338,27 @@ export function resolveJava(db) {
     `INSERT OR IGNORE INTO edges (from_symbol_id, to_symbol_id, kind, confidence, via, line)
      VALUES (?, ?, ?, ?, ?, ?)`,
   );
-  const insertUnresolved = db.prepare(
-    'INSERT OR IGNORE INTO unresolved (ref_id, reason) VALUES (?, ?)',
+  const insertRow = db.prepare(
+    'INSERT OR IGNORE INTO unresolved (ref_id, reason, external, owner) VALUES (?, ?, ?, ?)',
   );
+  const stats = {
+    direct: 0,
+    viaImpl: 0,
+    uniqueName: 0,
+    unresolved: 0,
+    external: 0,
+    inheritance: 0,
+  };
 
-  const stats = { direct: 0, viaImpl: 0, uniqueName: 0, unresolved: 0, inheritance: 0 };
+  const insertUnresolved = (refId, reason) => {
+    insertRow.run(refId, reason, 0, null);
+    stats.unresolved++;
+  };
+  /** A call into a library: expected, not a miss. */
+  const insertExternal = (refId, owner) => {
+    insertRow.run(refId, owner ? `external:${owner}` : 'external', 1, owner ?? null);
+    stats.external++;
+  };
 
   // Type-level inheritance edges first -- useful on their own.
   for (const t of types.values()) {
@@ -267,8 +378,7 @@ export function resolveJava(db) {
 
   for (const ref of refs) {
     if (ref.from_symbol_id == null) {
-      insertUnresolved.run(ref.id, 'no-enclosing-symbol');
-      stats.unresolved++;
+      insertUnresolved(ref.id, 'no-enclosing-symbol');
       continue;
     }
     const fromSymbol = symbolById.get(ref.from_symbol_id);
@@ -277,8 +387,9 @@ export function resolveJava(db) {
       const typeFqn = resolveTypeName(ref.name, ref.file_id);
       const target = typeFqn && types.get(typeFqn);
       if (!target) {
-        insertUnresolved.run(ref.id, 'unknown-type');
-        stats.unresolved++;
+        const owner = externalOwner(ref.name, ref.file_id);
+        if (owner) insertExternal(ref.id, owner);
+        else insertUnresolved(ref.id, 'unknown-type');
         continue;
       }
       insertEdge.run(ref.from_symbol_id, target.symbol_id, 'instantiates', 1.0, 'direct', ref.line);
@@ -294,14 +405,15 @@ export function resolveJava(db) {
       continue;
     }
 
-    const recvType = receiverType(ref, fromSymbol);
+    const recv = receiverType(ref, fromSymbol);
 
-    if (recvType === undefined) {
-      insertUnresolved.run(ref.id, 'external-or-complex-receiver');
-      stats.unresolved++;
+    if (recv && typeof recv === 'object') {
+      if (recv.complex) insertUnresolved(ref.id, 'complex-receiver-chain');
+      else insertExternal(ref.id, recv.external);
       continue;
     }
 
+    const recvType = recv;
     if (recvType) {
       const target = findMethod(recvType, ref.name, ref.arity, ref, fromSymbol?.container_fqn);
       if (target) {
@@ -322,8 +434,11 @@ export function resolveJava(db) {
         }
         continue;
       }
-      insertUnresolved.run(ref.id, `no-such-method-on:${recvType}`);
-      stats.unresolved++;
+      // The type is known but the method is not on it, so it comes from an
+      // ancestor we never indexed -- JpaRepository#findById, RouteBuilder#from.
+      const inherited = externalAncestor(recvType);
+      if (inherited) insertExternal(ref.id, inherited);
+      else insertUnresolved(ref.id, `no-such-method-on:${recvType}`);
       continue;
     }
 
@@ -333,10 +448,25 @@ export function resolveJava(db) {
     if (pool.length === 1) {
       insertEdge.run(ref.from_symbol_id, pool[0].id, 'calls', 0.5, 'unique-name', ref.line);
       stats.uniqueName++;
-    } else {
-      insertUnresolved.run(ref.id, pool.length ? 'ambiguous-name' : 'unknown-method');
-      stats.unresolved++;
+      continue;
     }
+    if (pool.length > 1) {
+      insertUnresolved(ref.id, 'ambiguous-name');
+      continue;
+    }
+
+    // A bare call that exists nowhere in the repo came from outside it: either
+    // statically imported, or inherited from a library base class -- which is
+    // exactly what Camel's from() and AssertJ's assertThat() are.
+    if (!ref.receiver) {
+      const owner =
+        staticImportOwner(ref.name, ref.file_id) ?? externalAncestor(fromSymbol?.container_fqn);
+      if (owner) {
+        insertExternal(ref.id, owner);
+        continue;
+      }
+    }
+    insertUnresolved(ref.id, 'unknown-method');
   }
 
   return stats;

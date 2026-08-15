@@ -3,7 +3,7 @@ import { mkdirSync, rmSync, existsSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 /** Bump whenever the schema changes: the index is a cache, so it is rebuilt. */
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 const SCHEMA = `
 PRAGMA journal_mode = WAL;
@@ -116,11 +116,19 @@ CREATE TABLE IF NOT EXISTS edges (
 CREATE INDEX IF NOT EXISTS idx_edges_from ON edges(from_symbol_id);
 CREATE INDEX IF NOT EXISTS idx_edges_to   ON edges(to_symbol_id);
 
--- Call sites the resolver could not pin down; kept for honest coverage stats.
+-- Call sites that produced no edge.
+--
+-- external = 1 means the target provably lives outside the indexed tree --
+-- a JAR, a gem, node_modules -- with owner naming it where we can tell.
+-- Those are not failures, and mixing them with real misses makes the coverage
+-- number meaningless: in a typical Spring app most calls are library calls.
 CREATE TABLE IF NOT EXISTS unresolved (
-  ref_id  INTEGER PRIMARY KEY REFERENCES refs(id) ON DELETE CASCADE,
-  reason  TEXT
+  ref_id   INTEGER PRIMARY KEY REFERENCES refs(id) ON DELETE CASCADE,
+  reason   TEXT,
+  external INTEGER DEFAULT 0,
+  owner    TEXT
 );
+CREATE INDEX IF NOT EXISTS idx_unresolved_external ON unresolved(external);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
   name, fqn, signature, tokenize = 'unicode61'
