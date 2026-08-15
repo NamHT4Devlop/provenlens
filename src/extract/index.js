@@ -1,4 +1,6 @@
 import { extractJava } from './java.js';
+import { extractRuby } from './ruby.js';
+import { extractTypeScript } from './typescript.js';
 
 /**
  * Language -> extractor. A language with no entry here is discovered and
@@ -7,6 +9,10 @@ import { extractJava } from './java.js';
  */
 const EXTRACTORS = {
   java: extractJava,
+  ruby: extractRuby,
+  typescript: extractTypeScript,
+  tsx: extractTypeScript,
+  javascript: extractTypeScript,
 };
 
 export function extractorFor(lang) {

@@ -4,6 +4,8 @@ import { join } from 'node:path';
 import { getParser, langForPath } from './lang.js';
 import { extractorFor } from './extract/index.js';
 import { resolveJava } from './resolve/java.js';
+import { resolveRuby } from './resolve/ruby.js';
+import { resolveTypeScript } from './resolve/typescript.js';
 import { discoverFiles } from './project.js';
 import { setMeta } from './db.js';
 
@@ -11,7 +13,15 @@ function sha1(text) {
   return createHash('sha1').update(text).digest('hex');
 }
 
-const RESOLVERS = { java: resolveJava };
+/**
+ * One entry per resolver, not per language: the TS resolver handles .ts, .tsx
+ * and .js together because they share a module graph.
+ */
+const RESOLVERS = [
+  { name: 'java', langs: ['java'], fn: resolveJava },
+  { name: 'ruby', langs: ['ruby'], fn: resolveRuby },
+  { name: 'typescript', langs: ['typescript', 'tsx', 'javascript'], fn: resolveTypeScript },
+];
 
 /**
  * Parses every changed file into the DB, then rebuilds the graph.
@@ -47,22 +57,24 @@ export async function indexProject(db, root, { full = false, onProgress } = {}) 
   const deleteFileRows = db.prepare('DELETE FROM files WHERE path = ?');
   const insertSymbol = db.prepare(
     `INSERT INTO symbols
-       (file_id, name, fqn, kind, container_fqn, type_name, signature, arity,
+       (file_id, name, fqn, kind, container_fqn, type_name, signature, arity, params,
         start_line, end_line, start_byte, end_byte, modifiers, annotations)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const insertType = db.prepare(
     'INSERT OR REPLACE INTO types (fqn, symbol_id, kind, supertypes) VALUES (?, ?, ?, ?)',
   );
   const insertImport = db.prepare(
-    'INSERT INTO imports (file_id, fqn, simple, is_wildcard, is_static) VALUES (?, ?, ?, ?, ?)',
+    `INSERT INTO imports (file_id, fqn, simple, is_wildcard, is_static, orig, kind)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
   );
   const insertLocal = db.prepare(
-    'INSERT INTO locals (file_id, scope_symbol_id, name, type_name) VALUES (?, ?, ?, ?)',
+    `INSERT INTO locals (file_id, scope_symbol_id, name, type_name, line, init_kind)
+     VALUES (?, ?, ?, ?, ?, ?)`,
   );
   const insertRef = db.prepare(
-    `INSERT INTO refs (file_id, from_symbol_id, name, receiver, arity, line, kind)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO refs (file_id, from_symbol_id, name, receiver, arity, arg_types, line, kind)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
   );
 
   db.exec('BEGIN');
@@ -96,7 +108,7 @@ export async function indexProject(db, root, { full = false, onProgress } = {}) 
 
       const parser = await getParser(lang);
       const tree = parser.parse(source);
-      const result = extractor(tree, source);
+      const result = extractor(tree, source, { path: rel, lang });
 
       const fileId = Number(
         insertFile.run(
@@ -110,7 +122,15 @@ export async function indexProject(db, root, { full = false, onProgress } = {}) 
       );
 
       for (const imp of result.imports) {
-        insertImport.run(fileId, imp.fqn, imp.simple, imp.is_wildcard, imp.is_static);
+        insertImport.run(
+          fileId,
+          imp.fqn,
+          imp.simple,
+          imp.is_wildcard,
+          imp.is_static,
+          imp.orig ?? imp.simple,
+          imp.kind ?? 'import',
+        );
       }
 
       const tmpToReal = new Map();
@@ -125,6 +145,7 @@ export async function indexProject(db, root, { full = false, onProgress } = {}) 
             s.type_name,
             s.signature,
             s.arity,
+            s.params ? JSON.stringify(s.params) : null,
             s.start_line,
             s.end_line,
             s.start_byte,
@@ -141,7 +162,14 @@ export async function indexProject(db, root, { full = false, onProgress } = {}) 
       }
 
       for (const l of result.locals) {
-        insertLocal.run(fileId, tmpToReal.get(l.scopeTmpId) ?? null, l.name, l.type_name);
+        insertLocal.run(
+          fileId,
+          tmpToReal.get(l.scopeTmpId) ?? null,
+          l.name,
+          l.type_name,
+          l.line ?? null,
+          l.init_kind ?? null,
+        );
       }
       for (const r of result.refs) {
         insertRef.run(
@@ -150,6 +178,7 @@ export async function indexProject(db, root, { full = false, onProgress } = {}) 
           r.name,
           r.receiver,
           r.arity,
+          r.arg_types ? JSON.stringify(r.arg_types) : null,
           r.line,
           r.kind,
         );
@@ -183,9 +212,12 @@ export async function indexProject(db, root, { full = false, onProgress } = {}) 
   db.exec('COMMIT');
 
   const resolveStats = {};
-  for (const [lang, resolver] of Object.entries(RESOLVERS)) {
-    const count = db.prepare('SELECT COUNT(*) AS n FROM files WHERE lang = ?').get(lang).n;
-    if (count > 0) resolveStats[lang] = resolver(db);
+  for (const { name, langs, fn } of RESOLVERS) {
+    const placeholders = langs.map(() => '?').join(', ');
+    const count = db
+      .prepare(`SELECT COUNT(*) AS n FROM files WHERE lang IN (${placeholders})`)
+      .get(...langs).n;
+    if (count > 0) resolveStats[name] = fn(db, root);
   }
 
   setMeta(db, 'last_indexed_at', Date.now());

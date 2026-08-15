@@ -5,14 +5,14 @@
  * or it corrupts the stream.
  */
 import { resolve } from 'node:path';
-import { openDb } from './db.js';
+import { openProject } from './db.js';
 import { findProjectRoot, dbPathFor } from './project.js';
 import { indexProject } from './indexer.js';
+import { watchProject } from './watch.js';
 import { formatExplore, formatImpact } from './format.js';
 import { searchSymbols, projectStats } from './query.js';
 
-const SYNC_INTERVAL_MS = 30_000;
-const projects = new Map(); // root -> { db, lastSync }
+const projects = new Map(); // root -> { db, watcher }
 
 async function useProject(pathArg, defaultRoot) {
   const start = pathArg ? resolve(pathArg) : defaultRoot;
@@ -26,17 +26,20 @@ async function useProject(pathArg, defaultRoot) {
 
   let entry = projects.get(root);
   if (!entry) {
-    entry = { db: openDb(dbPathFor(root)), lastSync: 0 };
+    const { db } = openProject(dbPathFor(root));
+    entry = { db, watcher: null };
     projects.set(root, entry);
-  }
-  // Keep answers honest without rehashing the tree on every single call.
-  if (Date.now() - entry.lastSync > SYNC_INTERVAL_MS) {
+
+    // One sync on first touch, then a file watcher keeps it current, so answers
+    // stay fresh without rehashing the tree on every call.
     try {
-      await indexProject(entry.db, root, { full: false });
+      await indexProject(db, root, { full: false });
     } catch (err) {
-      process.stderr.write(`codelens: sync failed: ${err.message}\n`);
+      process.stderr.write(`codelens: initial sync failed: ${err.message}\n`);
     }
-    entry.lastSync = Date.now();
+    entry.watcher = watchProject(db, root, {
+      onSync: (stats) => process.stderr.write(`codelens: reindexed ${stats.parsed} file(s)\n`),
+    });
   }
   return { root, db: entry.db };
 }

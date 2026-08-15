@@ -1,36 +1,19 @@
 import { test, before, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
-import { rmSync } from 'node:fs';
-import { openDb } from '../src/db.js';
-import { indexProject } from '../src/indexer.js';
-import { searchSymbols, impactOf, callersOf } from '../src/query.js';
-
-const HERE = dirname(fileURLToPath(import.meta.url));
-const FIXTURE = join(HERE, '..', '__fixtures__', 'java');
-const TMP_DB = join(HERE, '..', '__fixtures__', '.test-index.db');
+import { buildIndex } from './helpers.js';
+import { impactOf, callersOf, calleesOf } from '../src/query.js';
 
 let db;
+let one;
 let stats;
 
 before(async () => {
-  rmSync(TMP_DB, { force: true });
-  rmSync(`${TMP_DB}-wal`, { force: true });
-  rmSync(`${TMP_DB}-shm`, { force: true });
-  db = openDb(TMP_DB, { create: true });
-  stats = await indexProject(db, FIXTURE, { full: true });
+  ({ db, one, stats } = await buildIndex('java'));
 });
-
-const one = (q) => {
-  const hits = searchSymbols(db, q, { limit: 5 });
-  assert.ok(hits.length, `expected a match for "${q}"`);
-  return hits[0];
-};
 
 describe('extraction', () => {
   test('indexes every fixture file', () => {
-    assert.equal(stats.parsed, 7);
+    assert.equal(stats.parsed, 8);
     assert.ok(stats.symbols > 30, `expected >30 symbols, got ${stats.symbols}`);
   });
 
@@ -90,6 +73,25 @@ describe('resolution', () => {
     const rows = db.prepare('SELECT DISTINCT via, confidence FROM edges').all();
     const viaImpl = rows.find((r) => r.via === 'interface->impl');
     assert.ok(viaImpl && viaImpl.confidence < 1);
+  });
+
+  test('picks the overload whose parameter types match the arguments', () => {
+    // DonationFormatter#report calls describe(donation) and describe(fallback);
+    // both overloads take one argument, so arity alone cannot separate them.
+    const targets = calleesOf(db, one('DonationFormatter#report').id)
+      .filter((c) => c.name === 'describe')
+      .map((c) => c.signature)
+      .sort();
+    assert.deepEqual(targets, ['String describe(Donation)', 'String describe(String)']);
+  });
+
+  test('types a literal argument when choosing an overload', () => {
+    // describe(donation, verbose) has a distinct arity, so it must not be chosen
+    // for the single-argument calls above.
+    const oneArgCalls = calleesOf(db, one('DonationFormatter#report').id).filter(
+      (c) => c.name === 'describe',
+    );
+    assert.ok(oneArgCalls.every((c) => c.arity === 1));
   });
 
   test('leaves only genuinely external calls unresolved', () => {

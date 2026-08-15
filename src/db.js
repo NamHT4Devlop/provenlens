@@ -1,8 +1,9 @@
 import { DatabaseSync } from 'node:sqlite';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, rmSync, existsSync } from 'node:fs';
 import { dirname } from 'node:path';
 
-export const SCHEMA_VERSION = 1;
+/** Bump whenever the schema changes: the index is a cache, so it is rebuilt. */
+export const SCHEMA_VERSION = 3;
 
 const SCHEMA = `
 PRAGMA journal_mode = WAL;
@@ -34,6 +35,8 @@ CREATE TABLE IF NOT EXISTS symbols (
   type_name     TEXT,
   signature     TEXT,
   arity         INTEGER,
+  -- JSON array of declared parameter type names, used to pick between overloads.
+  params        TEXT,
   start_line    INTEGER,
   end_line      INTEGER,
   start_byte    INTEGER,
@@ -61,7 +64,12 @@ CREATE TABLE IF NOT EXISTS imports (
   fqn         TEXT NOT NULL,
   simple      TEXT,
   is_wildcard INTEGER DEFAULT 0,
-  is_static   INTEGER DEFAULT 0
+  is_static   INTEGER DEFAULT 0,
+  -- orig: the name as the source module exports it, before any alias.
+  -- kind: 'import' | 'reexport' | 'reexport-all'. The last two are what make
+  -- barrel files resolvable.
+  orig        TEXT,
+  kind        TEXT DEFAULT 'import'
 );
 CREATE INDEX IF NOT EXISTS idx_imports_file ON imports(file_id);
 
@@ -71,7 +79,11 @@ CREATE TABLE IF NOT EXISTS locals (
   file_id         INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
   scope_symbol_id INTEGER,
   name            TEXT,
-  type_name       TEXT
+  type_name       TEXT,
+  -- Set when the declaration was x = someCall(), so a resolver can come back
+  -- and fill type_name in from the callee's declared return type.
+  line            INTEGER,
+  init_kind       TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_locals_scope ON locals(scope_symbol_id);
 
@@ -83,6 +95,8 @@ CREATE TABLE IF NOT EXISTS refs (
   name            TEXT NOT NULL,
   receiver        TEXT,
   arity           INTEGER,
+  -- JSON array of raw argument expressions, typed later to pick an overload.
+  arg_types       TEXT,
   line            INTEGER,
   kind            TEXT NOT NULL
 );
@@ -124,6 +138,29 @@ export function openDb(dbPath, { create = false } = {}) {
     );
   }
   return db;
+}
+
+/**
+ * Opens a project index, recreating it when the schema has moved on.
+ * `staleSchema` tells the caller the DB is now empty and needs a full reindex.
+ */
+export function openProject(dbPath) {
+  if (!existsSync(dbPath)) {
+    return { db: openDb(dbPath, { create: true }), staleSchema: true };
+  }
+
+  const db = openDb(dbPath);
+  let version = null;
+  try {
+    version = getMeta(db, 'schema_version');
+  } catch {
+    version = null; // pre-versioning index
+  }
+  if (Number(version) === SCHEMA_VERSION) return { db, staleSchema: false };
+
+  db.close();
+  for (const suffix of ['', '-wal', '-shm']) rmSync(`${dbPath}${suffix}`, { force: true });
+  return { db: openDb(dbPath, { create: true }), staleSchema: true };
 }
 
 export function getMeta(db, key) {

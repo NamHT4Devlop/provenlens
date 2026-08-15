@@ -107,6 +107,52 @@ function paramList(paramsNode, src) {
   return params;
 }
 
+/**
+ * Records what each argument looks like at a call site. A literal is typed on
+ * the spot; a bare name is left as-is for the resolver to look up in scope.
+ * Anything more complex becomes null -- unknown, rather than guessed.
+ */
+function argumentTokens(argsNode, src) {
+  if (!argsNode) return [];
+  const out = [];
+  for (let i = 0; i < argsNode.namedChildCount; i++) {
+    const arg = argsNode.namedChild(i);
+    if (!arg) {
+      out.push(null);
+      continue;
+    }
+    switch (arg.type) {
+      case 'string_literal':
+        out.push('!String');
+        break;
+      case 'decimal_integer_literal':
+      case 'hex_integer_literal':
+        out.push('!int');
+        break;
+      case 'decimal_floating_point_literal':
+        out.push('!double');
+        break;
+      case 'true':
+      case 'false':
+      case 'boolean_literal':
+        out.push('!boolean');
+        break;
+      case 'character_literal':
+        out.push('!char');
+        break;
+      case 'null_literal':
+        out.push(null);
+        break;
+      case 'identifier':
+        out.push(text(arg, src));
+        break;
+      default:
+        out.push(null);
+    }
+  }
+  return out;
+}
+
 export function extractJava(tree, src) {
   const symbols = [];
   const refs = [];
@@ -225,6 +271,7 @@ export function extractJava(tree, src) {
           .map((p) => p.type ?? '?')
           .join(', ')})`,
         arity: params.length,
+        params: params.map((p) => p.type),
         supertypes: [],
         modifiers,
         annotations,
@@ -306,6 +353,7 @@ export function extractJava(tree, src) {
           name: text(nameNode, src),
           receiver: objNode ? text(objNode, src) : null,
           arity: args ? args.namedChildCount : null,
+          arg_types: argumentTokens(args, src),
           line: node.startPosition.row + 1,
           kind: 'call',
         });

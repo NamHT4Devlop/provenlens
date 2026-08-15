@@ -2,7 +2,7 @@
 import { Command } from 'commander';
 import { resolve } from 'node:path';
 import { existsSync } from 'node:fs';
-import { openDb, getMeta } from '../src/db.js';
+import { openDb, openProject, getMeta } from '../src/db.js';
 import { findProjectRoot, dbPathFor, INDEX_DIR } from '../src/project.js';
 import { indexProject } from '../src/indexer.js';
 import { searchSymbols, projectStats } from '../src/query.js';
@@ -17,10 +17,14 @@ function die(msg) {
 }
 
 /** Opens the nearest indexed project, or explains how to make one. */
-function useProject(pathArg) {
+function useProject(pathArg, { needsData = true } = {}) {
   const root = findProjectRoot(pathArg ? resolve(pathArg) : process.cwd());
   if (!root) die(`no ${INDEX_DIR}/ found here or in any parent. Run \`codelens init\` first.`);
-  return { root, db: openDb(dbPathFor(root)) };
+  const { db, staleSchema } = openProject(dbPathFor(root));
+  if (staleSchema && needsData) {
+    die('index was built by an older version and has been reset. Run `codelens index`.');
+  }
+  return { root, db };
 }
 
 /** Resolves a user-typed name to exactly one symbol, or reports the ambiguity. */
@@ -82,17 +86,34 @@ program
   .argument('[path]', 'project directory')
   .description('rebuild the whole index from scratch')
   .action(async (path) => {
-    const { root, db } = useProject(path);
+    const { root, db } = useProject(path, { needsData: false });
     reportIndex(await indexProject(db, root, { full: true }));
   });
 
 program
   .command('sync')
   .argument('[path]', 'project directory')
+  .option('-w, --watch', 'keep running and reindex as files change')
   .description('reindex only files whose contents changed')
-  .action(async (path) => {
-    const { root, db } = useProject(path);
+  .action(async (path, opts) => {
+    const { root, db } = useProject(path, { needsData: false });
     reportIndex(await indexProject(db, root, { full: false }));
+
+    if (!opts.watch) return;
+    const { watchProject } = await import('../src/watch.js');
+    const handle = watchProject(db, root, {
+      onSync: (stats) =>
+        console.log(`[${new Date().toLocaleTimeString()}] reindexed ${stats.parsed} file(s)`),
+    });
+    console.log(
+      handle.mode === 'watch'
+        ? 'watching for changes — Ctrl-C to stop'
+        : `polling every 5s (no recursive watch on this platform) — Ctrl-C to stop`,
+    );
+    process.on('SIGINT', () => {
+      handle.close();
+      process.exit(0);
+    });
   });
 
 program
@@ -169,6 +190,40 @@ program
   .action((name) => {
     const { db } = useProject();
     console.log(formatImpact(db, pickSymbol(db, name).id));
+  });
+
+program
+  .command('install')
+  .argument('[target]', 'claude-user | claude-project | cursor')
+  .option('-n, --dry-run', 'show what would change without writing')
+  .description('register the MCP server with an agent')
+  .action(async (target, opts) => {
+    const { TARGETS, planInstall, applyInstall, detectTargets, serverEntry } = await import(
+      '../src/install.js'
+    );
+
+    const targets = target ? [target] : detectTargets();
+    if (!targets.length) {
+      console.log('No agent config found. Add this to your agent\'s MCP config manually:\n');
+      console.log(JSON.stringify({ mcpServers: { codelens: serverEntry() } }, null, 2));
+      return;
+    }
+
+    for (const name of targets) {
+      if (!TARGETS[name]) die(`unknown target "${name}". Known: ${Object.keys(TARGETS).join(', ')}`);
+      try {
+        const plan = opts.dryRun ? planInstall(name) : applyInstall(name);
+        const verb = opts.dryRun ? `would ${plan.action}` : `${plan.action}d`;
+        console.log(
+          plan.action === 'unchanged'
+            ? `${plan.label}: already registered (${plan.file})`
+            : `${plan.label}: ${verb} ${plan.file}`,
+        );
+      } catch (err) {
+        console.error(`${name}: ${err.message}`);
+      }
+    }
+    if (!opts.dryRun) console.log('\nRestart the agent to pick up the new server.');
   });
 
 program

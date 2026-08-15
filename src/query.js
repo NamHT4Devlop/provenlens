@@ -1,8 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-const SYMBOL_COLS = `s.id, s.name, s.fqn, s.kind, s.container_fqn, s.signature, s.arity,
-  s.start_line, s.end_line, s.start_byte, s.end_byte, s.annotations, s.modifiers,
+const SYMBOL_COLS = `s.id, s.name, s.fqn, s.kind, s.container_fqn, s.type_name, s.signature,
+  s.arity, s.start_line, s.end_line, s.start_byte, s.end_byte, s.annotations, s.modifiers,
   f.path AS file_path, f.lang`;
 
 function escapeFts(q) {

@@ -32,7 +32,10 @@ export function resolveJava(db) {
   for (const row of db
     .prepare(
       `SELECT t.fqn, t.symbol_id, t.kind, t.supertypes, s.file_id
-         FROM types t JOIN symbols s ON s.id = t.symbol_id`,
+         FROM types t
+         JOIN symbols s ON s.id = t.symbol_id
+         JOIN files f   ON f.id = s.file_id
+        WHERE f.lang = 'java'`,
     )
     .all()) {
     types.set(row.fqn, { ...row, supertypes: JSON.parse(row.supertypes || '[]') });
@@ -49,8 +52,9 @@ export function resolveJava(db) {
   const fieldsByContainer = new Map(); // fqn -> Map(name -> type_name)
   for (const row of db
     .prepare(
-      `SELECT id, name, kind, arity, container_fqn, type_name
-         FROM symbols WHERE kind IN ('method','constructor','field')`,
+      `SELECT s.id, s.name, s.kind, s.arity, s.container_fqn, s.type_name, s.params
+         FROM symbols s JOIN files f ON f.id = s.file_id
+        WHERE f.lang = 'java' AND s.kind IN ('method','constructor','field')`,
     )
     .all()) {
     if (!row.container_fqn) continue;
@@ -136,11 +140,61 @@ export function resolveJava(db) {
     }
   }
 
-  function findMethod(typeFqn, name, arity) {
+  /**
+   * Types one argument token: `!String` is a literal typed at extraction time,
+   * anything else is a variable name to look up in scope. Returns null when the
+   * argument's type is genuinely unknown.
+   */
+  function argType(token, ref, enclosingFqn) {
+    if (!token) return null;
+    if (token.startsWith('!')) return token.slice(1);
+
+    const local = localsByScope.get(ref.from_symbol_id)?.get(token);
+    if (local) return local;
+
+    for (const t of typeChain(enclosingFqn)) {
+      const fieldType = fieldsByContainer.get(t.fqn)?.get(token);
+      if (fieldType) return fieldType;
+    }
+    return null;
+  }
+
+  /**
+   * Picks between same-arity overloads by comparing declared parameter types
+   * against the argument types we could work out. Falls back to arity alone,
+   * which is what the previous version did for every call.
+   */
+  function findMethod(typeFqn, name, arity, ref = null, enclosingFqn = null) {
     for (const t of typeChain(typeFqn)) {
       const candidates = (methodsByContainer.get(t.fqn) ?? []).filter((m) => m.name === name);
       if (!candidates.length) continue;
-      return candidates.find((m) => m.arity === arity) ?? candidates[0];
+
+      const sameArity = candidates.filter((m) => m.arity === arity);
+      if (sameArity.length <= 1) return sameArity[0] ?? candidates[0];
+
+      const tokens = ref?.arg_types ? JSON.parse(ref.arg_types) : null;
+      if (!tokens) return sameArity[0];
+
+      const argTypes = tokens.map((token) => argType(token, ref, enclosingFqn));
+
+      let best = null;
+      let bestScore = -1;
+      for (const candidate of sameArity) {
+        const params = candidate.params ? JSON.parse(candidate.params) : [];
+        let score = 0;
+        for (const [i, want] of params.entries()) {
+          const got = argTypes[i];
+          if (!want || !got) continue;
+          if (want === got) score += 2;
+          // A resolved type matching by simple name still beats no match.
+          else if (want.split('.').pop() === got.split('.').pop()) score += 1;
+        }
+        if (score > bestScore) {
+          bestScore = score;
+          best = candidate;
+        }
+      }
+      return best ?? sameArity[0];
     }
     return null;
   }
@@ -178,8 +232,12 @@ export function resolveJava(db) {
 
   // ---- write the graph ----------------------------------------------------
 
-  db.exec('DELETE FROM edges');
-  db.exec('DELETE FROM unresolved');
+  // Scoped to this language: resolvers run one after another over a shared DB,
+  // so a blanket DELETE would wipe the other languages' graphs.
+  db.exec(`DELETE FROM edges WHERE from_symbol_id IN (
+             SELECT s.id FROM symbols s JOIN files f ON f.id = s.file_id WHERE f.lang = 'java')`);
+  db.exec(`DELETE FROM unresolved WHERE ref_id IN (
+             SELECT r.id FROM refs r JOIN files f ON f.id = r.file_id WHERE f.lang = 'java')`);
 
   const insertEdge = db.prepare(
     `INSERT OR IGNORE INTO edges (from_symbol_id, to_symbol_id, kind, confidence, via, line)
@@ -203,7 +261,9 @@ export function resolveJava(db) {
     }
   }
 
-  const refs = db.prepare('SELECT * FROM refs').all();
+  const refs = db
+    .prepare(`SELECT r.* FROM refs r JOIN files f ON f.id = r.file_id WHERE f.lang = 'java'`)
+    .all();
 
   for (const ref of refs) {
     if (ref.from_symbol_id == null) {
@@ -222,7 +282,13 @@ export function resolveJava(db) {
         continue;
       }
       insertEdge.run(ref.from_symbol_id, target.symbol_id, 'instantiates', 1.0, 'direct', ref.line);
-      const ctor = findMethod(typeFqn, typeFqn.split('.').pop(), ref.arity);
+      const ctor = findMethod(
+        typeFqn,
+        typeFqn.split('.').pop(),
+        ref.arity,
+        ref,
+        fromSymbol?.container_fqn,
+      );
       if (ctor) insertEdge.run(ref.from_symbol_id, ctor.id, 'calls', 1.0, 'constructor', ref.line);
       stats.direct++;
       continue;
@@ -237,7 +303,7 @@ export function resolveJava(db) {
     }
 
     if (recvType) {
-      const target = findMethod(recvType, ref.name, ref.arity);
+      const target = findMethod(recvType, ref.name, ref.arity, ref, fromSymbol?.container_fqn);
       if (target) {
         insertEdge.run(ref.from_symbol_id, target.id, 'calls', 1.0, 'direct', ref.line);
         stats.direct++;
@@ -247,7 +313,7 @@ export function resolveJava(db) {
         const declaring = symbolById.get(target.id)?.container_fqn;
         if (types.get(declaring)?.kind === 'interface') {
           for (const subFqn of subtypesOf.get(declaring) ?? []) {
-            const impl = findMethod(subFqn, ref.name, ref.arity);
+            const impl = findMethod(subFqn, ref.name, ref.arity, ref, fromSymbol?.container_fqn);
             if (impl && impl.id !== target.id) {
               insertEdge.run(ref.from_symbol_id, impl.id, 'calls', 0.9, 'interface->impl', ref.line);
               stats.viaImpl++;
