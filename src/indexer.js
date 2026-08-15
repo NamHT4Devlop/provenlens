@@ -172,6 +172,8 @@ export async function indexProject(db, root, { full = false, onProgress } = {}) 
         );
       }
       for (const r of result.refs) {
+        // An extractor that cannot name a call site has nothing to resolve.
+        if (!r.name) continue;
         insertRef.run(
           fileId,
           r.fromTmpId == null ? null : (tmpToReal.get(r.fromTmpId) ?? null),

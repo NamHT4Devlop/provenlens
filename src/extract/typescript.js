@@ -461,10 +461,12 @@ export function extractTypeScript(tree, src, ctx = {}) {
     if (node.type === 'new_expression') {
       const ctor = childByField(node, 'constructor');
       const args = childByField(node, 'arguments');
-      if (ctor) {
+      // `new (resolveClass())()` and friends have no name to record.
+      const ctorName = ctor ? bareType(text(ctor, src)) : null;
+      if (ctorName) {
         refs.push({
           fromTmpId: scopeId,
-          name: bareType(text(ctor, src)),
+          name: ctorName,
           receiver: null,
           arity: args ? args.namedChildCount : null,
           line: node.startPosition.row + 1,
@@ -479,7 +481,26 @@ export function extractTypeScript(tree, src, ctx = {}) {
     }
   }
 
-  walk(tree.rootNode, [], null, false);
+  // Module-level statements (`export const x = atom(...)`, side-effect calls)
+  // need somewhere to belong, or every one of them is an orphaned reference.
+  const fileScope = addSymbol({
+    name: (ctx.path ?? modulePath).split('/').pop(),
+    fqn: modulePath,
+    kind: 'file',
+    container_fqn: null,
+    type_name: null,
+    signature: `module ${modulePath}`,
+    arity: null,
+    supertypes: [],
+    modifiers: [],
+    annotations: [],
+    start_line: 1,
+    end_line: tree.rootNode.endPosition.row + 1,
+    start_byte: 0,
+    end_byte: tree.rootNode.endIndex,
+  });
+
+  walk(tree.rootNode, [], fileScope, false);
 
   return { package: modulePath, imports, symbols, refs, locals };
 }

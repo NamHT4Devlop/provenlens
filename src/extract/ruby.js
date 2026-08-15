@@ -61,7 +61,7 @@ function argNodes(callNode) {
   return out;
 }
 
-export function extractRuby(tree, src) {
+export function extractRuby(tree, src, ctx = {}) {
   const symbols = [];
   const refs = [];
   const locals = [];
@@ -304,7 +304,26 @@ export function extractRuby(tree, src) {
     }
   }
 
-  walk(tree.rootNode, [], null, false, null);
+  // Ruby runs plenty of code outside any class: RSpec describe/it blocks,
+  // routes.rb, initializers. Without a file scope those are all orphans.
+  const fileScope = addSymbol({
+    name: (ctx.path ?? 'file').split('/').pop(),
+    fqn: ctx.path ?? null,
+    kind: 'file',
+    container_fqn: null,
+    type_name: null,
+    signature: `file ${ctx.path ?? ''}`,
+    arity: null,
+    supertypes: [],
+    modifiers: [],
+    annotations: [],
+    start_line: 1,
+    end_line: tree.rootNode.endPosition.row + 1,
+    start_byte: 0,
+    end_byte: tree.rootNode.endIndex,
+  });
+
+  walk(tree.rootNode, [], fileScope, false, null);
 
   return { package: null, imports, symbols, refs, locals };
 }
