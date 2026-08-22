@@ -8,6 +8,7 @@ import { resolveRuby } from './resolve/ruby.js';
 import { resolveTypeScript } from './resolve/typescript.js';
 import { discoverFiles } from './project.js';
 import { runBindings, BINDING_LANGS } from './bindings/index.js';
+import { railsAttributes } from './schema/rails.js';
 import { setMeta } from './db.js';
 
 function sha1(text) {
@@ -228,6 +229,11 @@ export async function indexProject(db, root, { full = false, onProgress } = {}) 
   );
   db.exec('COMMIT');
 
+  // An ActiveRecord model declares almost none of its own methods: `account.uri`
+  // works because a column exists, and db/schema.rb is the only record of that
+  // in the source. Synthesised here so the resolvers can see them.
+  const schemaStats = applyRailsSchema(db, root);
+
   const resolveStats = {};
   for (const { name, langs, fn } of RESOLVERS) {
     const placeholders = langs.map(() => '?').join(', ');
@@ -242,5 +248,65 @@ export async function indexProject(db, root, { full = false, onProgress } = {}) 
   const bindingStats = runBindings(db, root);
 
   setMeta(db, 'last_indexed_at', Date.now());
-  return { ...stats, resolve: resolveStats, bindings: bindingStats };
+  return { ...stats, resolve: resolveStats, bindings: bindingStats, schema: schemaStats };
+}
+
+/**
+ * Turns database columns into the attribute methods Rails would define.
+ *
+ * Marked `schema-column` so they are recognisable as derived, and rebuilt from
+ * scratch each run so a dropped column cannot linger.
+ */
+function applyRailsSchema(db, root) {
+  db.exec("DELETE FROM symbols WHERE modifiers LIKE '%schema-column%'");
+
+  const classes = db
+    .prepare(
+      `SELECT s.id, s.name, s.fqn, s.file_id FROM symbols s JOIN files f ON f.id = s.file_id
+        WHERE f.lang = 'ruby' AND s.kind = 'class'`,
+    )
+    .all();
+  if (!classes.length) return { tables: 0, attributes: 0 };
+
+  const byName = new Map();
+  for (const c of classes) if (!byName.has(c.name)) byName.set(c.name, c);
+
+  const perClass = railsAttributes(root, new Set(byName.keys()));
+  if (!perClass.size) return { tables: 0, attributes: 0 };
+
+  const insert = db.prepare(
+    `INSERT INTO symbols
+       (file_id, name, fqn, kind, container_fqn, type_name, signature, arity, params,
+        start_line, end_line, start_byte, end_byte, modifiers, annotations)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  );
+
+  let attributes = 0;
+  db.exec('BEGIN');
+  for (const [modelName, { table, attributes: names }] of perClass) {
+    const model = byName.get(modelName);
+    if (!model) continue;
+    for (const attribute of names) {
+      insert.run(
+        model.file_id,
+        attribute,
+        `${model.fqn}#${attribute}`,
+        'method',
+        model.fqn,
+        null,
+        `${attribute}  # column on ${table}`,
+        0,
+        null,
+        1,
+        1,
+        0,
+        0,
+        JSON.stringify(['generated', 'schema-column']),
+        JSON.stringify([`column:${table}`]),
+      );
+      attributes++;
+    }
+  }
+  db.exec('COMMIT');
+  return { tables: perClass.size, attributes };
 }

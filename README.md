@@ -33,6 +33,7 @@ codelens explore "DonationService"
 | TypeScript / TSX | ✅ | ✅ | **Module resolution thật**: tsconfig `paths`, barrel file, `export *`; parameter property; suy luận kiểu trả về |
 | JavaScript | ✅ | ✅ | Chung đồ thị module với TS |
 | XML, SQL | — | — | Không có grammar, nhưng **được plugin binding đọc** (MyBatis mapper, Flyway migration) |
+| `db/schema.rb` | — | — | Cột database → thuộc tính ActiveRecord. `account.uri` chạy được là nhờ có cột, và schema là **nơi duy nhất** trong source ghi lại điều đó |
 
 ## Framework bindings
 
@@ -99,22 +100,22 @@ Và luật chứng minh **luôn chạy trước** luật giả định: nếu ch
 | camel-spring-boot-examples | ~50 ví dụ Camel | **91.1%** | 90.1% |
 | mybatis jpetstore | MyBatis + Flyway | **89.1%** | 89.1% |
 | agenta | TS/JS, 3891 file | **85.0%** | 52.3% |
-| human-essentials | Rails, 994 file | **84.5%** | 83.1% |
 | nest | TS, 1817 file | **84.2%** | 75.1% |
-| rubygems.org | Rails, 1338 file | **83.4%** | 80.6% |
 | mybatis spring-boot-starter | MyBatis | **81.3%** | 81.3% |
+| rubygems.org | Rails, 1338 file | **79.7%** | 77.2% |
 | spring-cloud-aws | Java, 803 file | **77.7%** | 76.8% |
+| human-essentials | Rails, 994 file | **77.7%** | 76.4% |
 | express | JS thuần, 141 file | **77.4%** | 52.4% |
 | halo | Java 1349 + TS 862 | **77.0%** | 73.3% |
-| mastodon | Rails 3258 + TS 734 | **75.1%** | 72.8% |
+| mastodon | Rails 3258 + TS 734 | **74.5%** | 72.3% |
 
 Cột cuối là điều kiện tự kiểm: giả sử **mọi** phán đoán runtime đều sai thì còn lại bao nhiêu.
-Java và Ruby gần như toàn bộ dựa trên chứng minh (chênh 1–3%); JS/TS dựa vào giả định nhiều hơn
-vì không có kiểu để lần.
 
-Phần còn hụt là **giới hạn suy luận thật**, không phải lỗi phân loại: chuỗi builder fluent của SDK
-ngoài (halo, spring-cloud-aws), thuộc tính ActiveRecord sinh từ cột DB chứ không có trong source
-(mastodon), và generic TS có kiểu trả về suy từ tham số kiểu.
+**Lưu ý về hai repo Rails:** con số của human-essentials và rubygems.org *giảm* khi bật đọc
+`db/schema.rb`, và đó là điều đúng. Trước đó `created_at`/`name` không có khai báo nào trong
+source nên được **chứng minh là ngoài project** — một chứng minh sai, vì chúng có thật dưới dạng
+thuộc tính ActiveRecord. Giờ chúng nằm trong index, mẫu số lớn hơn, và đồ thị đầy đủ hơn ~10%
+(riêng human-essentials có 676 cạnh mới trỏ vào cột DB). Số thấp hơn nhưng trung thực hơn.
 
 Đo lại bất cứ lúc nào bằng `./scripts/bench.js <repo> --detail`.
 
@@ -134,9 +135,24 @@ ngoài (halo, spring-cloud-aws), thuộc tính ActiveRecord sinh từ cột DB c
 | `codelens affected [files...]` | File đã đổi chạm tới cái gì + **test nào đã phủ** |
 | `codelens install [target]` | Đăng ký MCP vào agent (`--dry-run` xem trước) |
 | `codelens uninit [path]` | Xoá index khỏi project |
+| `codelens serve [-p 7777] [-o]` | **Web UI** để search và duyệt đồ thị trong trình duyệt |
 | `codelens mcp [path]` | MCP server qua stdio |
 
 `query`, `callers`, `callees`, `impact`, `affected` đều nhận `--json` để nối vào tool khác.
+
+### Web UI
+
+```bash
+codelens serve --open
+```
+
+Một trang tự chứa, không build step, không dependency ngoài: gõ để tìm symbol, chọn để xem source
+thật kèm số dòng, rồi **bấm vào bất kỳ liên kết nào để đi tiếp trong đồ thị** — caller, callee,
+quan hệ kiểu, liên kết framework, blast radius. Symbol suy ra (reader của `belongs_to`, cột DB,
+câu SQL trong XML) được gắn nhãn `derived`; file test gắn nhãn `test`. Phím `/` để về ô tìm kiếm,
+mũi tên lên/xuống để duyệt.
+
+Server chỉ nghe trên `127.0.0.1`, chỉ đọc, và tự cập nhật index bằng file watcher.
 
 ### Luồng dùng hàng ngày
 
@@ -226,7 +242,7 @@ Index là cache. Tăng `SCHEMA_VERSION` trong `src/db.js` là index cũ bị xo�
 npm test
 ```
 
-100 test trên 5 bộ fixture cộng một bộ hồi quy:
+102 test trên 5 bộ fixture cộng một bộ hồi quy:
 
 | Fixture | Mô phỏng | Chuỗi mà grep không lần ra |
 |---|---|---|

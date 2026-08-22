@@ -12,13 +12,18 @@
  * that exists on disk.
  */
 
-/** `line_items` -> `LineItem`. Deliberately simple; irregulars are not covered. */
-export function classify(name) {
-  return singularize(name)
+/** `line_item` -> `LineItem`, with no singularisation of its own. */
+export function camelize(name) {
+  return name
     .split('_')
     .filter(Boolean)
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join('');
+}
+
+/** `line_items` -> `LineItem`. Deliberately simple; irregulars are not covered. */
+export function classify(name) {
+  return camelize(singularize(name));
 }
 
 export function singularize(word) {

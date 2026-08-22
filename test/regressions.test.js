@@ -588,3 +588,62 @@ describe('bindings the resolver must not miss', () => {
     cleanup();
   });
 });
+
+describe('rails schema', () => {
+  test('turns database columns into the attribute methods Rails defines', async () => {
+    const { db, cleanup } = await tempProject({
+      'db/schema.rb': [
+        'ActiveRecord::Schema[7.1].define(version: 1) do',
+        '  create_table "organizations", force: :cascade do |t|',
+        '    t.string "name", null: false',
+        '    t.string "intake_location"',
+        '    t.index ["name"], name: "idx_org_name"',
+        '  end',
+        'end',
+      ].join('\n'),
+      'app/models/organization.rb': ['class Organization', 'end'].join('\n'),
+      'app/controllers/orgs_controller.rb': [
+        'class OrgsController',
+        '  def show',
+        '    org = Organization.new',
+        '    org.intake_location',
+        '  end',
+        'end',
+      ].join('\n'),
+    });
+
+    // The column is the only record of intake_location anywhere in the source.
+    const edge = db
+      .prepare(
+        `SELECT s.signature FROM edges e JOIN symbols s ON s.id = e.to_symbol_id
+          WHERE s.fqn = 'Organization#intake_location'`,
+      )
+      .get();
+    assert.ok(edge, 'a column read must reach the attribute it comes from');
+    assert.match(edge.signature, /column on organizations/);
+
+    // t.index describes the table, not a column.
+    const indexAttr = db.prepare("SELECT COUNT(*) n FROM symbols WHERE name = 'index'").get();
+    assert.equal(indexAttr.n, 0);
+    cleanup();
+  });
+
+  test('picks the model name the codebase actually uses', async () => {
+    const { db, cleanup } = await tempProject({
+      'db/schema.rb': [
+        'ActiveRecord::Schema[7.1].define(version: 1) do',
+        '  create_table "statuses", force: :cascade do |t|',
+        '    t.string "uri"',
+        '  end',
+        'end',
+      ].join('\n'),
+      'app/models/status.rb': ['class Status', 'end'].join('\n'),
+    });
+
+    // No rule turns `statuses` into `status` without a table of irregulars, so
+    // the candidates are checked against the classes that exist.
+    const attr = db.prepare("SELECT COUNT(*) n FROM symbols WHERE fqn = 'Status#uri'").get();
+    assert.equal(attr.n, 1);
+    cleanup();
+  });
+});

@@ -71,6 +71,19 @@ if (byEvidence.length) {
   }
 }
 
+const columns = db
+  .prepare("SELECT COUNT(*) n FROM symbols WHERE modifiers LIKE '%schema-column%'")
+  .get().n;
+if (columns) {
+  const onColumns = db
+    .prepare(
+      `SELECT COUNT(*) n FROM edges e JOIN symbols s ON s.id = e.to_symbol_id
+        WHERE s.modifiers LIKE '%schema-column%'`,
+    )
+    .get().n;
+  console.log(`schema:   ${columns} column attributes, ${onColumns} edge(s) land on one`);
+}
+
 const bindings = db.prepare('SELECT COUNT(*) n FROM bindings').get().n;
 if (bindings) {
   const rows = db

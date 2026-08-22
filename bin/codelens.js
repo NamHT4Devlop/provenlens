@@ -380,6 +380,24 @@ program
   });
 
 program
+  .command('serve')
+  .argument('[path]', 'project directory')
+  .option('-p, --port <n>', 'port to listen on', '7777')
+  .option('-o, --open', 'open a browser once it is up')
+  .description('browse and search the graph in a local web UI')
+  .action(async (path, opts) => {
+    const { startServer } = await import('../src/server.js');
+    try {
+      await startServer(path ? resolve(path) : process.cwd(), {
+        port: Number(opts.port),
+        open: Boolean(opts.open),
+      });
+    } catch (err) {
+      die(err.message);
+    }
+  });
+
+program
   .command('mcp')
   .argument('[path]', 'project directory')
   .description('run the MCP server over stdio')
