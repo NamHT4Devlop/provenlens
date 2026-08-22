@@ -6,113 +6,176 @@
 <title>codelens</title>
 <style>
   :root {
-    color-scheme: light dark;
-    --bg: #ffffff; --panel: #f6f7f9; --line: #dfe3e8; --ink: #1b1f24; --muted: #626b76;
-    --accent: #2f6feb; --warn: #b25000; --ok: #1a7f47; --code-bg: #f6f8fa;
-    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #0f1216; --panel: #161a20; --line: #262c35; --ink: #e6e9ee; --muted: #98a2b0;
-      --accent: #6ea8ff; --warn: #e0954a; --ok: #4cc38a; --code-bg: #11151a;
-    }
+    --bg: #0b0e13; --panel: #131820; --line: #232b36; --ink: #e8ecf2; --muted: #93a0b1;
+    --accent: #7aa2ff; --warn: #e8a24a; --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --class: #d946a6; --method: #ec4899; --fn: #f0669b; --field: #8b5cf6;
+    --file: #38bdf8; --sql: #2dd4bf; --route: #fbbf24; --seed: #6366f1;
   }
   * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
   body {
-    margin: 0; background: var(--bg); color: var(--ink);
-    font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg); color: var(--ink); overflow: hidden;
+    font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   }
   header {
-    position: sticky; top: 0; z-index: 5; display: flex; gap: 12px; align-items: center;
-    padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line);
+    position: absolute; inset: 0 auto auto 0; width: 100%; z-index: 3;
+    display: flex; gap: 10px; align-items: center; padding: 10px 14px;
+    background: linear-gradient(var(--bg), color-mix(in srgb, var(--bg) 70%, transparent));
   }
-  .brand { font-weight: 650; letter-spacing: -0.01em; }
-  .brand span { color: var(--muted); font-weight: 400; margin-left: 8px; font-size: 12px; }
+  .brand { font-weight: 650; letter-spacing: -.01em; white-space: nowrap; }
+  .brand span { color: var(--muted); font-weight: 400; font-size: 11.5px; margin-left: 7px; }
+  .search { position: relative; flex: 0 1 380px; }
   #q {
-    flex: 1; padding: 8px 12px; font: inherit; color: var(--ink);
-    background: var(--bg); border: 1px solid var(--line); border-radius: 7px;
+    width: 100%; padding: 8px 12px; font: inherit; color: var(--ink);
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
   }
   #q:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
-  .stats { color: var(--muted); font-size: 12px; white-space: nowrap; }
-  main { display: grid; grid-template-columns: minmax(320px, 34%) 1fr; height: calc(100vh - 53px); }
-  @media (max-width: 820px) { main { grid-template-columns: 1fr; } #detail { display: none; } }
-  #results, #detail { overflow: auto; }
-  #results { border-right: 1px solid var(--line); }
-  .row {
-    padding: 9px 14px; border-bottom: 1px solid var(--line); cursor: pointer;
+  #suggest {
+    position: absolute; top: 40px; left: 0; right: 0; max-height: 320px; overflow: auto;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px; display: none;
   }
-  .row:hover { background: var(--panel); }
-  .row[aria-selected="true"] { background: color-mix(in srgb, var(--accent) 14%, transparent); }
-  .row .n { font-family: var(--mono); font-size: 13px; }
-  .row .f {
-    color: var(--muted); font-size: 11.5px; font-family: var(--mono);
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  #suggest.on { display: block; }
+  .sg { padding: 7px 11px; cursor: pointer; border-bottom: 1px solid var(--line); }
+  .sg:hover, .sg[aria-selected="true"] { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+  .sg b { font-family: var(--mono); font-weight: 600; font-size: 12.5px; }
+  .sg i { display: block; color: var(--muted); font-style: normal; font-size: 11px; font-family: var(--mono); }
+  .filters { display: flex; gap: 6px; flex-wrap: wrap; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 5px; padding: 4px 9px; cursor: pointer;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 999px;
+    font-size: 11.5px; color: var(--muted); user-select: none;
   }
-  .row .n { display: flex; align-items: baseline; gap: 2px; }
-  .row .n b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .tag {
-    display: inline-block; padding: 0 6px; margin-right: 6px; border-radius: 999px;
-    font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em;
-    background: var(--line); color: var(--muted);
+  .chip[aria-pressed="true"] { color: var(--ink); border-color: color-mix(in srgb, var(--accent) 50%, var(--line)); }
+  .chip .dot { width: 9px; height: 9px; border-radius: 50%; }
+  .spacer { flex: 1; }
+  .hint { color: var(--muted); font-size: 11.5px; white-space: nowrap; }
+  #stage { position: absolute; inset: 0; }
+  canvas { display: block; width: 100%; height: 100%; cursor: grab; }
+  canvas.dragging { cursor: grabbing; }
+  .overlay {
+    position: absolute; z-index: 2; background: color-mix(in srgb, var(--panel) 88%, transparent);
+    border: 1px solid var(--line); border-radius: 8px; backdrop-filter: blur(6px);
   }
-  .tag.test { background: color-mix(in srgb, var(--ok) 22%, transparent); color: var(--ok); }
-  .tag.derived { background: color-mix(in srgb, var(--warn) 22%, transparent); color: var(--warn); }
-  #detail { padding: 18px 22px 60px; }
-  h2 {
-    margin: 0 0 2px; font-size: 17px; font-family: var(--mono); font-weight: 620;
-    /* A fully qualified name can be long; wrap it rather than clipping it. */
+  #counts { left: 14px; bottom: 14px; padding: 7px 11px; color: var(--muted); font-size: 11.5px; }
+  #counts b { color: var(--ink); font-weight: 600; }
+  #tools { right: 14px; bottom: 14px; display: flex; gap: 2px; padding: 4px; }
+  #tools button {
+    width: 30px; height: 28px; display: grid; place-items: center; cursor: pointer;
+    background: transparent; border: 0; color: var(--muted); border-radius: 6px; font-size: 14px;
+  }
+  #tools button:hover { background: var(--line); color: var(--ink); }
+  #panel {
+    position: absolute; top: 92px; right: 14px; bottom: 56px; width: min(390px, 42vw);
+    z-index: 2; padding: 16px 18px; overflow: auto; display: none;
+  }
+  #panel.on { display: block; }
+  /* Only take the whole width when there is genuinely no room beside the graph. */
+  @media (max-width: 620px) { #panel { left: 14px; width: auto; top: 120px; } }
+  #panel h2 {
+    margin: 0 0 3px; font-size: 15px; font-family: var(--mono); font-weight: 620;
     overflow-wrap: anywhere; line-height: 1.35;
   }
-  a.sym { overflow-wrap: anywhere; }
-  .loc { color: var(--muted); font-size: 12px; font-family: var(--mono); margin-bottom: 16px;
-         word-break: break-all; }
-  h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted);
-       margin: 22px 0 8px; }
-  pre {
-    background: var(--code-bg); border: 1px solid var(--line); border-radius: 8px;
-    padding: 12px 14px; overflow: auto; font-family: var(--mono); font-size: 12.5px;
-    line-height: 1.5; margin: 0;
+  #panel .loc { color: var(--muted); font-size: 11.5px; font-family: var(--mono);
+                word-break: break-all; margin-bottom: 12px; }
+  #panel h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+              color: var(--muted); margin: 18px 0 7px; }
+  #panel pre {
+    background: #0d1117; border: 1px solid var(--line); border-radius: 7px; padding: 10px 12px;
+    overflow: auto; font-family: var(--mono); font-size: 12px; line-height: 1.5; margin: 0;
+    max-height: 320px;
   }
-  ul { list-style: none; margin: 0; padding: 0; }
-  li { padding: 5px 0; border-bottom: 1px solid var(--line); }
-  a.sym {
-    color: var(--accent); cursor: pointer; font-family: var(--mono); font-size: 12.5px;
-    text-decoration: none;
-  }
+  #panel ul { list-style: none; margin: 0; padding: 0; }
+  #panel li { padding: 5px 0; border-bottom: 1px solid var(--line); }
+  a.sym { color: var(--accent); cursor: pointer; font-family: var(--mono); font-size: 12px;
+          overflow-wrap: anywhere; }
   a.sym:hover { text-decoration: underline; }
-  .meta { color: var(--muted); font-size: 11.5px; }
+  .meta { color: var(--muted); font-size: 11px; }
   .conf { color: var(--warn); }
-  .empty { color: var(--muted); padding: 26px 16px; }
-  kbd {
-    font-family: var(--mono); font-size: 11px; border: 1px solid var(--line);
-    border-bottom-width: 2px; border-radius: 4px; padding: 1px 5px; color: var(--muted);
-  }
+  .tag { display: inline-block; padding: 0 6px; margin-right: 5px; border-radius: 999px;
+         font-size: 10px; text-transform: uppercase; letter-spacing: .04em;
+         background: var(--line); color: var(--muted); }
+  .close { float: right; cursor: pointer; color: var(--muted); font-size: 18px; line-height: 1; }
+  .close:hover { color: var(--ink); }
+  #empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted);
+           text-align: center; pointer-events: none; padding: 0 24px; }
+  kbd { font-family: var(--mono); font-size: 11px; border: 1px solid var(--line);
+        border-bottom-width: 2px; border-radius: 4px; padding: 1px 5px; }
 </style>
 </head>
 <body>
+<div id="stage"><canvas id="cv"></canvas></div>
+<div id="empty">Search for a symbol to grow the graph around it.<br><span class="hint">Click a node to expand · drag to move · scroll to zoom</span></div>
+
 <header>
   <div class="brand">codelens<span id="root"></span></div>
-  <input id="q" placeholder="Search symbols — a name, Type#method, or a fragment" autocomplete="off" spellcheck="false">
-  <div class="stats" id="stats"></div>
+  <div class="search">
+    <input id="q" placeholder="Search for nodes in the graph" autocomplete="off" spellcheck="false">
+    <div id="suggest"></div>
+  </div>
+  <div class="filters" id="filters"></div>
+  <div class="spacer"></div>
+  <div class="hint" id="stats"></div>
 </header>
-<main>
-  <div id="results"><div class="empty">Type to search, or press <kbd>/</kbd> to focus.</div></div>
-  <div id="detail"><div class="empty">Pick a symbol to see its source and how it connects.</div></div>
-</main>
+
+<div class="overlay" id="counts"><b id="nNodes">0</b> nodes &nbsp; <b id="nEdges">0</b> edges</div>
+<div class="overlay" id="tools">
+  <button id="zoomOut" title="Zoom out">−</button>
+  <button id="fit" title="Fit to view">⤢</button>
+  <button id="zoomIn" title="Zoom in">+</button>
+  <button id="png" title="Save as PNG">⇩</button>
+</div>
+<div class="overlay" id="panel"></div>
 
 <script>
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const shortPath = (p, keep = 3) => {
+  const parts = String(p ?? '').split('/');
+  return parts.length <= keep ? p : '…/' + parts.slice(-keep).join('/');
+};
 
-/** `a/b/c/d/e/File.java` -> `…/d/e/File.java`; the tail is what identifies it. */
-function shortPath(path, keep = 3) {
-  const parts = String(path ?? '').split('/');
-  return parts.length <= keep ? path : '…/' + parts.slice(-keep).join('/');
+const COLORS = {
+  class: '--class', interface: '--class', enum: '--class', record: '--class', module: '--class',
+  method: '--method', constructor: '--method', class_method: '--method',
+  function: '--fn', field: '--field', file: '--file',
+  'sql-statement': '--sql', 'camel-route': '--route', migration: '--route',
+};
+const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const colorOf = (kind) => css(COLORS[kind] ?? '--muted');
+
+const KINDS = [
+  ['class', 'Types', ['class', 'interface', 'enum', 'record', 'module']],
+  ['method', 'Methods', ['method', 'constructor', 'class_method']],
+  ['function', 'Functions', ['function']],
+  ['field', 'Fields', ['field']],
+  ['file', 'Files', ['file']],
+  ['derived', 'Derived', ['sql-statement', 'camel-route', 'migration']],
+];
+const enabled = new Set(KINDS.map((k) => k[0]));
+const groupOf = (kind) => (KINDS.find((k) => k[2].includes(kind)) ?? ['field'])[0];
+
+let nodes = [];
+let edges = [];
+let byId = new Map();
+let selected = null;
+let hover = null;
+let view = { x: 0, y: 0, k: 1 };
+let dragNode = null;
+let panning = null;
+
+const cv = $('cv');
+const ctx = cv.getContext('2d');
+
+function resize() {
+  const r = cv.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  cv.width = r.width * dpr;
+  cv.height = r.height * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 }
-
-let rows = [];
-let cursor = -1;
+new ResizeObserver(resize).observe(cv);
+resize();
 
 async function api(path, params) {
   const url = new URL(path, location.origin);
@@ -122,125 +185,381 @@ async function api(path, params) {
   return res.json();
 }
 
-function tags(item) {
-  let out = '<span class="tag">' + esc(item.kind) + '</span>';
-  if (item.isTest) out += '<span class="tag test">test</span>';
-  if (item.derived) out += '<span class="tag derived">derived</span>';
-  return out;
-}
+// ---- layout: a small force simulation, enough for a few hundred nodes -------
+let alpha = 0;
+function kick(v = 1) { alpha = v; }
 
-function renderResults(items) {
-  rows = items;
-  cursor = -1;
-  if (!items.length) {
-    $('results').innerHTML = '<div class="empty">No symbol matches that.</div>';
-    return;
+function step() {
+  if (alpha > 0.002) {
+    alpha *= 0.985;
+    const visible = nodes.filter((n) => n.shown);
+    const cx = cv.clientWidth / 2;
+    const cy = cv.clientHeight / 2;
+
+    for (const a of visible) {
+      a.vx = (a.vx ?? 0) * 0.86;
+      a.vy = (a.vy ?? 0) * 0.86;
+      // Pull gently to the middle so the graph cannot drift off screen.
+      a.vx += (cx - a.x) * 0.0016 * alpha;
+      a.vy += (cy - a.y) * 0.0016 * alpha;
+    }
+    for (let i = 0; i < visible.length; i++) {
+      for (let j = i + 1; j < visible.length; j++) {
+        const a = visible[i], b = visible[j];
+        let dx = b.x - a.x, dy = b.y - a.y;
+        let d2 = dx * dx + dy * dy;
+        if (d2 < 1) { dx = Math.random() - 0.5; dy = Math.random() - 0.5; d2 = 1; }
+        if (d2 > 490000) continue;
+        const f = (46000 * alpha) / d2;
+        const d = Math.sqrt(d2);
+        a.vx -= (dx / d) * f; a.vy -= (dy / d) * f;
+        b.vx += (dx / d) * f; b.vy += (dy / d) * f;
+      }
+    }
+    for (const e of edges) {
+      const a = byId.get(e.from), b = byId.get(e.to);
+      if (!a?.shown || !b?.shown) continue;
+      const dx = b.x - a.x, dy = b.y - a.y;
+      const d = Math.hypot(dx, dy) || 1;
+      const f = ((d - 175) * 0.012 * alpha);
+      a.vx += (dx / d) * f; a.vy += (dy / d) * f;
+      b.vx -= (dx / d) * f; b.vy -= (dy / d) * f;
+    }
+    for (const n of visible) {
+      if (n === dragNode) continue;
+      n.x += n.vx; n.y += n.vy;
+    }
   }
-  $('results').innerHTML = items
-    .map(
-      (r, i) =>
-        '<div class="row" data-i="' + i + '" role="option" title="' + esc(r.fqn) + '">' +
-        '<div class="n">' + tags(r) + '<b>' + esc(r.name) + '</b></div>' +
-        '<div class="f" title="' + esc(r.file) + '">' + esc(shortPath(r.file)) + ':' + r.line + '</div>' +
-        '</div>',
-    )
-    .join('');
+  draw();
+  requestAnimationFrame(step);
 }
 
-function relList(items, opts = {}) {
+const radiusOf = (n) => (n.seed ? 17 : n.kind === 'file' ? 13 : 11);
+const toScreen = (n) => ({ x: n.x * view.k + view.x, y: n.y * view.k + view.y });
+
+function draw() {
+  ctx.clearRect(0, 0, cv.clientWidth, cv.clientHeight);
+  // Zoomed out, labelling everything is noise. Zoomed in, it is the point.
+  // In between, label only what the reader is looking at.
+  const allLabels = view.k > 0.55;
+  const showEdgeLabels = view.k > 0.72;
+
+  for (const e of edges) {
+    const a = byId.get(e.from), b = byId.get(e.to);
+    if (!a?.shown || !b?.shown) continue;
+    const p = toScreen(a), q = toScreen(b);
+    const dim = selected && e.from !== selected.id && e.to !== selected.id;
+
+    ctx.strokeStyle = dim ? 'rgba(147,160,177,.16)' : 'rgba(147,160,177,.46)';
+    ctx.lineWidth = e.confidence != null && e.confidence < 1 ? 1 : 1.4;
+    if (e.confidence != null && e.confidence < 1) ctx.setLineDash([4, 3]);
+    ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(q.x, q.y); ctx.stroke();
+    ctx.setLineDash([]);
+
+    // arrow head, stopped at the node edge
+    const ang = Math.atan2(q.y - p.y, q.x - p.x);
+    const r = radiusOf(b) * view.k + 3;
+    const hx = q.x - Math.cos(ang) * r, hy = q.y - Math.sin(ang) * r;
+    ctx.fillStyle = dim ? 'rgba(147,160,177,.16)' : 'rgba(147,160,177,.6)';
+    ctx.beginPath();
+    ctx.moveTo(hx, hy);
+    ctx.lineTo(hx - Math.cos(ang - 0.4) * 8, hy - Math.sin(ang - 0.4) * 8);
+    ctx.lineTo(hx - Math.cos(ang + 0.4) * 8, hy - Math.sin(ang + 0.4) * 8);
+    ctx.fill();
+
+    if (showEdgeLabels && !dim) {
+      const mx = (p.x + q.x) / 2, my = (p.y + q.y) / 2;
+      ctx.save();
+      ctx.translate(mx, my);
+      let a2 = ang;
+      if (a2 > Math.PI / 2 || a2 < -Math.PI / 2) a2 += Math.PI;
+      ctx.rotate(a2);
+      ctx.font = '9px ui-monospace, monospace';
+      ctx.fillStyle = 'rgba(147,160,177,.75)';
+      ctx.textAlign = 'center';
+      ctx.fillText(e.label.toUpperCase(), 0, -4);
+      ctx.restore();
+    }
+  }
+
+  for (const n of nodes) {
+    if (!n.shown) continue;
+    const p = toScreen(n);
+    const r = radiusOf(n) * view.k;
+    const dim = selected && selected.id !== n.id && !n.adjacent;
+
+    ctx.globalAlpha = dim ? 0.35 : 1;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+    ctx.fillStyle = n.seed ? css('--seed') : colorOf(n.kind);
+    ctx.fill();
+    if (n === hover || selected?.id === n.id) {
+      ctx.lineWidth = 2.5; ctx.strokeStyle = '#fff'; ctx.stroke();
+    }
+    if (n.isTest) {
+      ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(45,212,191,.9)';
+      ctx.setLineDash([3, 3]); ctx.stroke(); ctx.setLineDash([]);
+    }
+
+    const label = allLabels || n.seed || n === hover || selected?.id === n.id || n.adjacent;
+    if (label) {
+      ctx.font = (n.seed ? '600 ' : '') + Math.max(10, 11 * view.k) + 'px ui-monospace, monospace';
+      ctx.fillStyle = dim ? 'rgba(232,236,242,.4)' : '#e8ecf2';
+      ctx.textAlign = 'center';
+      ctx.fillText(n.name.length > 26 ? n.name.slice(0, 25) + '…' : n.name, p.x, p.y + r + 13);
+    }
+    ctx.globalAlpha = 1;
+  }
+}
+
+function markAdjacent() {
+  for (const n of nodes) n.adjacent = false;
+  if (!selected) return;
+  for (const e of edges) {
+    if (e.from === selected.id) { const t = byId.get(e.to); if (t) t.adjacent = true; }
+    if (e.to === selected.id) { const t = byId.get(e.from); if (t) t.adjacent = true; }
+  }
+}
+
+function applyFilters() {
+  for (const n of nodes) n.shown = n.seed || enabled.has(groupOf(n.kind));
+  $('nNodes').textContent = nodes.filter((n) => n.shown).length;
+  $('nEdges').textContent = edges.filter((e) => byId.get(e.from)?.shown && byId.get(e.to)?.shown).length;
+  $('empty').style.display = nodes.some((n) => n.shown) ? 'none' : 'grid';
+}
+
+function mergeGraph(g, seedAt) {
+  for (const n of g.nodes) {
+    if (byId.has(n.id)) { if (n.seed) byId.get(n.id).seed = true; continue; }
+    const angle = Math.random() * Math.PI * 2;
+    const spread = 90 + Math.random() * 130;
+    const node = {
+      ...n,
+      x: (seedAt?.x ?? cv.clientWidth / 2) + Math.cos(angle) * spread,
+      y: (seedAt?.y ?? cv.clientHeight / 2) + Math.sin(angle) * spread,
+      vx: 0, vy: 0,
+    };
+    nodes.push(node);
+    byId.set(n.id, node);
+  }
+  const seen = new Set(edges.map((e) => e.from + '|' + e.to + '|' + e.kind));
+  for (const e of g.edges) {
+    const key = e.from + '|' + e.to + '|' + e.kind;
+    if (!seen.has(key)) { edges.push(e); seen.add(key); }
+  }
+  applyFilters();
+  markAdjacent();
+  kick(0.9);
+}
+
+async function focusSymbol(id, { reset = false } = {}) {
+  if (reset) { nodes = []; edges = []; byId = new Map(); }
+  const at = byId.get(id);
+  const g = await api('/api/graph', { ids: id, depth: 1 });
+  mergeGraph(g, at);
+  selected = byId.get(id) ?? null;
+  if (selected) selected.seed = true;
+  markAdjacent();
+  if (reset) fit();
+  await showPanel(id);
+}
+
+// ---- detail panel -----------------------------------------------------------
+function relList(items) {
   if (!items.length) return '<div class="meta">None.</div>';
   return '<ul>' + items.map((c) => {
     const where = c.lines && c.lines.length ? c.lines.join(', ') : c.line;
     const conf = c.confidence != null && c.confidence < 1
-      ? ' <span class="conf">' + esc(c.via) + ' · ' + c.confidence.toFixed(2) + '</span>'
-      : '';
-    const edge = opts.showEdge && c.edge && c.edge !== 'calls' ? ' <span class="tag">' + esc(c.edge) + '</span>' : '';
-    return '<li><a class="sym" data-id="' + c.id + '">' + esc(c.fqn) + '</a>' + edge +
-      '<div class="meta" title="' + esc(c.file) + '">' + esc(shortPath(c.file, 4)) + ':' + where +
-      conf + '</div></li>';
+      ? ' <span class="conf">' + esc(c.via) + ' · ' + c.confidence.toFixed(2) + '</span>' : '';
+    const edge = c.edge && c.edge !== 'calls' ? '<span class="tag">' + esc(c.edge) + '</span>' : '';
+    return '<li>' + edge + '<a class="sym" data-id="' + c.id + '">' + esc(c.fqn) + '</a>' +
+      '<div class="meta" title="' + esc(c.file) + '">' + esc(shortPath(c.file, 4)) + ':' + where + conf + '</div></li>';
   }).join('') + '</ul>';
 }
 
-async function openSymbol(id) {
+async function showPanel(id) {
   const d = await api('/api/symbol', { id });
-  const parts = [];
-  parts.push('<h2>' + tags(d) + esc(d.fqn) + '</h2>');
-  parts.push('<div class="loc" title="' + esc(d.file) + '">' + esc(d.file) + ':' + d.startLine + '–' + d.endLine +
-    (d.derived ? ' · derived, not written in this file' : '') + '</div>');
-
-  if (d.source) parts.push('<pre>' + esc(d.source) + '</pre>');
-
+  const p = [];
+  p.push('<span class="close" id="closePanel">×</span>');
+  p.push('<h2><span class="tag">' + esc(d.kind) + '</span>' + esc(d.fqn) + '</h2>');
+  p.push('<div class="loc" title="' + esc(d.file) + '">' + esc(d.file) + ':' + d.startLine + '–' + d.endLine +
+    (d.derived ? ' · derived' : '') + '</div>');
+  if (d.source) p.push('<pre>' + esc(d.source) + '</pre>');
   if (d.members.length) {
-    parts.push('<h3>Members (' + d.members.length + ')</h3><ul>' + d.members.map((m) =>
+    p.push('<h3>Members (' + d.members.length + ')</h3><ul>' + d.members.map((m) =>
       '<li><a class="sym" data-id="' + m.id + '">' + esc(m.name) + '</a>' +
-      (m.derived ? ' <span class="tag derived">derived</span>' : '') +
       '<div class="meta">' + esc(m.signature ?? '') + '</div></li>').join('') + '</ul>');
   }
-  if (d.related.length) {
-    parts.push('<h3>Type relationships</h3>' + relList(d.related, { showEdge: true }));
-  }
-  parts.push('<h3>Callers (' + d.callers.length + ')</h3>' + relList(d.callers, { showEdge: true }));
-  parts.push('<h3>Calls out to (' + d.callees.length + ')</h3>' + relList(d.callees, { showEdge: true }));
-  if (d.wired.length) {
-    parts.push('<h3>Wired by framework</h3>' + relList(d.wired, { showEdge: true }));
-  }
-  parts.push('<h3>Blast radius</h3><div class="meta">' + d.blast.symbols +
-    ' symbol(s) across ' + d.blast.files + ' file(s) reach this.</div>');
+  if (d.related.length) p.push('<h3>Type relationships</h3>' + relList(d.related));
+  p.push('<h3>Callers (' + d.callers.length + ')</h3>' + relList(d.callers));
+  p.push('<h3>Calls out to (' + d.callees.length + ')</h3>' + relList(d.callees));
+  if (d.wired.length) p.push('<h3>Wired by framework</h3>' + relList(d.wired));
+  p.push('<h3>Blast radius</h3><div class="meta">' + d.blast.symbols + ' symbol(s) across ' +
+    d.blast.files + ' file(s) reach this.</div>');
 
-  const pane = $('detail');
-  pane.innerHTML = parts.join('');
-  // Reset after layout: assigning scrollTop while the new content is still
-  // being laid out leaves the pane wherever the previous symbol had it.
+  const pane = $('panel');
+  pane.innerHTML = p.join('');
+  pane.classList.add('on');
   pane.scrollTop = 0;
   requestAnimationFrame(() => { pane.scrollTop = 0; });
 }
 
+// ---- interaction ------------------------------------------------------------
+function nodeAt(sx, sy) {
+  for (let i = nodes.length - 1; i >= 0; i--) {
+    const n = nodes[i];
+    if (!n.shown) continue;
+    const p = toScreen(n);
+    if (Math.hypot(p.x - sx, p.y - sy) <= radiusOf(n) * view.k + 4) return n;
+  }
+  return null;
+}
+
+cv.addEventListener('mousedown', (e) => {
+  const n = nodeAt(e.offsetX, e.offsetY);
+  if (n) { dragNode = n; }
+  else { panning = { x: e.offsetX - view.x, y: e.offsetY - view.y }; cv.classList.add('dragging'); }
+});
+cv.addEventListener('mousemove', (e) => {
+  if (dragNode) {
+    dragNode.x = (e.offsetX - view.x) / view.k;
+    dragNode.y = (e.offsetY - view.y) / view.k;
+    dragNode.vx = dragNode.vy = 0;
+    kick(0.35);
+    return;
+  }
+  if (panning) { view.x = e.offsetX - panning.x; view.y = e.offsetY - panning.y; return; }
+  const n = nodeAt(e.offsetX, e.offsetY);
+  if (n !== hover) { hover = n; cv.title = n ? n.fqn + '\n' + n.file + ':' + n.line : ''; }
+});
+window.addEventListener('mouseup', () => { dragNode = null; panning = null; cv.classList.remove('dragging'); });
+
+cv.addEventListener('click', (e) => {
+  const n = nodeAt(e.offsetX, e.offsetY);
+  if (!n) return;
+  selected = n;
+  markAdjacent();
+  focusSymbol(n.id).catch(() => {});
+});
+
+cv.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  const factor = Math.exp(-e.deltaY * 0.0015);
+  const k = Math.min(3, Math.max(0.15, view.k * factor));
+  view.x = e.offsetX - ((e.offsetX - view.x) * k) / view.k;
+  view.y = e.offsetY - ((e.offsetY - view.y) * k) / view.k;
+  view.k = k;
+}, { passive: false });
+
+function fit() {
+  const vis = nodes.filter((n) => n.shown);
+  if (!vis.length) return;
+  const xs = vis.map((n) => n.x), ys = vis.map((n) => n.y);
+  const minX = Math.min(...xs), maxX = Math.max(...xs);
+  const minY = Math.min(...ys), maxY = Math.max(...ys);
+  const pad = 90;
+  const k = Math.min(
+    (cv.clientWidth - pad * 2) / Math.max(maxX - minX, 1),
+    (cv.clientHeight - pad * 2) / Math.max(maxY - minY, 1),
+    1.6,
+  );
+  view.k = Math.max(0.12, k);
+  view.x = cv.clientWidth / 2 - ((minX + maxX) / 2) * view.k;
+  view.y = cv.clientHeight / 2 - ((minY + maxY) / 2) * view.k;
+}
+
+$('zoomIn').onclick = () => { view.k = Math.min(3, view.k * 1.3); };
+$('zoomOut').onclick = () => { view.k = Math.max(0.15, view.k / 1.3); };
+$('fit').onclick = fit;
+$('png').onclick = () => {
+  const a = document.createElement('a');
+  a.download = 'codelens-graph.png';
+  a.href = cv.toDataURL('image/png');
+  a.click();
+};
+
+document.addEventListener('click', (e) => {
+  if (e.target.id === 'closePanel') { $('panel').classList.remove('on'); return; }
+  const link = e.target.closest('a.sym');
+  if (link) { e.preventDefault(); focusSymbol(Number(link.dataset.id)).catch(() => {}); }
+});
+
+// ---- search -----------------------------------------------------------------
+let hits = [];
+let cursor = -1;
 let timer;
+
 $('q').addEventListener('input', (e) => {
   clearTimeout(timer);
   const q = e.target.value.trim();
-  if (!q) return renderResults([]);
+  if (!q) { $('suggest').classList.remove('on'); return; }
   timer = setTimeout(async () => {
-    try { renderResults(await api('/api/search', { q })); }
-    catch (err) { $('results').innerHTML = '<div class="empty">' + esc(err.message) + '</div>'; }
+    hits = await api('/api/search', { q, limit: 20 });
+    cursor = -1;
+    $('suggest').innerHTML = hits.length
+      ? hits.map((h, i) =>
+          '<div class="sg" data-i="' + i + '"><b>' + esc(h.name) + '</b>' +
+          '<i>' + esc(h.kind) + ' · ' + esc(shortPath(h.file)) + ':' + h.line + '</i></div>').join('')
+      : '<div class="sg"><i>No symbol matches that.</i></div>';
+    $('suggest').classList.add('on');
   }, 110);
 });
 
-function select(i) {
-  if (!rows.length) return;
-  cursor = Math.max(0, Math.min(rows.length - 1, i));
-  for (const el of document.querySelectorAll('.row')) {
-    el.setAttribute('aria-selected', Number(el.dataset.i) === cursor);
-  }
-  const active = document.querySelector('.row[aria-selected="true"]');
-  if (active) active.scrollIntoView({ block: 'nearest' });
-  openSymbol(rows[cursor].id).catch(() => {});
+$('suggest').addEventListener('click', (e) => {
+  const el = e.target.closest('.sg');
+  if (!el || el.dataset.i === undefined) return;
+  pick(Number(el.dataset.i));
+});
+
+function pick(i) {
+  const h = hits[i];
+  if (!h) return;
+  $('suggest').classList.remove('on');
+  $('q').value = h.name;
+  focusSymbol(h.id, { reset: true }).catch(() => {});
 }
 
-document.addEventListener('click', (e) => {
-  const row = e.target.closest('.row');
-  if (row) return select(Number(row.dataset.i));
-  const link = e.target.closest('a.sym');
-  if (link) { e.preventDefault(); openSymbol(Number(link.dataset.id)).catch(() => {}); }
+$('q').addEventListener('keydown', (e) => {
+  if (!hits.length) return;
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    cursor = Math.max(0, Math.min(hits.length - 1, cursor + (e.key === 'ArrowDown' ? 1 : -1)));
+    for (const el of document.querySelectorAll('.sg')) {
+      el.setAttribute('aria-selected', Number(el.dataset.i) === cursor);
+    }
+  }
+  if (e.key === 'Enter') { e.preventDefault(); pick(cursor === -1 ? 0 : cursor); }
+  if (e.key === 'Escape') $('suggest').classList.remove('on');
 });
 
 document.addEventListener('keydown', (e) => {
-  if (e.key === '/' && document.activeElement !== $('q')) { e.preventDefault(); $('q').focus(); return; }
-  if (e.key === 'ArrowDown') { e.preventDefault(); select(cursor + 1); }
-  if (e.key === 'ArrowUp') { e.preventDefault(); select(cursor - 1); }
+  if (e.key === '/' && document.activeElement !== $('q')) { e.preventDefault(); $('q').focus(); }
+});
+
+// ---- filter chips -----------------------------------------------------------
+$('filters').innerHTML = KINDS.map(([key, label]) =>
+  '<span class="chip" data-k="' + key + '" aria-pressed="true">' +
+  '<span class="dot" style="background:' + css(COLORS[KINDS.find((x) => x[0] === key)[2][0]]) + '"></span>' +
+  esc(label) + '</span>').join('');
+
+$('filters').addEventListener('click', (e) => {
+  const chip = e.target.closest('.chip');
+  if (!chip) return;
+  const key = chip.dataset.k;
+  if (enabled.has(key)) enabled.delete(key); else enabled.add(key);
+  chip.setAttribute('aria-pressed', enabled.has(key));
+  applyFilters();
+  kick(0.4);
 });
 
 api('/api/overview').then((o) => {
   $('root').textContent = o.root.split('/').pop();
-  $('stats').textContent =
-    o.symbols.toLocaleString() + ' symbols · ' + o.edges.toLocaleString() + ' edges · ' +
-    o.resolution + '% resolved';
-  $('stats').title =
-    o.calls.toLocaleString() + ' call sites: ' + o.linked.toLocaleString() + ' linked, ' +
-    o.library.toLocaleString() + ' into libraries, ' + o.missed.toLocaleString() + ' unresolved';
+  $('stats').textContent = o.symbols.toLocaleString() + ' symbols · ' + o.resolution + '% resolved';
 }).catch(() => {});
 
+applyFilters();
 $('q').focus();
+step();
 </script>
 </body>
 </html>

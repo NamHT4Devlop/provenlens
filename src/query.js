@@ -277,3 +277,120 @@ export function affectedBy(db, relPaths, { maxDepth = 4 } = {}) {
     missingFiles,
   };
 }
+
+/** Edge kinds grouped for display: how a node relates to its neighbours. */
+export const EDGE_GROUPS = {
+  calls: 'calls',
+  instantiates: 'instantiates',
+  extends: 'inherits',
+  implements: 'implements',
+  includes: 'includes',
+  'implemented-by': 'implemented by',
+  'routes-to': 'routes to',
+  'sends-to': 'sends to',
+  'touches-table': 'touches table',
+  binds: 'binds',
+  declares: 'declares',
+};
+
+function graphNode(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    fqn: row.fqn ?? row.name,
+    kind: row.kind,
+    file: row.file_path,
+    line: row.start_line,
+    lang: row.lang,
+    derived: (row.modifiers ?? '').includes('generated'),
+    isTest: isTestPath(row.file_path),
+  };
+}
+
+/**
+ * The neighbourhood around a symbol, for drawing.
+ *
+ * Breadth-first out to `depth`, capped: a hub in a large codebase has hundreds
+ * of neighbours and a picture of all of them says nothing. The cap is reported
+ * so the view can say what it left out rather than quietly truncating.
+ */
+export function graphAround(db, seedIds, { depth = 1, maxNodes = 160 } = {}) {
+  const seeds = (Array.isArray(seedIds) ? seedIds : [seedIds]).filter(Boolean);
+  if (!seeds.length) return { nodes: [], edges: [], truncated: false };
+
+  const nodes = new Map();
+  const edges = new Map();
+  let truncated = false;
+
+  const neighbours = db.prepare(
+    `SELECT ${SYMBOL_COLS}, e.kind AS edge_kind, e.via, e.confidence,
+            e.from_symbol_id AS src, e.to_symbol_id AS dst
+       FROM edges e
+       JOIN symbols s ON s.id = CASE WHEN e.from_symbol_id = ? THEN e.to_symbol_id
+                                     ELSE e.from_symbol_id END
+       JOIN files f   ON f.id = s.file_id
+      WHERE e.from_symbol_id = ? OR e.to_symbol_id = ?
+      ORDER BY e.confidence DESC`,
+  );
+
+  const membersOfType = db.prepare(
+    `SELECT ${SYMBOL_COLS} FROM symbols s JOIN files f ON f.id = s.file_id
+      WHERE s.container_fqn = ? AND s.kind IN ('method','constructor','class_method','field')
+      ORDER BY s.start_line`,
+  );
+
+  for (const id of seeds) {
+    const seed = getSymbol(db, id);
+    if (!seed) continue;
+    nodes.set(seed.id, { ...graphNode(seed), seed: true });
+
+    // A type on its own has almost no edges -- the calls live on its members.
+    // Pulling them in is what makes the picture of a class worth looking at.
+    if (['class', 'interface', 'module', 'enum', 'record'].includes(seed.kind) && seed.fqn) {
+      for (const member of membersOfType.all(seed.fqn)) {
+        if (nodes.size >= maxNodes) { truncated = true; break; }
+        if (!nodes.has(member.id)) nodes.set(member.id, graphNode(member));
+        edges.set(`${seed.id}|${member.id}|declares`, {
+          from: seed.id,
+          to: member.id,
+          kind: 'declares',
+          label: 'declares',
+          via: 'declaration',
+          confidence: 1,
+        });
+      }
+    }
+  }
+
+  let frontier = [...nodes.keys()];
+  for (let level = 0; level < depth && frontier.length; level++) {
+    const next = [];
+    for (const id of frontier) {
+      for (const row of neighbours.all(id, id, id)) {
+        const key = `${row.src}|${row.dst}|${row.edge_kind}`;
+        if (!edges.has(key)) {
+          edges.set(key, {
+            from: row.src,
+            to: row.dst,
+            kind: row.edge_kind,
+            label: EDGE_GROUPS[row.edge_kind] ?? row.edge_kind,
+            via: row.via,
+            confidence: row.confidence,
+          });
+        }
+        if (nodes.has(row.id)) continue;
+        if (nodes.size >= maxNodes) {
+          truncated = true;
+          continue;
+        }
+        nodes.set(row.id, graphNode(row));
+        next.push(row.id);
+      }
+    }
+    frontier = next;
+  }
+
+  // An edge whose other end was cut by the cap would draw into nothing.
+  const kept = [...edges.values()].filter((e) => nodes.has(e.from) && nodes.has(e.to));
+  return { nodes: [...nodes.values()], edges: kept, truncated };
+}

@@ -22,6 +22,7 @@ import {
   impactOf,
   projectStats,
   isTestPath,
+  graphAround,
 } from './query.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -169,6 +170,16 @@ export async function startServer(pathArg, { port = 7777, open: openBrowser = fa
       if (url.pathname === '/api/symbol') {
         const detail = symbolDetail(db, root, Number(url.searchParams.get('id')));
         return detail ? send(200, detail) : send(404, { error: 'no such symbol' });
+      }
+
+      if (url.pathname === '/api/graph') {
+        const ids = (url.searchParams.get('ids') ?? '')
+          .split(',')
+          .map(Number)
+          .filter((n) => Number.isFinite(n) && n > 0);
+        const depth = Math.min(Number(url.searchParams.get('depth') ?? 1), 3);
+        const maxNodes = Math.min(Number(url.searchParams.get('max') ?? 160), 400);
+        return send(200, graphAround(db, ids, { depth, maxNodes }));
       }
 
       if (url.pathname === '/api/impact') {
