@@ -103,13 +103,29 @@ async function callTool(name, args, defaultRoot) {
     case 'codelens_status': {
       const { root, db } = await useProject(args.projectPath, defaultRoot);
       const s = projectStats(db);
-      const pct = s.refs ? (((s.refs - s.unresolved) / s.refs) * 100).toFixed(1) : '0.0';
-      return [
+      const external = db.prepare('SELECT COUNT(*) AS n FROM unresolved WHERE external = 1').get().n;
+      const linked = s.refs - s.unresolved;
+      const inRepo = s.refs - external;
+      const pct = inRepo ? ((linked / inRepo) * 100).toFixed(1) : '0.0';
+      const bindings = db
+        .prepare('SELECT plugin, COUNT(*) AS n FROM bindings GROUP BY plugin')
+        .all();
+
+      const lines = [
         `root: ${root}`,
         `files: ${s.files}, symbols: ${s.symbols}, types: ${s.types}, edges: ${s.edges}`,
-        `call sites: ${s.refs}, resolved: ${pct}%`,
+        `calls: ${s.refs} = ${linked} linked + ${external} into libraries + ` +
+          `${s.unresolved - external} unresolved`,
+        `resolution: ${pct}% of the calls that could target this repo ` +
+          `(library calls are excluded: they cannot be linked)`,
         `by language: ${s.byLang.map((l) => `${l.lang}=${l.n}`).join(', ')}`,
-      ].join('\n');
+      ];
+      if (bindings.length) {
+        lines.push(
+          `framework bindings: ${bindings.map((b) => `${b.plugin}=${b.n}`).join(', ')}`,
+        );
+      }
+      return lines.join('\n');
     }
     default:
       throw new Error(`Unknown tool: ${name}`);
