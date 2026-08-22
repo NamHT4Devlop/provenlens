@@ -81,6 +81,24 @@ describe('mybatis', () => {
   test('wires every statement in the mapper', () => {
     assert.equal(stats.bindings.mybatis.wired, 3);
   });
+
+  test('does not take over the FQN of the method it implements', () => {
+    // Both symbols sharing one FQN made every mapper method ambiguous, so
+    // `codelens node OrderMapper#findById` could not resolve at all.
+    const fqns = db
+      .prepare("SELECT s.fqn FROM symbols s WHERE s.name = 'findById' ORDER BY s.fqn")
+      .all()
+      .map((r) => r.fqn);
+    assert.deepEqual(fqns, [
+      'com.shop.mapper.OrderMapper#findById',
+      'sql:com.shop.mapper.OrderMapper#findById',
+    ]);
+  });
+
+  test('resolves the written method ahead of the derived statement', () => {
+    const top = one('OrderMapper#findById');
+    assert.equal(top.lang, 'java', 'the Java method is what the name refers to');
+  });
 });
 
 describe('camel', () => {
@@ -138,9 +156,10 @@ describe('flyway', () => {
   });
 
   test('links a migration to the queries that read the table', () => {
-    const wired = wiredBy('flyway');
+    // The SQL statement is what reads the table, not the Java method that
+    // declares it, so the edge starts from the statement symbol.
     assert.ok(
-      wired.some((e) => e.startsWith('com.shop.mapper.OrderMapper#findById ->')),
+      wiredBy('flyway').some((e) => e.startsWith('sql:com.shop.mapper.OrderMapper#findById ->')),
       'a query selecting from orders must reach the migration that created it',
     );
   });

@@ -8,7 +8,7 @@ import { watch } from 'node:fs';
 import { platform } from 'node:os';
 import { langForPath } from './lang.js';
 import { indexProject } from './indexer.js';
-import { INDEX_DIR } from './project.js';
+import { buildIgnoreFilter } from './project.js';
 
 const DEBOUNCE_MS = 400;
 const POLL_MS = 5000;
@@ -44,12 +44,13 @@ export function watchProject(db, root, { onSync } = {}) {
   }
 
   const recursive = platform() === 'darwin' || platform() === 'win32';
+  const isIgnored = buildIgnoreFilter(root);
 
   if (recursive) {
     const watcher = watch(root, { recursive: true }, (_event, filename) => {
       if (!filename) return;
       const rel = String(filename).split('\\').join('/');
-      if (rel.startsWith(`${INDEX_DIR}/`) || rel.includes('/node_modules/')) return;
+      if (isIgnored(rel)) return;
       if (!langForPath(rel)) return;
       schedule(rel);
     });

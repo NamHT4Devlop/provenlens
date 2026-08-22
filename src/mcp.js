@@ -9,7 +9,7 @@ import { openProject } from './db.js';
 import { findProjectRoot, dbPathFor } from './project.js';
 import { indexProject } from './indexer.js';
 import { watchProject } from './watch.js';
-import { formatExplore, formatImpact } from './format.js';
+import { formatExplore, formatImpact, formatAffected } from './format.js';
 import { searchSymbols, projectStats } from './query.js';
 
 const projects = new Map(); // root -> { db, watcher }
@@ -79,6 +79,26 @@ const TOOLS = [
     },
   },
   {
+    name: 'codelens_affected',
+    description:
+      'Given the files a change touches, return the symbols in them, everything that ' +
+      'transitively reaches those symbols, and the existing tests that already cover them. ' +
+      'Use after editing, or on the output of `git diff --name-only`, to decide what to re-test.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        files: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Repo-relative paths of the changed files.',
+        },
+        projectPath: { type: 'string', description: 'Path inside the project to query.' },
+        depth: { type: 'number', description: 'How far to follow callers (default 4).' },
+      },
+      required: ['files'],
+    },
+  },
+  {
     name: 'codelens_status',
     description: 'Index coverage: files, symbols, edges and how many call sites resolved.',
     inputSchema: {
@@ -99,6 +119,15 @@ async function callTool(name, args, defaultRoot) {
       const matches = searchSymbols(db, args.symbol, { limit: 5 });
       if (!matches.length) return `No symbol matches "${args.symbol}".`;
       return formatImpact(db, matches[0].id);
+    }
+    case 'codelens_affected': {
+      const { root, db } = await useProject(args.projectPath, defaultRoot);
+      const files = (args.files ?? []).map((f) => {
+        const abs = resolve(f);
+        return abs.startsWith(`${root}/`) ? abs.slice(root.length + 1) : f;
+      });
+      if (!files.length) return 'No files given.';
+      return formatAffected(db, files, { maxDepth: args.depth ?? 4 });
     }
     case 'codelens_status': {
       const { root, db } = await useProject(args.projectPath, defaultRoot);

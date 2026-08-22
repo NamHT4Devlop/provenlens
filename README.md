@@ -100,9 +100,23 @@ DSL Camel — vốn không có đồ thị nội bộ để tìm. Đo bằng `./
 | `codelens query <tên>` | Tìm symbol theo tên |
 | `codelens explore <tên>` | Source + call path + binding + blast radius, một lần |
 | `codelens node <tên>` | Một symbol đầy đủ + caller/callee |
+| `codelens callers <tên>` / `callees <tên>` | Một chiều quan hệ |
 | `codelens impact <tên>` | Blast radius |
+| `codelens affected [files...]` | File đã đổi chạm tới cái gì + **test nào đã phủ** |
 | `codelens install [target]` | Đăng ký MCP vào agent (`--dry-run` xem trước) |
+| `codelens uninit [path]` | Xoá index khỏi project |
 | `codelens mcp [path]` | MCP server qua stdio |
+
+`query`, `callers`, `callees`, `impact`, `affected` đều nhận `--json` để nối vào tool khác.
+
+### Luồng dùng hàng ngày
+
+```bash
+git diff --name-only | codelens affected
+```
+
+Trả về: symbol nào đã đổi, cái gì chạm tới chúng, và **những test sẵn có đang phủ** — tức là
+danh sách test cần chạy lại. Trên spring-petclinic, sửa `Owner.java` cho ra 18 test liên quan.
 
 ## Gắn vào Claude Code
 
@@ -116,8 +130,12 @@ In thay đổi trước khi ghi, luôn giữ `.bak`. Hoặc thủ công:
 claude mcp add codelens -- node /Users/MAC/AI-TOOL/codelens/bin/codelens.js mcp
 ```
 
-Ba tool: `codelens_explore`, `codelens_impact`, `codelens_status`. Mỗi tool nhận `projectPath` nên
-**một server dùng chung mọi repo**. Index tự cập nhật bằng file watcher.
+Bốn tool: `codelens_explore`, `codelens_impact`, `codelens_affected`, `codelens_status`. Mỗi tool
+nhận `projectPath` nên **một server dùng chung mọi repo**. Index tự cập nhật bằng file watcher.
+
+`codelens install` chỉ tự nhận diện agent đã có sẵn file cấu hình. Bản project-scope
+(`.mcp.json` trong thư mục hiện tại) **không bao giờ tự động** — phải gọi tên rõ ràng, để không
+vô tình thả file cấu hình vào repo team.
 
 ## Kiến trúc
 
@@ -176,7 +194,7 @@ Index là cache. Tăng `SCHEMA_VERSION` trong `src/db.js` là index cũ bị xo�
 npm test
 ```
 
-70 test trên 5 bộ fixture:
+84 test trên 5 bộ fixture cộng một bộ hồi quy:
 
 | Fixture | Mô phỏng | Chuỗi mà grep không lần ra |
 |---|---|---|
@@ -185,6 +203,10 @@ npm test
 | `ts` | TS + JS: barrel file, tsconfig alias, DI qua constructor | import qua `export *` rồi mới tới class thật |
 | `bindings` | MyBatis + Camel + SQS + Flyway | Java producer → Ruby Shoryuken worker qua tên queue |
 | toàn bộ `__fixtures__` | Một repo chứa cả 4 ngôn ngữ | Resolver không xoá đè đồ thị của nhau |
+
+`test/regressions.test.js` khoá lại từng bug đã sửa: ký tự đại diện LIKE, thứ tự chấm điểm,
+gộp cạnh trùng, kế toán file khi sync, luật ignore của watcher, nhận diện test, và file rỗng /
+sai cú pháp / có tiếng Việt + emoji.
 
 Test khẳng định fixture Java và Ruby **không còn miss nào**; phần còn lại đều được quy về đúng thư
 viện. Nếu resolver sau này hụt một call nội bộ, test đỏ ngay.

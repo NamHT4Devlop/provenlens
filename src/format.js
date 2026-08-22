@@ -1,4 +1,5 @@
 import {
+  affectedBy,
   searchSymbols,
   symbolSource,
   callersOf,
@@ -19,6 +20,16 @@ function confidenceNote(e) {
   if (e.confidence >= 1) return e.via === 'declaration' ? '' : ' [direct]';
   return ` [${e.via}, confidence ${e.confidence.toFixed(2)}]`;
 }
+
+/** `:7, 8, 9` -- one caller calling three times is still one caller. */
+function lineNote(e) {
+  if (!e.lines?.length) return e.start_line ? `:${e.start_line}` : '';
+  return `:${e.lines.join(', ')}`;
+}
+
+/** `new Foo()` is a dependency too, so instantiation shows alongside calls. */
+const CALL_KINDS = ['calls', 'instantiates'];
+const kindNote = (e) => (e.edge_kind === 'instantiates' ? ' (instantiates)' : '');
 
 /** Symbols a plugin invented (SQL statements, routes, migrations) say so. */
 function originNote(s) {
@@ -104,20 +115,25 @@ export function formatExplore(db, root, query, { maxMatches = 3, maxLines = 120 
       }
     }
 
-    const callers = callersOf(db, sym.id).filter((c) => c.edge_kind === 'calls');
+    const callers = callersOf(db, sym.id).filter((c) => CALL_KINDS.includes(c.edge_kind));
     if (callers.length) {
       out.push(`### Callers (${callers.length})`);
       for (const c of callers) {
-        out.push(`- ${c.fqn} — ${c.file_path}:${c.call_line ?? c.start_line}${confidenceNote(c)}`);
+        out.push(
+          `- ${c.fqn} — ${c.file_path}${lineNote(c)}${kindNote(c)}${confidenceNote(c)}`,
+        );
       }
       out.push('');
     }
 
-    const callees = calleesOf(db, sym.id).filter((c) => c.edge_kind === 'calls');
+    const callees = calleesOf(db, sym.id).filter((c) => CALL_KINDS.includes(c.edge_kind));
     if (callees.length) {
       out.push(`### Calls out to (${callees.length})`);
       for (const c of callees) {
-        out.push(`- ${c.fqn} — ${c.file_path}:${c.start_line}${confidenceNote(c)} (from L${c.call_line})`);
+        const from = c.lines?.length ? ` (from L${c.lines.join(', ')})` : '';
+        out.push(
+          `- ${c.fqn} — ${c.file_path}:${c.start_line}${kindNote(c)}${confidenceNote(c)}${from}`,
+        );
       }
       out.push('');
     }
@@ -162,9 +178,104 @@ export function formatNode(db, root, symbolId, { maxLines = 400 } = {}) {
   const callees = calleesOf(db, sym.id);
 
   out.push(`### Callers (${callers.length})`);
-  for (const c of callers) out.push(`- ${c.fqn} — ${loc(c)}${confidenceNote(c)}`);
+  for (const c of callers) out.push(`- ${c.fqn} — ${loc(c)}${kindNote(c)}${confidenceNote(c)}`);
   out.push('', `### Callees (${callees.length})`);
-  for (const c of callees) out.push(`- ${c.fqn} — ${loc(c)}${confidenceNote(c)}`);
+  for (const c of callees) out.push(`- ${c.fqn} — ${loc(c)}${kindNote(c)}${confidenceNote(c)}`);
+
+  return out.join('\n');
+}
+
+/**
+ * One side of a symbol's relationships. Replaces slicing formatNode's output on
+ * a heading string, which broke as soon as a heading was reworded.
+ */
+export function formatRelations(db, symbolId, direction) {
+  const sym = getSymbol(db, symbolId);
+  if (!sym) return `No symbol with id ${symbolId}.`;
+
+  const rows = direction === 'callers' ? callersOf(db, sym.id) : calleesOf(db, sym.id);
+  const calls = rows.filter((r) => CALL_KINDS.includes(r.edge_kind));
+  const other = rows.filter((r) => !CALL_KINDS.includes(r.edge_kind));
+
+  const name = sym.fqn ?? sym.name;
+  const out = [
+    direction === 'callers' ? `# Callers of ${name}` : `# What ${name} calls`,
+    loc(sym),
+    '',
+  ];
+
+  if (!calls.length && !other.length) {
+    out.push(
+      direction === 'callers'
+        ? 'Nothing calls this symbol — it is a leaf or an entry point.'
+        : 'This symbol calls nothing that is indexed.',
+    );
+    return out.join('\n');
+  }
+
+  if (calls.length) {
+    out.push(direction === 'callers' ? `### Callers (${calls.length})` : `### Calls out to (${calls.length})`);
+    for (const c of calls) {
+      const where = direction === 'callers' ? lineNote(c) : `:${c.start_line}`;
+      out.push(`- ${c.fqn} — ${c.file_path}${where}${kindNote(c)}${confidenceNote(c)}`);
+    }
+    out.push('');
+  }
+
+  if (other.length) {
+    out.push(`### Other relationships (${other.length})`);
+    for (const c of other) {
+      out.push(`- ${c.edge_kind}: ${c.fqn} — ${loc(c)}${confidenceNote(c)}`);
+    }
+  }
+
+  return out.join('\n');
+}
+
+/**
+ * Answers the question a diff raises: I touched these files, what does that
+ * reach and which tests already exercise it.
+ */
+export function formatAffected(db, relPaths, { maxDepth = 4 } = {}) {
+  const { changed, reached, tests, missingFiles } = affectedBy(db, relPaths, { maxDepth });
+
+  const out = [`# Affected by ${relPaths.length} changed file(s)`, ''];
+
+  if (missingFiles.length) {
+    out.push(
+      `Not in the index (${missingFiles.length}): ${missingFiles.slice(0, 10).join(', ')}` +
+        (missingFiles.length > 10 ? ` and ${missingFiles.length - 10} more` : ''),
+      '',
+    );
+  }
+
+  if (!changed.length) {
+    out.push('No indexed symbols in those files.');
+    return out.join('\n');
+  }
+
+  out.push(`### Changed symbols (${changed.length})`);
+  for (const s of changed) out.push(`- ${s.kind} ${s.fqn ?? s.name} — ${loc(s)}`);
+  out.push('');
+
+  const byFile = new Map();
+  for (const s of reached) {
+    if (!byFile.has(s.file_path)) byFile.set(s.file_path, []);
+    byFile.get(s.file_path).push(s);
+  }
+
+  out.push(`### Reached (${reached.length} symbol(s) in ${byFile.size} file(s))`);
+  if (!reached.length) out.push('Nothing outside the changed files reaches this.');
+  for (const [file, symbols] of [...byFile.entries()].sort()) {
+    out.push(`- ${file} — ${symbols.map((s) => s.name).join(', ')}`);
+  }
+  out.push('');
+
+  out.push(`### Tests that already cover it (${tests.length})`);
+  if (!tests.length) {
+    out.push('None found — a change here is not covered by any test this index can see.');
+  }
+  for (const t of tests) out.push(`- ${t.fqn ?? t.name} — ${loc(t)}`);
 
   return out.join('\n');
 }

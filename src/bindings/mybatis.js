@@ -45,7 +45,9 @@ export default {
         const symbolId = ctx.addSymbol({
           fileId: file.id,
           name: id,
-          fqn: key,
+          // Prefixed: the Java method already owns `namespace#id`, and two
+          // symbols sharing an FQN makes both unaddressable by name.
+          fqn: `sql:${key}`,
           kind: 'sql-statement',
           containerFqn: namespace,
           signature: `<${verb.toLowerCase()} id="${id}">`,

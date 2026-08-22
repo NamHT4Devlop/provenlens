@@ -52,6 +52,22 @@ function buildIgnore(root) {
 }
 
 /**
+ * A predicate matching what discovery skips: .gitignore plus the directories
+ * that are never source. The watcher uses the same one, so a build or an
+ * `npm install` cannot trigger a reindex that discovery would ignore anyway.
+ */
+export function buildIgnoreFilter(root) {
+  const ig = buildIgnore(root);
+  return (relPath) => {
+    if (!relPath) return true;
+    const clean = relPath.split(sep).join('/');
+    if (ig.ignores(clean)) return true;
+    // ignore() only matches a directory rule against a trailing slash.
+    return clean.includes('/') && ig.ignores(`${clean.split('/')[0]}/`);
+  };
+}
+
+/**
  * Walks the tree once, honouring .gitignore, and returns the repo-relative
  * paths `accept` says yes to. Binding plugins use it for XML and SQL, which
  * have no grammar but still wire the system together.

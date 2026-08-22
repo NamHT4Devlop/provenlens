@@ -78,9 +78,16 @@ export function applyInstall(targetName) {
   return plan;
 }
 
-/** Targets whose config file already exists, i.e. agents the user actually has. */
+/**
+ * Targets to configure when none is named: only agents whose config file is
+ * already there.
+ *
+ * A project-scoped target is deliberately never auto-detected. Its path is
+ * whatever directory the command runs in, so detecting it would drop a .mcp.json
+ * into an unrelated repository. Ask for it by name to get it.
+ */
 export function detectTargets() {
   return Object.entries(TARGETS)
-    .filter(([, t]) => existsSync(t.file) || existsSync(dirname(t.file)))
+    .filter(([name, t]) => !name.endsWith('-project') && existsSync(t.file))
     .map(([name]) => name);
 }

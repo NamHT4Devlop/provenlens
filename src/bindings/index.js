@@ -24,12 +24,20 @@ import flyway from './flyway.js';
 
 export const PLUGINS = [mybatis, camel, sqs, flyway];
 
+/**
+ * Languages the binding plugins own. They have no grammar, so the normal
+ * discovery pass never sees them; without this the indexer would count them as
+ * deleted on every run and report a removal that did not happen.
+ */
+export const BINDING_LANGS = ['xml', 'sql'];
+
 export function runBindings(db, root) {
   db.exec("DELETE FROM edges WHERE via LIKE 'binding:%'");
   db.exec('DELETE FROM bindings');
   // Files a plugin owns are rebuilt from scratch each run, so a deleted XML
   // mapper cannot leave a stale statement behind.
-  db.exec("DELETE FROM files WHERE lang IN ('xml', 'sql')");
+  const langList = BINDING_LANGS.map((l) => `'${l}'`).join(', ');
+  db.exec(`DELETE FROM files WHERE lang IN (${langList})`);
 
   const wanted = PLUGINS.filter((p) => p.accepts);
   const extraPaths = wanted.length

@@ -7,7 +7,7 @@ import { resolveJava } from './resolve/java.js';
 import { resolveRuby } from './resolve/ruby.js';
 import { resolveTypeScript } from './resolve/typescript.js';
 import { discoverFiles } from './project.js';
-import { runBindings } from './bindings/index.js';
+import { runBindings, BINDING_LANGS } from './bindings/index.js';
 import { setMeta } from './db.js';
 
 function sha1(text) {
@@ -31,8 +31,13 @@ const RESOLVERS = [
 export async function indexProject(db, root, { full = false, onProgress } = {}) {
   const paths = discoverFiles(root);
 
+  // Files owned by the binding plugins are rebuilt by them, not discovered
+  // here, so they must stay out of the change/removal accounting.
+  const bindingLangs = BINDING_LANGS.map(() => '?').join(', ');
   const existing = new Map();
-  for (const row of db.prepare('SELECT id, path, hash FROM files').all()) {
+  for (const row of db
+    .prepare(`SELECT id, path, hash FROM files WHERE lang NOT IN (${bindingLangs})`)
+    .all(...BINDING_LANGS)) {
     existing.set(row.path, row);
   }
 

@@ -1,15 +1,60 @@
 #!/usr/bin/env -S node --no-warnings
 import { Command } from 'commander';
-import { resolve } from 'node:path';
-import { existsSync } from 'node:fs';
+import { resolve, join } from 'node:path';
+import { existsSync, rmSync } from 'node:fs';
 import { openDb, openProject, getMeta } from '../src/db.js';
 import { findProjectRoot, dbPathFor, INDEX_DIR } from '../src/project.js';
 import { indexProject } from '../src/indexer.js';
-import { searchSymbols, projectStats } from '../src/query.js';
-import { formatExplore, formatNode, formatImpact } from '../src/format.js';
+import {
+  searchSymbols,
+  projectStats,
+  callersOf,
+  calleesOf,
+  impactOf,
+  affectedBy,
+} from '../src/query.js';
+import {
+  formatExplore,
+  formatNode,
+  formatImpact,
+  formatRelations,
+  formatAffected,
+} from '../src/format.js';
 import { IMPLEMENTED_LANGUAGES } from '../src/extract/index.js';
 
 const program = new Command();
+
+/** Machine-readable output, so codelens can feed other tools. */
+function emitJson(value) {
+  console.log(JSON.stringify(value, null, 2));
+}
+
+/** The fields worth handing to another program; the rest is internal. */
+function publicSymbol(s) {
+  return {
+    id: s.id,
+    name: s.name,
+    fqn: s.fqn,
+    kind: s.kind,
+    file: s.file_path,
+    line: s.start_line,
+    endLine: s.end_line,
+    lang: s.lang,
+    signature: s.signature,
+    ...(s.edge_kind ? { edge: s.edge_kind, via: s.via, confidence: s.confidence } : {}),
+    ...(s.lines?.length ? { callLines: s.lines } : {}),
+  };
+}
+
+function readStdin() {
+  return new Promise((done) => {
+    if (process.stdin.isTTY) return done('');
+    let buffer = '';
+    process.stdin.setEncoding('utf8');
+    process.stdin.on('data', (chunk) => (buffer += chunk));
+    process.stdin.on('end', () => done(buffer));
+  });
+}
 
 function die(msg) {
   console.error(`codelens: ${msg}`);
@@ -176,10 +221,12 @@ program
   .command('query')
   .argument('<search...>', 'symbol name or fragment')
   .option('-l, --limit <n>', 'max results', '20')
+  .option('--json', 'machine-readable output')
   .description('find symbols by name')
   .action((search, opts) => {
     const { db } = useProject();
     const results = searchSymbols(db, search.join(' '), { limit: Number(opts.limit) });
+    if (opts.json) return emitJson(results.map(publicSymbol));
     if (!results.length) return console.log('no matches');
     for (const r of results) {
       console.log(
@@ -211,20 +258,91 @@ program
 program
   .command('callers')
   .argument('<name>', 'symbol name')
+  .option('--json', 'machine-readable output')
   .description('what calls this symbol')
-  .action((name) => {
-    const { root, db } = useProject();
-    const sym = pickSymbol(db, name);
-    console.log(formatNode(db, root, sym.id, { maxLines: 0 }).split('### Callees')[0]);
+  .action((name, opts) => {
+    const { db } = useProject();
+    const id = pickSymbol(db, name).id;
+    if (opts.json) return emitJson(callersOf(db, id).map(publicSymbol));
+    console.log(formatRelations(db, id, 'callers'));
+  });
+
+program
+  .command('callees')
+  .argument('<name>', 'symbol name')
+  .option('--json', 'machine-readable output')
+  .description('what this symbol calls')
+  .action((name, opts) => {
+    const { db } = useProject();
+    const id = pickSymbol(db, name).id;
+    if (opts.json) return emitJson(calleesOf(db, id).map(publicSymbol));
+    console.log(formatRelations(db, id, 'callees'));
   });
 
 program
   .command('impact')
   .argument('<name>', 'symbol name')
+  .option('--json', 'machine-readable output')
   .description('blast radius: everything that transitively reaches this symbol')
-  .action((name) => {
+  .action((name, opts) => {
     const { db } = useProject();
-    console.log(formatImpact(db, pickSymbol(db, name).id));
+    const id = pickSymbol(db, name).id;
+    if (opts.json) {
+      const { levels, totalSymbols, totalFiles } = impactOf(db, id);
+      return emitJson({
+        symbol: publicSymbol(pickSymbol(db, name)),
+        totalSymbols,
+        totalFiles,
+        levels: levels.map((level) => (level ?? []).map(publicSymbol)),
+      });
+    }
+    console.log(formatImpact(db, id));
+  });
+
+program
+  .command('affected')
+  .argument('[files...]', 'changed files; reads stdin when omitted')
+  .option('-d, --depth <n>', 'how far to follow callers', '4')
+  .option('--json', 'machine-readable output')
+  .description('what a set of changed files reaches, and which tests cover it')
+  .action(async (files, opts) => {
+    const { root, db } = useProject();
+    let paths = files;
+    if (!paths.length) {
+      // Built for `git diff --name-only | codelens affected`.
+      paths = (await readStdin())
+        .split('\n')
+        .map((l) => l.trim())
+        .filter(Boolean);
+    }
+    if (!paths.length) die('no files given. Try: git diff --name-only | codelens affected');
+
+    // Accept absolute or cwd-relative paths and normalise to repo-relative.
+    const normalised = paths.map((p) => {
+      const abs = resolve(p);
+      return abs.startsWith(`${root}/`) ? abs.slice(root.length + 1) : p;
+    });
+    if (opts.json) {
+      const r = affectedBy(db, normalised, { maxDepth: Number(opts.depth) });
+      return emitJson({
+        changed: r.changed.map(publicSymbol),
+        reached: r.reached.map(publicSymbol),
+        tests: r.tests.map(publicSymbol),
+        missingFiles: r.missingFiles,
+      });
+    }
+    console.log(formatAffected(db, normalised, { maxDepth: Number(opts.depth) }));
+  });
+
+program
+  .command('uninit')
+  .argument('[path]', 'project directory')
+  .description('remove the index from a project')
+  .action((path) => {
+    const root = findProjectRoot(path ? resolve(path) : process.cwd());
+    if (!root) die(`no ${INDEX_DIR}/ found here or in any parent.`);
+    rmSync(join(root, INDEX_DIR), { recursive: true, force: true });
+    console.log(`removed ${join(root, INDEX_DIR)}`);
   });
 
 program
