@@ -12,16 +12,34 @@ vỡ chỗ nào — thay vì grep/đọc file hàng chục lượt.
 Chạy 100% offline, không gọi API nào, **không cần compile** — `node:sqlite` có sẵn trong Node 22+,
 grammar là WASM.
 
+### Cài
+
 ```bash
-npm install && npm link
+npm install
 ```
 
 ```bash
-codelens init /đường/dẫn/tới/repo
+ln -sf "$PWD/bin/codelens.js" ~/.local/bin/codelens
+```
+
+Dùng symlink thay vì `npm link`: `npm link` gắn vào thư mục riêng của phiên bản Node hiện tại
+(`~/.nvm/versions/node/vXX/bin`), nên đổi phiên bản Node là lệnh biến mất. Gỡ cài đặt chỉ là
+`rm ~/.local/bin/codelens`.
+
+### Dùng
+
+Mỗi repo phải `init` một lần trước — mọi lệnh khác đều cần index:
+
+```bash
+cd /đường/dẫn/tới/repo && codelens init .
 ```
 
 ```bash
 codelens explore "DonationService"
+```
+
+```bash
+codelens serve --open
 ```
 
 ## Ngôn ngữ
