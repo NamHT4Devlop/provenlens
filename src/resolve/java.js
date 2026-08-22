@@ -152,6 +152,25 @@ export function resolveJava(db) {
     return chain;
   }
 
+  /**
+   * A type together with the types it is nested inside, innermost first.
+   *
+   * An inner class can see the enclosing class's fields and methods, which is
+   * exactly how a JUnit 5 @Nested test reaches the mocks declared on its outer
+   * class. Without this, every such receiver looks untyped.
+   */
+  function lexicalScope(fqn) {
+    const out = [];
+    let current = fqn;
+    while (current) {
+      if (types.has(current)) out.push(current);
+      const dot = current.lastIndexOf('.');
+      if (dot === -1) break;
+      current = current.slice(0, dot);
+    }
+    return out;
+  }
+
   /** Reverse of typeChain: who implements/extends this type. */
   const subtypesOf = new Map();
   for (const t of types.values()) {
@@ -364,13 +383,15 @@ export function resolveJava(db) {
       return owner ? { external: owner } : null;
     }
 
-    for (const t of typeChain(enclosing)) {
-      const fieldType = fieldsByContainer.get(t.fqn)?.get(raw);
-      if (!fieldType) continue;
-      const hit = resolveTypeName(fieldType, ref.file_id);
-      if (hit) return hit;
-      const owner = externalOwner(fieldType, ref.file_id);
-      return owner ? { external: owner } : null;
+    for (const scope of lexicalScope(enclosing)) {
+      for (const t of typeChain(scope)) {
+        const fieldType = fieldsByContainer.get(t.fqn)?.get(raw);
+        if (!fieldType) continue;
+        const hit = resolveTypeName(fieldType, ref.file_id);
+        if (hit) return hit;
+        const owner = externalOwner(fieldType, ref.file_id);
+        return owner ? { external: owner } : null;
+      }
     }
 
     if (/^[A-Z]/.test(raw)) {
@@ -381,6 +402,39 @@ export function resolveJava(db) {
     }
 
     return null;
+  }
+
+  // Return-type inference: `var builder = Foo.builder()` names no type, but the
+  // method it calls declares what it returns. Runs before the main pass so
+  // those locals can type their own receivers afterwards.
+  {
+    const pending = db
+      .prepare(
+        `SELECT l.id, l.scope_symbol_id, l.name, l.line
+           FROM locals l JOIN files f ON f.id = l.file_id
+          WHERE f.lang = 'java' AND l.type_name IS NULL AND l.init_kind = 'call'`,
+      )
+      .all();
+    const updateLocal = db.prepare('UPDATE locals SET type_name = ? WHERE id = ?');
+    const refAt = db.prepare(
+      `SELECT * FROM refs WHERE from_symbol_id = ? AND line = ? AND kind = 'call'
+        ORDER BY id DESC LIMIT 1`,
+    );
+
+    for (const local of pending) {
+      const ref = refAt.get(local.scope_symbol_id, local.line);
+      if (!ref) continue;
+      const fromSymbol = symbolById.get(ref.from_symbol_id);
+      const recv = receiverType(ref, fromSymbol, 0);
+      if (typeof recv !== 'string' || !recv) continue;
+      const target = findMethod(recv, ref.name, ref.arity, ref, fromSymbol?.container_fqn);
+      if (!target?.type_name) continue;
+      updateLocal.run(target.type_name, local.id);
+      if (!localsByScope.has(local.scope_symbol_id)) {
+        localsByScope.set(local.scope_symbol_id, new Map());
+      }
+      localsByScope.get(local.scope_symbol_id).set(local.name, target.type_name);
+    }
   }
 
   // ---- write the graph ----------------------------------------------------
@@ -406,6 +460,7 @@ export function resolveJava(db) {
     unresolved: 0,
     external: 0,
     notInProject: 0,
+    outOfScope: 0,
     runtime: 0,
     inheritance: 0,
   };
@@ -444,6 +499,18 @@ export function resolveJava(db) {
     refOutcome.set(refId, { external: true, owner: null });
     stats.external++;
     stats.notInProject++;
+  };
+  /**
+   * A bare call reaches only what is in scope: the enclosing type and its
+   * ancestors, a static import, a module-level function. Once all of those have
+   * been tried, other methods in the project that happen to share the name are
+   * not reachable from here, so the call comes from outside.
+   */
+  const insertOutOfScope = (refId) => {
+    insertRow.run(refId, 'external:not-reachable-from-scope', 1, null);
+    refOutcome.set(refId, { external: true, owner: null });
+    stats.external++;
+    stats.outOfScope++;
   };
   /** A JDK method on an untyped receiver: assumed, not proven. */
   const insertRuntime = (refId) => {
@@ -517,7 +584,14 @@ export function resolveJava(db) {
 
     const recvType = recv;
     if (recvType) {
-      const target = findMethod(recvType, ref.name, ref.arity, ref, fromSymbol?.container_fqn);
+      let target = findMethod(recvType, ref.name, ref.arity, ref, fromSymbol?.container_fqn);
+      // Implicit `this` inside a nested class can also mean the outer class.
+      if (!target && !ref.receiver) {
+        for (const scope of lexicalScope(recvType).slice(1)) {
+          target = findMethod(scope, ref.name, ref.arity, ref, fromSymbol?.container_fqn);
+          if (target) break;
+        }
+      }
       if (target) {
         insertEdge.run(ref.from_symbol_id, target.id, 'calls', 1.0, 'direct', ref.line);
         refOutcome.set(ref.id, { external: false });
@@ -553,6 +627,13 @@ export function resolveJava(db) {
       }
       if (!methodsByName.has(ref.name)) {
         insertNotInProject(ref.id);
+        continue;
+      }
+      // Implicit `this` with nothing on the type chain to match: whatever else
+      // in the project carries this name is not reachable from here.
+      if (!ref.receiver) {
+        if (JAVA_RUNTIME.has(ref.name)) insertRuntime(ref.id);
+        else insertOutOfScope(ref.id);
         continue;
       }
       insertUnresolved(ref.id, `no-such-method-on:${recvType}`);

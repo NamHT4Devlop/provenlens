@@ -347,3 +347,104 @@ describe('externality evidence', () => {
     cleanup();
   });
 });
+
+describe('scope modelling', () => {
+  test('an inner class can see the enclosing class fields', async () => {
+    // JUnit 5 @Nested classes declare their mocks on the outer class, so
+    // without this every such receiver looks untyped.
+    const { db, cleanup } = await tempProject({
+      'Svc.java': [
+        'package app;',
+        'public class Svc {',
+        '  public int work() { return 1; }',
+        '}',
+      ].join('\n'),
+      'SvcTest.java': [
+        'package app;',
+        'public class SvcTest {',
+        '  Svc svc;',
+        '  class Inner {',
+        '    int run() { return svc.work(); }',
+        '  }',
+        '}',
+      ].join('\n'),
+    });
+
+    const edge = db
+      .prepare(
+        `SELECT sf.fqn AS f FROM edges e
+           JOIN symbols sf ON sf.id = e.from_symbol_id
+           JOIN symbols st ON st.id = e.to_symbol_id
+          WHERE st.fqn = 'app.Svc#work' AND e.kind = 'calls'`,
+      )
+      .get();
+    assert.ok(edge, 'the inner class must reach the outer field');
+    assert.equal(edge.f, 'app.SvcTest.Inner#run');
+    cleanup();
+  });
+
+  test('a bare call cannot reach an unrelated class method', async () => {
+    const { db, cleanup } = await tempProject({
+      'a.rb': ['class Alpha', '  def shared_helper; 1; end', 'end'].join('\n'),
+      'b.rb': ['class Beta', '  def go', '    shared_helper', '  end', 'end'].join('\n'),
+    });
+
+    // Beta does not inherit from Alpha, so `shared_helper` is not in scope.
+    // Linking it anyway is what the old global name match did.
+    const edge = db
+      .prepare(
+        `SELECT COUNT(*) n FROM edges e JOIN symbols s ON s.id = e.to_symbol_id
+          WHERE s.fqn = 'Alpha#shared_helper' AND e.kind = 'calls'`,
+      )
+      .get();
+    assert.equal(edge.n, 0, 'an out-of-scope name must not become an edge');
+    cleanup();
+  });
+
+  test('but a bare call does reach an inherited method', async () => {
+    const { db, cleanup } = await tempProject({
+      'base.rb': ['class Base', '  def shared_helper; 1; end', 'end'].join('\n'),
+      'child.rb': ['class Child < Base', '  def go', '    shared_helper', '  end', 'end'].join('\n'),
+    });
+
+    const edge = db
+      .prepare(
+        `SELECT COUNT(*) n FROM edges e JOIN symbols s ON s.id = e.to_symbol_id
+          WHERE s.fqn = 'Base#shared_helper' AND e.kind = 'calls'`,
+      )
+      .get();
+    assert.equal(edge.n, 1, 'the ancestor chain is in scope and must resolve');
+    cleanup();
+  });
+
+  test('types a Java var from what the call returns', async () => {
+    const { db, cleanup } = await tempProject({
+      'App.java': [
+        'package app;',
+        'public class App {',
+        '  public Helper make() { return new Helper(); }',
+        '  public int use() {',
+        '    var helper = make();',
+        '    return helper.value();',
+        '  }',
+        '}',
+      ].join('\n'),
+      'Helper.java': [
+        'package app;',
+        'public class Helper {',
+        '  public int value() { return 1; }',
+        '}',
+      ].join('\n'),
+    });
+
+    const edge = db
+      .prepare(
+        `SELECT e.confidence FROM edges e JOIN symbols s ON s.id = e.to_symbol_id
+          WHERE s.fqn = 'app.Helper#value' AND e.kind = 'calls'`,
+      )
+      .get();
+    assert.ok(edge, 'var must take the declared return type of make()');
+    assert.equal(edge.confidence, 1, 'a declared return type is not a guess');
+    cleanup();
+  });
+});

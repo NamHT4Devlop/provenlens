@@ -437,6 +437,7 @@ export function resolveTypeScript(db, root) {
     unresolved: 0,
     external: 0,
     notInProject: 0,
+    outOfScope: 0,
     runtime: 0,
     inheritance: 0,
   };
@@ -473,6 +474,18 @@ export function resolveTypeScript(db, root) {
     refOutcome.set(refId, { external: true, owner: null });
     stats.external++;
     stats.notInProject++;
+  };
+  /**
+   * A bare call reaches only what is in scope: the enclosing type and its
+   * ancestors, a static import, a module-level function. Once all of those have
+   * been tried, other methods in the project that happen to share the name are
+   * not reachable from here, so the call comes from outside.
+   */
+  const insertOutOfScope = (refId) => {
+    insertRow.run(refId, 'external:not-reachable-from-scope', 1, null);
+    refOutcome.set(refId, { external: true, owner: null });
+    stats.external++;
+    stats.outOfScope++;
   };
   /** A language built-in on an untyped receiver: assumed, not proven. */
   const insertRuntime = (refId) => {
@@ -598,6 +611,17 @@ export function resolveTypeScript(db, root) {
     // linking that to whichever project method shares the name invents an edge.
     if (ref.receiver && JS_RUNTIME.has(ref.name)) {
       insertRuntime(ref.id);
+      continue;
+    }
+    // A bare call is a module function or an import. Both were tried above, so
+    // a method on some unrelated class is not in scope here.
+    //
+    // The runtime list is deliberately not consulted: those are prototype
+    // methods, which need a receiver. A bare `get()` is not `Map.get`, and
+    // treating it as one would be an assumption with nothing behind it.
+    if (!ref.receiver) {
+      if (!callablesByName.has(ref.name)) insertNotInProject(ref.id);
+      else insertOutOfScope(ref.id);
       continue;
     }
     if (byName.length === 1) {

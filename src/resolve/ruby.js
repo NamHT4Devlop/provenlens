@@ -248,6 +248,7 @@ export function resolveRuby(db) {
     unresolved: 0,
     external: 0,
     notInProject: 0,
+    outOfScope: 0,
     inheritance: 0,
     dropped: 0,
   };
@@ -285,6 +286,22 @@ export function resolveRuby(db) {
     refOutcome.set(refId, { external: true, owner: null });
     stats.external++;
     stats.notInProject++;
+  };
+  /**
+   * A bare call reaches `self` and nothing else. If the name is not on the
+   * enclosing class, its superclasses or its mixins, then the methods elsewhere
+   * in the project that happen to share the name are not in scope here, so it
+   * must come from outside -- an RSpec `expect`, a gem DSL, a Rails macro.
+   *
+   * Matching such a call against every method in the project regardless of
+   * scope is what produced most of the remaining ambiguity, and any edge it
+   * created was wrong.
+   */
+  const insertOutOfScope = (refId) => {
+    insertRow.run(refId, 'external:not-reachable-from-scope', 1, null);
+    refOutcome.set(refId, { external: true, owner: null });
+    stats.external++;
+    stats.outOfScope++;
   };
 
   for (const t of types.values()) {
@@ -398,6 +415,24 @@ export function resolveRuby(db) {
         insertExternal(ref.id, inherited);
         continue;
       }
+    }
+
+    // A bare call reaches `self`. Everything self could offer has been tried by
+    // now: the class, its ancestors, its mixins, Kernel. Whatever else in the
+    // project shares this name is simply not in scope here. This is the common
+    // case in a spec file, where `expect`, `it` and `context` come from RSpec.
+    if (!ref.receiver) {
+      // A bare identifier is either a local read or a self call. Either way,
+      // by this point self has been searched, so a global name match could only
+      // land on something out of scope -- always the wrong edge.
+      if (ref.kind === 'ident_call') {
+        stats.dropped++;
+        continue;
+      }
+      if (RUBY_CORE.has(ref.name)) insertExternal(ref.id, 'Kernel');
+      else if (!methodsByName.has(ref.name)) insertNotInProject(ref.id);
+      else insertOutOfScope(ref.id);
+      continue;
     }
 
     const byName = methodsByName.get(ref.name) ?? [];

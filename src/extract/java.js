@@ -360,13 +360,22 @@ export function extractJava(tree, src) {
 
     if (node.type === 'local_variable_declaration') {
       const typeNode = childByField(node, 'type');
-      const typeName = typeNode ? normalizeType(text(typeNode, src)) : null;
+      const declared = typeNode ? normalizeType(text(typeNode, src)) : null;
+      // `var` names no type; the resolver fills it in from what the call returns.
+      const typeName = declared === 'var' ? null : declared;
+
       for (const d of namedChildrenOfType(node, 'variable_declarator')) {
         const nameNode = childByField(d, 'name');
-        if (nameNode && scopeId != null) {
-          locals.push({ scopeTmpId: scopeId, name: text(nameNode, src), type_name: typeName });
-        }
         const value = childByField(d, 'value');
+        if (nameNode && scopeId != null) {
+          locals.push({
+            scopeTmpId: scopeId,
+            name: text(nameNode, src),
+            type_name: typeName,
+            line: node.startPosition.row + 1,
+            init_kind: !typeName && value?.type === 'method_invocation' ? 'call' : null,
+          });
+        }
         if (value) walk(value, typeStack, scopeId);
       }
       return;

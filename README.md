@@ -81,37 +81,43 @@ Nhóm `library` **không phải một khối đồng nhất**, nên `bench` tác
 | Name declared nowhere | **Chứng minh** | Không symbol nào trong index mang tên đó → lời gọi **không thể** trỏ vào repo. Trên petclinic: `assertThat` gọi 68 lần, `andExpect` 77 lần, khai báo trong repo: **0** |
 | Runtime built-in | **Giả định** | `.map` trên receiver không suy được kiểu gần như chắc chắn là `Array.map`. Không có import để lần, không có tổ tiên để đi — cùng loại với `Kernel` của Ruby |
 
-Ba loại đầu là chứng minh. Loại thứ tư là suy luận mạnh, nên nó **mang nhãn owner riêng**
+Bốn loại đầu là chứng minh. Loại cuối là suy luận mạnh, nên nó **mang nhãn owner riêng**
 (`js-runtime`, `jdk-runtime`, `Kernel`) và `bench` in luôn con số *"nếu mọi giả định đều sai"* —
 tức cận dưới tuyệt đối.
 
-**Không hard-code danh sách framework nào cả.** Ba luật đầu suy ra từ chính source, nên tự đúng
+**Không hard-code danh sách framework nào cả.** Bốn luật đầu suy ra từ chính source, nên tự đúng
 với mọi thư viện bạn thêm mà không cần cập nhật gì.
 
 Và luật chứng minh **luôn chạy trước** luật giả định: nếu chứng minh được thì không đoán.
 
 ### Số đo trên repo thật
 
-| Repo | Loại | In-repo resolution | Cận dưới nếu mọi giả định sai |
+| Repo | Stack | In-repo resolution | Cận dưới nếu mọi giả định sai |
 |---|---|---|---|
-| spring-petclinic | Spring Boot + Data | **98.9%** | 98.1% |
-| camel-spring-boot-examples | ~50 ví dụ Camel | **91.1%** | 90.2% |
+| spring-petclinic | Spring Boot + Data | **99.4%** | 98.6% |
+| mall | Spring Boot + MyBatis, 524 file | **94.5%** | 94.5% |
+| camel-spring-boot-examples | ~50 ví dụ Camel | **91.1%** | 90.1% |
 | mybatis jpetstore | MyBatis + Flyway | **89.1%** | 89.1% |
-| human-essentials | Rails, 1043 file | **77.2%** | 75.9% |
-| spring-cloud-aws | 803 file Java | **76.7%** | 75.8% |
-| agenta | 3891 file TS/JS | **66.7%** | 43.3% |
+| human-essentials | Rails, 994 file | **84.1%** | 82.6% |
+| rubygems.org | Rails, 1338 file | **83.4%** | 80.5% |
+| mybatis spring-boot-starter | MyBatis | **81.1%** | 81.1% |
+| express | JS thuần, 141 file | **79.1%** | 49.7% |
+| agenta | TS/JS, 3891 file | **78.6%** | 43.4% |
+| spring-cloud-aws | Java, 803 file | **77.3%** | 76.4% |
+| nest | TS, 1817 file | **75.2%** | 65.7% |
+| halo | Java 1349 + TS 862 | **74.7%** | 70.7% |
+| mastodon | Rails 3258 + TS 734 | **72.7%** | 69.7% |
 
-Cột cuối là điều kiện tự kiểm: giả sử **mọi** phán đoán runtime đều sai thì con số còn lại bao
-nhiêu. Java gần như toàn bộ dựa trên chứng minh (chênh dưới 1%); agenta dựa vào giả định nhiều
-nhất vì JS không có kiểu để lần.
+Cột cuối là điều kiện tự kiểm: giả sử **mọi** phán đoán runtime đều sai thì còn lại bao nhiêu.
+Java và Ruby gần như toàn bộ dựa trên chứng minh (chênh 1–4%); JS/TS dựa vào giả định nhiều nhất
+vì không có kiểu để lần.
 
-Ba repo còn dưới 90% vì lý do khác nhau, đều là **giới hạn thật chứ không phải lỗi phân loại**:
+Phần còn hụt ở các repo dưới 90% là **giới hạn suy luận thật**, không phải lỗi phân loại:
 
-- **spring-cloud-aws** — chuỗi builder fluent (`X.builder().a().b().build()`), cần suy kiểu qua
-  từng mắt xích của SDK bên ngoài.
-- **human-essentials** — Ruby không có kiểu; phần còn lại là `ambiguous-name` (tên có thật trong
-  repo nhưng nhiều ứng viên).
-- **agenta** — TS generic và `atom()`/hook trả về kiểu suy từ tham số kiểu.
+- **mastodon, human-essentials** — RSpec `let(:x) { ... }` và `subject { ... }` tạo biến trong
+  block; muốn suy kiểu phải mô hình hoá block.
+- **halo, spring-cloud-aws** — chuỗi builder fluent của SDK ngoài.
+- **nest, agenta** — TS generic, kiểu trả về suy từ tham số kiểu (`atom<T>`, hook).
 
 Đo lại bất cứ lúc nào bằng `./scripts/bench.js <repo> --detail`.
 
@@ -223,7 +229,7 @@ Index là cache. Tăng `SCHEMA_VERSION` trong `src/db.js` là index cũ bị xo�
 npm test
 ```
 
-91 test trên 5 bộ fixture cộng một bộ hồi quy:
+95 test trên 5 bộ fixture cộng một bộ hồi quy:
 
 | Fixture | Mô phỏng | Chuỗi mà grep không lần ra |
 |---|---|---|
