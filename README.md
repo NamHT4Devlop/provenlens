@@ -1,162 +1,347 @@
 # codelens
 
-Code knowledge graph cá nhân cho **Java, Ruby, TypeScript, JavaScript** — cộng một tầng
-**string binding** để nối những chỗ mà đồ thị lời gọi không thể thấy (Camel, MyBatis, SQS, Flyway).
+A personal code knowledge graph for **Java, Ruby, TypeScript and JavaScript** — plus a
+**string-binding** layer that connects the places a call graph structurally cannot see
+(Camel, MyBatis, SQS, Flyway).
 
 ## TL;DR
 
-Đánh chỉ mục codebase sẵn thành đồ thị (symbol + ai gọi ai) lưu trong SQLite, để AI agent hỏi
-**một câu** là nhận đủ: source thật có đánh số dòng, ai gọi hàm này, hàm này gọi ai, sửa nó thì
-vỡ chỗ nào — thay vì grep/đọc file hàng chục lượt.
+codelens pre-indexes a codebase into a graph of symbols and who-calls-what, stored in SQLite, so
+an AI agent can ask **one question** and get everything: the real source with line numbers, what
+calls this, what this calls, and what breaks if you change it — instead of a dozen rounds of grep
+and file reads.
 
-Chạy 100% offline, không gọi API nào, **không cần compile** — `node:sqlite` có sẵn trong Node 22+,
-grammar là WASM.
+It runs **100% offline**. No API calls, no telemetry, no network egress of any kind, and **nothing
+to compile** — `node:sqlite` ships inside Node 22+, and the grammars are WASM.
 
-### Cài
+---
+
+## Setup
+
+### 1. Requirements
+
+| | Why |
+|---|---|
+| **Node.js 22 or newer** | codelens uses `node:sqlite`, which only exists from Node 22. Nothing else is needed — no compiler, no native modules, no database server. |
+| A shell on macOS or Linux | Windows works under WSL. |
+
+Check what you have:
 
 ```bash
-npm install
+node -v
+```
+
+If it prints anything below `v22`, upgrade Node first — every other step will fail otherwise.
+
+### 2. Get the code and install dependencies
+
+```bash
+git clone git@github.com:NamHT4Devlop/codelens.git ~/AI-TOOL/codelens
 ```
 
 ```bash
-ln -sf "$PWD/bin/codelens.js" ~/.local/bin/codelens
+cd ~/AI-TOOL/codelens && npm install
 ```
 
-Dùng symlink thay vì `npm link`: `npm link` gắn vào thư mục riêng của phiên bản Node hiện tại
-(`~/.nvm/versions/node/vXX/bin`), nên đổi phiên bản Node là lệnh biến mất. Gỡ cài đặt chỉ là
-`rm ~/.local/bin/codelens`.
+That pulls exactly four dependencies: `commander`, `ignore`, `web-tree-sitter` and
+`tree-sitter-wasms`. All four are pinned to exact versions (no `^`, no `~`), so a fresh install
+today resolves to the same bytes it resolved to when the benchmarks below were measured.
 
-### Dùng
-
-Mỗi repo phải `init` một lần trước — mọi lệnh khác đều cần index:
+### 3. Put `codelens` on your PATH
 
 ```bash
-cd /đường/dẫn/tới/repo && codelens init .
+ln -sf ~/AI-TOOL/codelens/bin/codelens.js ~/.local/bin/codelens
+```
+
+Use a symlink rather than `npm link`. `npm link` installs into the bin directory of *the Node
+version you happen to be running* (`~/.nvm/versions/node/vXX/bin`), so switching Node versions
+makes the command silently disappear. A symlink into `~/.local/bin` survives that.
+
+If `~/.local/bin` is not already on your PATH, add it:
+
+```bash
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc
+```
+
+Verify:
+
+```bash
+codelens --version
+```
+
+### 4. Index your first repository
+
+Every repository must be indexed once before any other command works:
+
+```bash
+cd /path/to/your/repo && codelens init .
+```
+
+You should see something like this — the last line is the resolver reporting how much of the call
+graph it managed to connect:
+
+```
+created .codelens/ in /path/to/your/repo
+indexed 2 file(s), 6 symbol(s)
+java: 1 direct, 0 via impl, 0 by name, 0 missed, 0 library (100.0% of in-repo calls linked)
+```
+
+The index lives in `.codelens/` at the repo root. It is a **cache** — safe to delete, rebuilt on
+demand, and it should never be committed. Add `.codelens/` to your global gitignore so it can
+never land in a team repository:
+
+```bash
+echo '.codelens/' >> "$(git config --global core.excludesfile || echo ~/.config/git/ignore)"
+```
+
+That appends to whichever file git is actually configured to read; `git config --global
+core.excludesfile` on its own tells you which one that is.
+
+### 5. Ask it something
+
+```bash
+codelens explore "OwnerController"
+```
+
+`explore` is the one command worth remembering — it returns the real source with line numbers, the
+call paths in and out, framework bindings, and the blast radius, all in a single response:
+
+````
+# codelens explore: "OwnerController"
+
+12 matches, showing 3. Others: ...OwnerController#findOwner, ...OwnerController#processCreationForm
+
+## Match 1/3 — class org.springframework.samples.petclinic.owner.OwnerController @Controller
+src/main/java/org/springframework/samples/petclinic/owner/OwnerController.java:48-179
+
+```java
+ 48 | @Controller
+ 49 | class OwnerController {
+ 50 |
+ 51 | 	private static final String VIEWS_OWNER_CREATE_OR_UPDATE_FORM = "owners/createOrUpdateOwnerForm";
+```
+````
+
+The narrower questions have their own commands:
+
+```bash
+codelens callers "wrap"
+```
+
+```
+# Callers of demo.Formatter#wrap
+src/Formatter.java:3
+
+### Callers (1)
+- demo.Greeter#greet — src/Greeter.java:5 [direct]
+```
+
+### 6. Keep the index fresh
+
+The index does not update itself unless you ask it to. Three options, cheapest first:
+
+```bash
+codelens sync
 ```
 
 ```bash
-codelens explore "DonationService"
+codelens sync -w
 ```
+
+```bash
+codelens index
+```
+
+`sync` reparses only the files whose contents changed, `-w` keeps watching in the background, and
+`index` rebuilds everything from scratch. `codelens serve` and the MCP server each run a watcher of
+their own, so if you use either of those you rarely need to sync by hand.
+
+### 7. Check the index is healthy
+
+```bash
+codelens status
+```
+
+```
+root:    /path/to/spring-petclinic
+indexed: 2026-08-22T15:56:53.071Z
+files:   51   symbols: 313   types: 49
+edges:   329   call sites: 1602
+calls:   355 linked, 1245 into libraries, 2 missed
+resolution: 99.4% of the calls that could be in this repo
+by language:
+  java            49
+  xml              2  (read by framework bindings)
+```
+
+`missed` is the only number that represents a defect — see
+[Reading the numbers honestly](#reading-the-numbers-honestly) for why `library` is not one.
+
+### 8. Optional — the web UI
 
 ```bash
 codelens serve --open
 ```
 
-## Ngôn ngữ
+### 9. Optional — wire it into Claude Code
 
-| | Extractor | Resolver | Điểm mạnh riêng |
+```bash
+codelens install claude-user
+```
+
+This prints the change before writing it and always leaves a `.bak`. See
+[Using it from Claude Code](#using-it-from-claude-code) for the manual form and for what the four
+MCP tools do.
+
+### Uninstalling
+
+```bash
+codelens uninit /path/to/repo
+```
+
+```bash
+rm ~/.local/bin/codelens
+```
+
+```bash
+rm -rf ~/AI-TOOL/codelens
+```
+
+The first removes one repository's index, the second removes the command, the third removes
+codelens itself.
+
+### Troubleshooting setup
+
+| Symptom | Cause and fix |
+|---|---|
+| `zsh: command not found: codelens` | The symlink is missing, or `~/.local/bin` is not on your PATH. Run `ls -l ~/.local/bin/codelens` and `echo $PATH` to see which. |
+| `Cannot find module 'node:sqlite'` | Node is older than 22. Check `node -v`, then upgrade. |
+| `no index — run: codelens init` | That repository has never been indexed. `cd` into it and run `codelens init .`. |
+| A `Language.load` / ABI error on first run | Something upgraded `web-tree-sitter` past 0.25.10. Run `npm ci` to restore the pinned versions — see [Pinned versions](#pinned-versions). |
+| `EADDRINUSE` from `codelens serve` | Port 7777 is already taken, most likely by an earlier `serve`. Use `codelens serve -p 7800`, or stop the old one. |
+| The web UI answers `403 Forbidden` | You opened `127.0.0.1:7777` without the token. Copy the whole URL that `serve` printed, token and all — `--open` does it for you. |
+
+---
+
+## Languages
+
+| | Extractor | Resolver | What it does well |
 |---|---|---|---|
-| Java | ✅ | ✅ | Spring DI xuyên interface, chọn overload theo **kiểu tham số**, `this.field`, tham số lambda |
-| Ruby | ✅ | ✅ | **Quy ước Rails**: `belongs_to`/`has_many`/`attr_*`/`scope` sinh method ảo có kiểu; mixin `include`; **RSpec** `let`/`subject`/`described_class` được gán kiểu nên spec nối được vào code nó test |
-| TypeScript / TSX | ✅ | ✅ | **Module resolution thật**: tsconfig `paths`, barrel file, `export *`; parameter property; suy luận kiểu trả về |
-| JavaScript | ✅ | ✅ | Chung đồ thị module với TS |
-| XML, SQL | — | — | Không có grammar, nhưng **được plugin binding đọc** (MyBatis mapper, Flyway migration) |
-| `db/schema.rb` | — | — | Cột database → thuộc tính ActiveRecord. `account.uri` chạy được là nhờ có cột, và schema là **nơi duy nhất** trong source ghi lại điều đó |
+| Java | ✅ | ✅ | Spring DI across interfaces, overload selection **by parameter type**, `this.field`, lambda parameters |
+| Ruby | ✅ | ✅ | **Rails conventions**: `belongs_to`/`has_many`/`attr_*`/`scope` produce typed virtual methods; `include` mixins; **RSpec** `let`/`subject`/`described_class` are typed, so a spec connects to the code it tests |
+| TypeScript / TSX | ✅ | ✅ | **Real module resolution**: tsconfig `paths`, barrel files, `export *`; parameter properties; return-type inference |
+| JavaScript | ✅ | ✅ | Shares the module graph with TypeScript |
+| XML, SQL | — | — | No grammar, but **read by the binding plugins** (MyBatis mappers, Flyway migrations) |
+| `db/schema.rb` | — | — | Database columns become ActiveRecord attributes. `account.uri` works because a column exists, and the schema file is the **only** place in the source that records it |
 
 ## Framework bindings
 
-Một số framework nối hai mảnh code bằng **chuỗi ký tự**, không phải bằng lời gọi. Không đồ thị
-lời gọi nào thấy được. Plugin khai báo hai đầu, một pass chung khớp chúng lại:
+Some frameworks connect two pieces of code through **a string**, not a call. No call graph can see
+that. A plugin declares both ends, and one shared pass matches them:
 
-| Plugin | Nối gì | Cạnh sinh ra |
+| Plugin | What it connects | Edge produced |
 |---|---|---|
-| `mybatis` | Method của `@Mapper` interface ↔ `<select id="...">` trong XML | `implemented-by` (0.95) |
+| `mybatis` | `@Mapper` interface method ↔ `<select id="...">` in XML | `implemented-by` (0.95) |
 | `camel` | `from("direct:x")` ↔ `.to("direct:x")` | `routes-to` (0.9) |
-| `sqs` | Producer ↔ `@SqsListener` / Shoryuken worker, **xuyên ngôn ngữ** | `sends-to` (0.85) |
-| `flyway` | `V*__*.sql` ↔ entity/mapper đụng tới bảng đó | `touches-table` (0.6) |
+| `sqs` | Producer ↔ `@SqsListener` / Shoryuken worker, **across languages** | `sends-to` (0.85) |
+| `flyway` | `V*__*.sql` ↔ the entity or mapper touching that table | `touches-table` (0.6) |
 
-Câu SQL trong XML và mỗi file migration **trở thành symbol thật** — `codelens explore
-"OrderMapper#findById"` trả về cả chữ ký Java lẫn câu SQL sẽ chạy.
+SQL statements in XML and each migration file **become real symbols** — `codelens explore
+"OrderMapper#findById"` returns both the Java signature and the SQL that will actually run.
 
-Camel còn bắt tay SQS: route gửi vào `aws2-sqs:order-events` nối thẳng tới `@SqsListener` và tới
-worker Ruby nghe cùng queue đó.
+Camel and SQS shake hands too: a route publishing to `aws2-sqs:order-events` links straight through
+to a `@SqsListener` and to a Ruby worker consuming the same queue.
 
-**Thêm framework mới** = thêm một file trong `src/bindings/` khai báo `accepts` (file cần đọc) và
-`collect` (phát ra provider/consumer kèm `key`). Phần khớp và sinh cạnh là dùng chung.
+**Adding a new framework** means adding one file to `src/bindings/` that declares `accepts` (which
+files to read) and `collect` (emit providers and consumers with a shared `key`). The matching and
+edge creation are shared.
 
-## Đọc con số cho đúng
+## Reading the numbers honestly
 
-Trong một app Spring thật, **46–59% lời gọi là gọi vào class nằm trong JAR**. Gộp chúng vào
-"unresolved" khiến chỉ số vô nghĩa. codelens tách ba nhóm:
+In a real Spring application, **46–59% of all calls target a class inside a JAR**. Counting those
+as "unresolved" makes the metric meaningless. codelens splits three ways:
 
 ```
 calls = linked + library + missed
 ```
 
-- **linked** — đã nối được thành cạnh
-- **library** — nằm ngoài cây index (JAR, gem, node_modules, runtime). Không phải lỗi.
-- **missed** — chỗ resolver thật sự hụt. **Chỉ nhóm này mới là bug.**
+- **linked** — connected into an edge
+- **library** — outside the indexed tree (JAR, gem, node_modules, runtime). Not a failure.
+- **missed** — the resolver genuinely came up short. **Only this bucket is a bug.**
 
-Chỉ số đáng nhìn là **in-repo resolution** = `linked / (calls − library)`.
+The number worth watching is **in-repo resolution** = `linked / (calls − library)`.
 
-### Bốn loại bằng chứng, xếp theo độ chắc
+### Four kinds of evidence, strongest first
 
-Nhóm `library` **không phải một khối đồng nhất**, nên `bench` tách rõ để bạn tự kiểm toán:
+The `library` bucket is **not one homogeneous thing**, so `bench` breaks it out for you to audit:
 
-| Bằng chứng | Loại | Cơ sở |
+| Evidence | Kind | Basis |
 |---|---|---|
-| Named library | **Chứng minh** | `import` có FQN không nằm trong index → chắc chắn là JAR; import TS không trỏ tới file nào → `node_modules` |
-| Inherited | **Chứng minh** | Tổ tiên không được index thì method thiếu đến từ đó (`JpaRepository#findById`, `RouteBuilder#from`, `ActionController::Base#render`) |
-| Name declared nowhere | **Chứng minh** | Không symbol nào trong index mang tên đó → lời gọi **không thể** trỏ vào repo. Trên petclinic: `assertThat` gọi 68 lần, `andExpect` 77 lần, khai báo trong repo: **0** |
-| Runtime built-in | **Giả định** | `.map` trên receiver không suy được kiểu gần như chắc chắn là `Array.map`. Không có import để lần, không có tổ tiên để đi — cùng loại với `Kernel` của Ruby |
+| Named library | **Proof** | An `import` whose FQN is not in the index is certainly a JAR; a TS import resolving to no file is `node_modules` |
+| Inherited | **Proof** | If an ancestor is not indexed, the missing method comes from there (`JpaRepository#findById`, `RouteBuilder#from`, `ActionController::Base#render`) |
+| Name declared nowhere | **Proof** | No symbol in the index carries that name, so the call **cannot** target this repo. In petclinic: `assertThat` called 68 times, `andExpect` 77 times, declarations in the repo: **0** |
+| Runtime built-in | **Assumption** | `.map` on a receiver whose type cannot be inferred is almost certainly `Array.map`. No import to follow, no ancestor to walk — the same class of judgement as Ruby's `Kernel` |
 
-Bốn loại đầu là chứng minh. Loại cuối là suy luận mạnh, nên nó **mang nhãn owner riêng**
-(`js-runtime`, `jdk-runtime`, `Kernel`) và `bench` in luôn con số *"nếu mọi giả định đều sai"* —
-tức cận dưới tuyệt đối.
+The first three are proofs. The last is a strong inference, so it **carries its own owner label**
+(`js-runtime`, `jdk-runtime`, `Kernel`) and `bench` also prints the *"if every assumption were
+wrong"* figure — the absolute floor.
 
-**Không hard-code danh sách framework nào cả.** Bốn luật đầu suy ra từ chính source, nên tự đúng
-với mọi thư viện bạn thêm mà không cần cập nhật gì.
+**No framework list is hardcoded anywhere.** The three proof rules are derived from the source
+itself, so they stay correct for any library you add without an update here.
 
-Và luật chứng minh **luôn chạy trước** luật giả định: nếu chứng minh được thì không đoán.
+And proof **always runs before** assumption: if it can be proven, it is never guessed.
 
-### Số đo trên repo thật
+### Measured on real repositories
 
-| Repo | Stack | In-repo resolution | Cận dưới nếu mọi giả định sai |
+| Repo | Stack | In-repo resolution | Floor if every assumption were wrong |
 |---|---|---|---|
 | spring-petclinic | Spring Boot + Data | **99.4%** | 98.6% |
-| mall | Spring Boot + MyBatis, 524 file | **94.5%** | 94.5% |
-| camel-spring-boot-examples | ~50 ví dụ Camel | **91.1%** | 90.1% |
+| mall | Spring Boot + MyBatis, 524 files | **94.5%** | 94.5% |
+| camel-spring-boot-examples | ~50 Camel examples | **91.1%** | 90.1% |
 | mybatis jpetstore | MyBatis + Flyway | **89.1%** | 89.1% |
-| agenta | TS/JS, 3891 file | **85.0%** | 52.3% |
-| nest | TS, 1817 file | **84.2%** | 75.1% |
+| agenta | TS/JS, 3891 files | **85.0%** | 52.3% |
+| nest | TS, 1817 files | **84.2%** | 75.1% |
 | mybatis spring-boot-starter | MyBatis | **81.3%** | 81.3% |
-| rubygems.org | Rails, 1338 file | **79.7%** | 77.2% |
-| spring-cloud-aws | Java, 803 file | **77.7%** | 76.8% |
-| human-essentials | Rails, 994 file | **77.7%** | 76.4% |
-| express | JS thuần, 141 file | **77.4%** | 52.4% |
+| rubygems.org | Rails, 1338 files | **79.7%** | 77.2% |
+| spring-cloud-aws | Java, 803 files | **77.7%** | 76.8% |
+| human-essentials | Rails, 994 files | **77.7%** | 76.4% |
+| express | plain JS, 141 files | **77.4%** | 52.4% |
 | halo | Java 1349 + TS 862 | **77.0%** | 73.3% |
 | mastodon | Rails 3258 + TS 734 | **74.5%** | 72.3% |
 
-Cột cuối là điều kiện tự kiểm: giả sử **mọi** phán đoán runtime đều sai thì còn lại bao nhiêu.
+The last column is the self-audit: assume **every** runtime judgement is wrong, and see what
+survives.
 
-**Lưu ý về hai repo Rails:** con số của human-essentials và rubygems.org *giảm* khi bật đọc
-`db/schema.rb`, và đó là điều đúng. Trước đó `created_at`/`name` không có khai báo nào trong
-source nên được **chứng minh là ngoài project** — một chứng minh sai, vì chúng có thật dưới dạng
-thuộc tính ActiveRecord. Giờ chúng nằm trong index, mẫu số lớn hơn, và đồ thị đầy đủ hơn ~10%
-(riêng human-essentials có 676 cạnh mới trỏ vào cột DB). Số thấp hơn nhưng trung thực hơn.
+**A note on the two Rails repos:** the numbers for human-essentials and rubygems.org *dropped* when
+`db/schema.rb` reading was switched on, and that is the correct outcome. Before it, `created_at`
+and `name` had no declaration anywhere in the source, so they were **proven external** — a false
+proof, because they genuinely exist as ActiveRecord attributes. Now they are in the index, the
+denominator is bigger, and the graph is ~10% more complete (human-essentials alone gained 676 edges
+landing on database columns). Lower number, more honest graph.
 
-Đo lại bất cứ lúc nào bằng `./scripts/bench.js <repo> --detail`.
+Re-measure any time with `./scripts/bench.js <repo> --detail`.
 
-## Lệnh
+## Commands
 
-| Lệnh | Việc |
+| Command | What it does |
 |---|---|
-| `codelens init [path]` | Tạo `.codelens/` và build index lần đầu |
-| `codelens sync [-w]` | Parse lại file đã đổi; `-w` tự động theo dõi |
-| `codelens index` | Build lại toàn bộ |
-| `codelens status` | Độ phủ, chất lượng resolve, số binding |
-| `codelens query <tên>` | Tìm symbol theo tên |
-| `codelens explore <tên>` | Source + call path + binding + blast radius, một lần |
-| `codelens node <tên>` | Một symbol đầy đủ + caller/callee |
-| `codelens callers <tên>` / `callees <tên>` | Một chiều quan hệ |
-| `codelens impact <tên>` | Blast radius |
-| `codelens affected [files...]` | File đã đổi chạm tới cái gì + **test nào đã phủ** |
-| `codelens install [target]` | Đăng ký MCP vào agent (`--dry-run` xem trước) |
-| `codelens uninit [path]` | Xoá index khỏi project |
-| `codelens serve [paths...] [-p 7777] [-o]` | **Web UI** — search và duyệt đồ thị, một hoặc **nhiều repo** cùng lúc |
-| `codelens mcp [path]` | MCP server qua stdio |
+| `codelens init [path]` | Create `.codelens/` and build the index for the first time |
+| `codelens sync [-w]` | Reparse changed files; `-w` keeps watching |
+| `codelens index` | Rebuild everything |
+| `codelens status` | Coverage, resolution quality, binding counts |
+| `codelens query <name>` | Find symbols by name |
+| `codelens explore <name>` | Source + call paths + bindings + blast radius, in one shot |
+| `codelens node <name>` | One symbol in full, with callers and callees |
+| `codelens callers <name>` / `callees <name>` | One direction of the relationship |
+| `codelens impact <name>` | Blast radius |
+| `codelens affected [files...]` | What changed files reach, and **which tests already cover it** |
+| `codelens install [target]` | Register the MCP server with an agent (`--dry-run` to preview) |
+| `codelens uninit [path]` | Remove the index from a project |
+| `codelens serve [paths...] [-p 7777] [-o]` | **Web UI** — search and browse the graph, one repo or **many at once** |
+| `codelens mcp [path]` | MCP server over stdio |
 
-`query`, `callers`, `callees`, `impact`, `affected` đều nhận `--json` để nối vào tool khác.
+`query`, `callers`, `callees`, `impact` and `affected` all accept `--json` for piping into other
+tools.
 
 ### Web UI
 
@@ -164,164 +349,190 @@ thuộc tính ActiveRecord. Giờ chúng nằm trong index, mẫu số lớn hơ
 codelens serve --open
 ```
 
-**Nhiều repo cùng lúc.** Trỏ vào thư mục chứa nhiều service, nó tự tìm mọi repo đã `init` bên trong:
+**Several repositories at once.** Point it at a folder holding multiple services and it finds every
+initialised repo inside:
 
 ```bash
 codelens serve ~/work/services --open
 ```
 
-Hoặc liệt kê thẳng: `codelens serve ./order-service ./notify-service`.
+Or list them explicitly: `codelens serve ./order-service ./notify-service`.
 
-Thanh trên có chip chọn repo — **không chọn gì thì hiện tất cả**, chọn một repo thì thu hẹp vào
-repo đó. Mỗi repo một màu, vẽ thành **vòng ngoài node** nên không đè lên màu theo loại symbol.
+The toolbar has one chip per repository — **select nothing and you see them all**, select one and
+the view narrows to it. Each repo gets its own hue, drawn as a **ring around the node** so it never
+fights the symbol-kind colour.
 
-**Cạnh xuyên repo.** Đây mới là lý do mở nhiều repo: producer SQS ở service này và listener ở
-service kia chỉ dính nhau qua **tên queue**, không có lời gọi nào. codelens khớp các endpoint
-binding giữa các index và vẽ chúng thành **đường xanh ngọc nét đứt, có nhãn tên queue**:
+**Cross-repo edges.** This is the actual reason to open several repos at once: an SQS producer in
+one service and its listener in another are connected only by **the queue name**, with no call
+between them. codelens matches binding endpoints across the separate indexes and draws them as
+**dashed teal lines labelled with the queue**:
 
 ```
 order-service:publishOrder  ──sqs: order-events──▶  notify-service:onOrder     (Java)
                             └─sqs: order-events──▶  audit-service:OrderAuditWorker  (Ruby)
 ```
 
-Xuyên repo **và** xuyên ngôn ngữ. Symbol được đánh địa chỉ theo `repo:id` vì mỗi index đánh số
-riêng từ 1 — ID trần sẽ đụng nhau ngay khi mở repo thứ hai.
+Across repos **and** across languages. Symbols are addressed as `repo:id`, because each index
+numbers its symbols from 1 — bare IDs would collide the moment a second repo is opened.
 
-Một trang tự chứa, không build step, không dependency ngoài: gõ để tìm symbol, chọn để xem source
-thật kèm số dòng, rồi **bấm vào bất kỳ liên kết nào để đi tiếp trong đồ thị** — caller, callee,
-quan hệ kiểu, liên kết framework, blast radius. Symbol suy ra (reader của `belongs_to`, cột DB,
-câu SQL trong XML) được gắn nhãn `derived`; file test gắn nhãn `test`. Phím `/` để về ô tìm kiếm,
-mũi tên lên/xuống để duyệt.
+A graph is drawn **as soon as the page loads**, before you search anything: the top hubs of each
+repository, plus whatever cross-repo links exist. Type to find a symbol, click to read the real
+source with line numbers, then **click any link to keep walking the graph** — callers, callees,
+type relationships, framework bindings, blast radius. Derived symbols (a `belongs_to` reader, a
+database column, a SQL statement in XML) are labelled `derived`; test files are labelled `test`.
+`/` returns to the search box, arrow keys move through results, and the detail panel can be dragged
+wider by its left edge.
 
-Server **chỉ nghe trên `127.0.0.1`, chỉ đọc**, và tự cập nhật index bằng file watcher.
+**Themes.** Seven editor palettes, remembered across sessions: Solarized Dark (default), Solarized
+Light, Gruvbox Dark, Monokai, Nord, One Dark, and **Matrix** — black background, green monospace,
+glowing nodes. Solarized leads because it was designed for reduced eye strain rather than maximum
+contrast; Matrix breaks that rule deliberately, since that is the whole point of it.
 
-Ba lớp chặn, mỗi lớp có test hồi quy trong `test/server.test.js`:
+One self-contained page. No build step, no external dependency, no CDN — the strict CSP would block
+one anyway.
 
-- **Token khi khởi động** (kiểu Jupyter) — in kèm URL, so khớp `timingSafeEqual`. Chặn process
-  khác trên cùng máy đọc index. `--open` xử lý tự động; trang tự gỡ token khỏi thanh địa chỉ sau
-  khi tải để nó không lọt vào history.
-- **Kiểm tra `Host`** — chặn DNS rebinding, tức trang web độc trỏ DNS về `127.0.0.1` để đọc API
-  của bạn. Loopback thôi là chưa đủ cho ca này.
-- **Không có CORS header** — trang cross-origin gửi được request nhưng không đọc được response.
+The server **binds to `127.0.0.1` only, is read-only**, and keeps its indexes fresh with a file
+watcher.
 
-### Luồng dùng hàng ngày
+Three layers of protection, each with a regression test in `test/server.test.js`:
+
+- **A startup token** (Jupyter style) — printed with the URL, compared with `timingSafeEqual`.
+  Stops another process on the same machine from reading your index. `--open` handles it for you,
+  and the page strips the token from the address bar after load so it never reaches history.
+- **A `Host` check** — blocks DNS rebinding, where a malicious page points its own DNS at
+  `127.0.0.1` to read your API. Binding to loopback alone does not stop that.
+- **No CORS headers** — a cross-origin page can send a request but cannot read the response.
+
+### Daily workflow
 
 ```bash
 git diff --name-only | codelens affected
 ```
 
-Trả về: symbol nào đã đổi, cái gì chạm tới chúng, và **những test sẵn có đang phủ** — tức là
-danh sách test cần chạy lại. Trên spring-petclinic, sửa `Owner.java` cho ra 18 test liên quan.
+That returns which symbols changed, what reaches them, and **which existing tests cover them** — in
+other words, the list of tests to re-run. On spring-petclinic, touching `Owner.java` produces 18
+relevant tests.
 
-## Gắn vào Claude Code
+## Using it from Claude Code
 
 ```bash
 codelens install claude-user
 ```
 
-In thay đổi trước khi ghi, luôn giữ `.bak`. Hoặc thủ công:
+It prints the change before writing and always keeps a `.bak`. Targets are `claude-user`,
+`claude-project` and `cursor`. Or do it by hand:
 
 ```bash
-claude mcp add codelens -- node /Users/MAC/AI-TOOL/codelens/bin/codelens.js mcp
+claude mcp add codelens -- node ~/AI-TOOL/codelens/bin/codelens.js mcp
 ```
 
-Bốn tool: `codelens_explore`, `codelens_impact`, `codelens_affected`, `codelens_status`. Mỗi tool
-nhận `projectPath` nên **một server dùng chung mọi repo**. Index tự cập nhật bằng file watcher.
+Four tools: `codelens_explore`, `codelens_impact`, `codelens_affected`, `codelens_status`. Each
+takes a `projectPath`, so **one server serves every repository**. Indexes stay current through the
+file watcher.
 
-`codelens install` chỉ tự nhận diện agent đã có sẵn file cấu hình. Bản project-scope
-(`.mcp.json` trong thư mục hiện tại) **không bao giờ tự động** — phải gọi tên rõ ràng, để không
-vô tình thả file cấu hình vào repo team.
+`codelens install` only auto-detects agents that already have a config file. The project-scoped
+variant (`.mcp.json` in the current directory) is **never** automatic — you have to name it
+explicitly, so a config file can never be dropped into a team repo by accident.
 
-## Kiến trúc
+## Architecture
 
 ```
-src/lang.js              nạp grammar WASM (web-tree-sitter)
-src/project.js           duyệt file, tôn trọng .gitignore
-src/extract/{java,ruby,typescript}.js   AST → symbol / import / local / call site
-src/resolve/{java,ruby,typescript}.js   call site → định nghĩa thật   ← khó nhất
-src/bindings/index.js    khung plugin + khớp provider/consumer
+src/lang.js              loads the WASM grammars (web-tree-sitter)
+src/project.js           walks files, respecting .gitignore
+src/extract/{java,ruby,typescript}.js   AST → symbols / imports / locals / call sites
+src/resolve/{java,ruby,typescript}.js   call site → real definition   ← the hard part
+src/bindings/index.js    plugin framework + provider/consumer matching
 src/bindings/{mybatis,camel,sqs,flyway}.js
+src/schema/rails.js      db/schema.rb → ActiveRecord attributes
 src/indexer.js           extract → SQLite → resolve → bindings
-src/query.js             tra cứu, callers/callees, blast radius
-src/format.js            payload text cho agent
+src/query.js             lookup, callers/callees, blast radius
+src/format.js            text payloads for the agent
+src/server.js            read-only multi-repo HTTP server
+src/ui/app.html          the web UI, one self-contained page
 src/watch.js             auto-sync
-src/mcp.js               JSON-RPC stdio, tự viết, không thêm dependency
-scripts/ast.js           dump AST — để viết extractor mới
-scripts/bench.js         đo chất lượng trên repo thật
+src/mcp.js               JSON-RPC over stdio, hand-rolled, no extra dependency
+scripts/ast.js           dump an AST — for writing a new extractor
+scripts/bench.js         measure quality against real repositories
 ```
 
-### Độ tin cậy của cạnh
+### Edge confidence
 
-Mỗi cạnh mang `confidence` + ghi chú `via` giải thích cách suy ra, để cạnh sai truy ngược được:
+Every edge carries a `confidence` and a `via` note explaining how it was derived, so a wrong edge
+can be traced back:
 
-| conf. | via | Nghĩa |
+| conf. | via | Meaning |
 |---|---|---|
-| 1.0 | `direct` | Biết kiểu receiver, tìm thấy method trên kiểu đó hoặc lớp cha |
-| 0.95 | `binding:mybatis` | Method mapper ↔ câu SQL cùng id |
-| 0.9 | `interface->impl` | Receiver là interface → nối tới bản cài đặt |
-| 0.9 | `binding:camel` | Cùng URI endpoint |
-| 0.85 | `binding:sqs` | Cùng tên queue |
-| 0.8 | `rails-association` | Kiểu suy ra từ reader do `belongs_to`/`has_many` sinh |
-| 0.7 | `self-chain`, `module->includer` | Qua chuỗi tổ tiên / mixin |
-| 0.6 | `binding:flyway` | Khớp bảng ↔ entity theo **quy ước đặt tên** |
-| 0.5 / 0.4 | `unique-name` | Không có thông tin kiểu, đúng một method trùng tên (Ruby thấp hơn) |
+| 1.0 | `direct` | Receiver type known, method found on it or on a superclass |
+| 0.95 | `binding:mybatis` | Mapper method ↔ SQL statement with the same id |
+| 0.9 | `interface->impl` | Receiver is an interface → linked to the implementation |
+| 0.9 | `binding:camel` | Same endpoint URI |
+| 0.85 | `binding:sqs` | Same queue name |
+| 0.8 | `rails-association` | Type inferred from a reader generated by `belongs_to`/`has_many` |
+| 0.7 | `self-chain`, `module->includer` | Through the ancestor chain or a mixin |
+| 0.6 | `binding:flyway` | Table ↔ entity matched **by naming convention** |
+| 0.5 / 0.4 | `unique-name` | No type information, exactly one method with that name (lower for Ruby) |
 
-Fallback `unique-name` **không được áp dụng** khi tên đó là built-in của runtime: nối `xs.map()`
-vào một method `map` bất kỳ trong repo là bịa ra cạnh, không phải suy luận.
+The `unique-name` fallback is **suppressed** when the name is a runtime built-in: linking `xs.map()`
+to some arbitrary `map` method in the repo is inventing an edge, not inferring one.
 
-Symbol do plugin sinh ra (câu SQL, route, migration) được đánh dấu `generated` và `explore` ghi rõ
-*"derived, not written in this file"*.
+Plugin-generated symbols (SQL statements, routes, migrations) are marked `generated`, and `explore`
+says so explicitly: *"derived, not written in this file"*.
 
-### Vì sao duyệt AST thủ công thay vì tree-sitter query
+### Why walk the AST by hand instead of using tree-sitter queries
 
-Query string vỡ **âm thầm** khi grammar đổi version — vẫn chạy, chỉ trả 0 match. Duyệt tay dài hơn
-nhưng sai ở đâu lộ ở đó. Dùng `scripts/ast.js <file>` để xem cây thật.
+Query strings break **silently** when a grammar changes version — they still run, they just return
+zero matches. Walking by hand is longer but fails where the failure is. Use `scripts/ast.js <file>`
+to see the real tree.
 
-### Version bị ghim
+### Pinned versions
 
-`web-tree-sitter@0.25.10` + `tree-sitter-wasms@0.1.13`. Runtime 0.26 **không đọc được** grammar
-0.1.13 (lỗi ABI khi `Language.load`).
+`web-tree-sitter@0.25.10` + `tree-sitter-wasms@0.1.13`. Runtime 0.26 **cannot load** 0.1.13
+grammars (an ABI error at `Language.load`). Both are pinned to exact versions, which doubles as a
+supply-chain measure: `npm ci` reproduces the same tree every time.
 
-### Schema đổi thì index tự dựng lại
+### Schema changes rebuild the index
 
-Index là cache. Tăng `SCHEMA_VERSION` trong `src/db.js` là index cũ bị xoá và dựng lại.
+The index is a cache. Bumping `SCHEMA_VERSION` in `src/db.js` deletes the stale index and rebuilds
+it automatically.
 
-## Test
+## Tests
 
 ```bash
 npm test
 ```
 
-127 test trên 5 bộ fixture cộng hồi quy, bảo mật và multi-repo:
+131 tests across five fixture suites plus regression, security and multi-repo coverage:
 
-| Fixture | Mô phỏng | Chuỗi mà grep không lần ra |
+| Fixture | Simulates | The chain grep cannot follow |
 |---|---|---|
-| `java` | Spring: Controller → interface Service → Impl → interface Repository | DI xuyên 2 lớp interface + overload cùng arity |
-| `ruby` | Rails: model, concern, service object, controller | `donor.name` — `donor` do `belongs_to` sinh, `name` do `attr_reader` sinh |
-| `ts` | TS + JS: barrel file, tsconfig alias, DI qua constructor | import qua `export *` rồi mới tới class thật |
-| `bindings` | MyBatis + Camel + SQS + Flyway | Java producer → Ruby Shoryuken worker qua tên queue |
-| toàn bộ `__fixtures__` | Một repo chứa cả 4 ngôn ngữ | Resolver không xoá đè đồ thị của nhau |
+| `java` | Spring: Controller → Service interface → Impl → Repository interface | DI across two interface layers, plus same-arity overloads |
+| `ruby` | Rails: model, concern, service object, controller | `donor.name` — `donor` generated by `belongs_to`, `name` by `attr_reader` |
+| `ts` | TS + JS: barrel files, tsconfig aliases, constructor DI | an import through `export *` before reaching the real class |
+| `bindings` | MyBatis + Camel + SQS + Flyway | a Java producer → a Ruby Shoryuken worker, matched on queue name |
+| all of `__fixtures__` | One repo containing all four languages | resolvers not wiping each other's graphs |
 
-`test/regressions.test.js` khoá lại từng bug đã sửa: ký tự đại diện LIKE, thứ tự chấm điểm,
-gộp cạnh trùng, kế toán file khi sync, luật ignore của watcher, nhận diện test, và file rỗng /
-sai cú pháp / có tiếng Việt + emoji.
+`test/regressions.test.js` locks down every bug that has been fixed: LIKE wildcards, scoring order,
+duplicate edge collapsing, file accounting on sync, the watcher's ignore rules, test detection, and
+empty / syntactically broken / Vietnamese-and-emoji files.
 
-Test khẳng định fixture Java và Ruby **không còn miss nào**; phần còn lại đều được quy về đúng thư
-viện. Nếu resolver sau này hụt một call nội bộ, test đỏ ngay.
+The tests assert that the Java and Ruby fixtures have **zero misses**, and that everything else is
+attributed to the right library. If a resolver later drops an internal call, a test goes red.
 
-## Hạn chế đã biết
+## Known limits
 
-- **Chuỗi fluent** vẫn là nhóm miss lớn nhất. Kiểu được lan truyền qua chuỗi khi mọi mắt xích nằm
-  trong repo; chạm vào kiểu thư viện là dừng.
-- **JS thuần không có type annotation** → không suy được kiểu receiver. Báo là miss, không đoán bừa.
-- **SQS xuyên repo**: đã hỗ trợ — `codelens serve <workspace>` khớp endpoint giữa các index.
-  Riêng CLI vẫn làm việc trên một repo tại một thời điểm.
-- **Inflector Ruby** đơn giản, không xử lý bất quy tắc (`people`/`person`).
-- **MyBatis dạng annotation** (`@Select` trên method) không cần binding — SQL đã nằm sẵn trong method.
+- **Fluent chains** remain the largest miss bucket. Types propagate along a chain while every link
+  is in the repo; the moment it touches a library type, it stops.
+- **Plain JS with no type annotations** gives no receiver type to infer. Reported as a miss rather
+  than guessed.
+- **Cross-repo SQS**: supported — `codelens serve <workspace>` matches endpoints across indexes.
+  The CLI still works on one repo at a time.
+- **The Ruby inflector** is simple and does not handle irregulars (`people`/`person`).
+- **Annotation-style MyBatis** (`@Select` on the method) needs no binding — the SQL is already in
+  the method.
 
-## Việc còn lại
+## Roadmap
 
-- [ ] Đưa multi-repo xuống CLI và MCP (hiện mới có ở web UI)
+- [ ] Bring multi-repo down to the CLI and MCP (currently web UI only)
 - [ ] Ruby: `delegate`, `method_missing`, concern `included do`
-- [ ] TS: generic, decorator (NestJS/Angular DI)
-- [ ] Đọc `.d.ts` trong `node_modules` để resolve API thư viện
+- [ ] TS: generics, decorators (NestJS/Angular DI)
+- [ ] Read `.d.ts` from `node_modules` to resolve library APIs
