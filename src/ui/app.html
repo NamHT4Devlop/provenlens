@@ -217,47 +217,67 @@ async function api(path, params) {
 let alpha = 0;
 function kick(v = 1) { alpha = v; }
 
-function step() {
-  if (alpha > 0.002) {
-    alpha *= 0.985;
-    const visible = nodes.filter((n) => n.shown);
-    const cx = cv.clientWidth / 2;
-    const cy = cv.clientHeight / 2;
+/**
+ * One iteration of the physics. Split out so it can be run without drawing.
+ * `cool` is the decay: the settling pass uses a slower one so more of the work
+ * happens while repulsion is still strong enough to separate the nodes.
+ */
+function tick(cool = 0.985) {
+  alpha *= cool;
+  const visible = nodes.filter((n) => n.shown);
+  const cx = cv.clientWidth / 2;
+  const cy = cv.clientHeight / 2;
 
-    for (const a of visible) {
-      a.vx = (a.vx ?? 0) * 0.86;
-      a.vy = (a.vy ?? 0) * 0.86;
-      // Pull gently to the middle so the graph cannot drift off screen.
-      a.vx += (cx - a.x) * 0.0016 * alpha;
-      a.vy += (cy - a.y) * 0.0016 * alpha;
-    }
-    for (let i = 0; i < visible.length; i++) {
-      for (let j = i + 1; j < visible.length; j++) {
-        const a = visible[i], b = visible[j];
-        let dx = b.x - a.x, dy = b.y - a.y;
-        let d2 = dx * dx + dy * dy;
-        if (d2 < 1) { dx = Math.random() - 0.5; dy = Math.random() - 0.5; d2 = 1; }
-        if (d2 > 490000) continue;
-        const f = (46000 * alpha) / d2;
-        const d = Math.sqrt(d2);
-        a.vx -= (dx / d) * f; a.vy -= (dy / d) * f;
-        b.vx += (dx / d) * f; b.vy += (dy / d) * f;
-      }
-    }
-    for (const e of edges) {
-      const a = byId.get(e.from), b = byId.get(e.to);
-      if (!a?.shown || !b?.shown) continue;
-      const dx = b.x - a.x, dy = b.y - a.y;
-      const d = Math.hypot(dx, dy) || 1;
-      const f = ((d - 175) * 0.012 * alpha);
-      a.vx += (dx / d) * f; a.vy += (dy / d) * f;
-      b.vx -= (dx / d) * f; b.vy -= (dy / d) * f;
-    }
-    for (const n of visible) {
-      if (n === dragNode) continue;
-      n.x += n.vx; n.y += n.vy;
+  for (const a of visible) {
+    a.vx = (a.vx ?? 0) * 0.86;
+    a.vy = (a.vy ?? 0) * 0.86;
+    // Pull gently to the middle so the graph cannot drift off screen.
+    a.vx += (cx - a.x) * 0.0016 * alpha;
+    a.vy += (cy - a.y) * 0.0016 * alpha;
+  }
+  for (let i = 0; i < visible.length; i++) {
+    for (let j = i + 1; j < visible.length; j++) {
+      const a = visible[i], b = visible[j];
+      let dx = b.x - a.x, dy = b.y - a.y;
+      let d2 = dx * dx + dy * dy;
+      if (d2 < 1) { dx = Math.random() - 0.5; dy = Math.random() - 0.5; d2 = 1; }
+      if (d2 > 490000) continue;
+      const f = (46000 * alpha) / d2;
+      const d = Math.sqrt(d2);
+      a.vx -= (dx / d) * f; a.vy -= (dy / d) * f;
+      b.vx += (dx / d) * f; b.vy += (dy / d) * f;
     }
   }
+  for (const e of edges) {
+    const a = byId.get(e.from), b = byId.get(e.to);
+    if (!a?.shown || !b?.shown) continue;
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const d = Math.hypot(dx, dy) || 1;
+    const f = ((d - 175) * 0.012 * alpha);
+    a.vx += (dx / d) * f; a.vy += (dy / d) * f;
+    b.vx -= (dx / d) * f; b.vy -= (dy / d) * f;
+  }
+  for (const n of visible) {
+    if (n === dragNode) continue;
+    n.x += n.vx; n.y += n.vy;
+  }
+}
+
+/**
+ * Runs the layout to rest before anything is drawn.
+ *
+ * Leaving it to the animation loop means a graph opened in a background tab
+ * never settles: Chrome throttles requestAnimationFrame to a few frames a
+ * minute there, so the picture would be frozen mid-spread on return.
+ */
+function settle(iterations = 600) {
+  alpha = 1;
+  for (let i = 0; i < iterations && alpha > 0.002; i++) tick(0.992);
+  alpha = 0.02;
+}
+
+function step() {
+  if (alpha > 0.002) tick();
   draw();
   requestAnimationFrame(step);
 }
@@ -391,7 +411,7 @@ function mergeGraph(g, seedAt) {
   }
   applyFilters();
   markAdjacent();
-  kick(0.9);
+  settle();
 }
 
 async function focusSymbol(id, { reset = false } = {}) {
