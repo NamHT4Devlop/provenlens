@@ -114,7 +114,8 @@ describe('incremental indexing', () => {
 describe('watcher ignore rules', () => {
   test('skips the directories discovery skips', () => {
     // The watcher used to test `rel.includes('/node_modules/')`, which misses
-    // the top-level directory, so npm install triggered endless reindexing.
+    // the top-level directory, so installing dependencies triggered endless
+    // reindexing.
     const ignored = buildIgnoreFilter(process.cwd());
     for (const path of [
       'node_modules/react/index.js',

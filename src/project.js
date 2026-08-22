@@ -79,8 +79,8 @@ function buildIgnore(root) {
 
 /**
  * A predicate matching what discovery skips: .gitignore plus the directories
- * that are never source. The watcher uses the same one, so a build or an
- * `npm install` cannot trigger a reindex that discovery would ignore anyway.
+ * that are never source. The watcher uses the same one, so a build or a
+ * dependency install cannot trigger a reindex that discovery would ignore anyway.
  */
 export function buildIgnoreFilter(root) {
   const ig = buildIgnore(root);

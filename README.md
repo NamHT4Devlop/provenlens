@@ -23,15 +23,21 @@ to compile** — `node:sqlite` ships inside Node 22+, and the grammars are WASM.
 | | Why |
 |---|---|
 | **Node.js 22 or newer** | codelens uses `node:sqlite`, which only exists from Node 22. Nothing else is needed — no compiler, no native modules, no database server. |
+| **Yarn 1.22 (Classic)** | The package manager this project is set up for; `packageManager` in `package.json` pins it. |
 | A shell on macOS or Linux | Windows works under WSL. |
 
 Check what you have:
 
 ```bash
-node -v
+node -v && yarn --version
 ```
 
-If it prints anything below `v22`, upgrade Node first — every other step will fail otherwise.
+If Node prints anything below `v22`, upgrade it first — every other step will fail otherwise.
+If yarn is missing:
+
+```bash
+npm install -g yarn
+```
 
 ### 2. Get the code and install dependencies
 
@@ -40,12 +46,14 @@ git clone git@github.com:NamHT4Devlop/codelens.git ~/AI-TOOL/codelens
 ```
 
 ```bash
-cd ~/AI-TOOL/codelens && npm install
+cd ~/AI-TOOL/codelens && yarn install
 ```
 
-That pulls exactly four dependencies: `commander`, `ignore`, `web-tree-sitter` and
-`tree-sitter-wasms`. All four are pinned to exact versions (no `^`, no `~`), so a fresh install
-today resolves to the same bytes it resolved to when the benchmarks below were measured.
+That pulls exactly four packages: `commander`, `ignore`, `web-tree-sitter` and
+`tree-sitter-wasms`. Four is the whole tree — **they bring no transitive dependencies at all** —
+and each is pinned to an exact version (no `^`, no `~`), so a fresh install today resolves to the
+same bytes it resolved to when the benchmarks below were measured. `yarn audit` reports 0
+vulnerabilities across all four.
 
 ### 3. Put `codelens` on your PATH
 
@@ -53,8 +61,8 @@ today resolves to the same bytes it resolved to when the benchmarks below were m
 ln -sf ~/AI-TOOL/codelens/bin/codelens.js ~/.local/bin/codelens
 ```
 
-Use a symlink rather than `npm link`. `npm link` installs into the bin directory of *the Node
-version you happen to be running* (`~/.nvm/versions/node/vXX/bin`), so switching Node versions
+Use a symlink rather than `yarn link` or `npm link`. Both install into the bin directory of *the
+Node version you happen to be running* (`~/.nvm/versions/node/vXX/bin`), so switching Node versions
 makes the command silently disappear. A symlink into `~/.local/bin` survives that.
 
 If `~/.local/bin` is not already on your PATH, add it:
@@ -217,7 +225,7 @@ codelens itself.
 | `zsh: command not found: codelens` | The symlink is missing, or `~/.local/bin` is not on your PATH. Run `ls -l ~/.local/bin/codelens` and `echo $PATH` to see which. |
 | `Cannot find module 'node:sqlite'` | Node is older than 22. Check `node -v`, then upgrade. |
 | `no index — run: codelens init` | That repository has never been indexed. `cd` into it and run `codelens init .`. |
-| A `Language.load` / ABI error on first run | Something upgraded `web-tree-sitter` past 0.25.10. Run `npm ci` to restore the pinned versions — see [Pinned versions](#pinned-versions). |
+| A `Language.load` / ABI error on first run | Something upgraded `web-tree-sitter` past 0.25.10. Run `yarn install --frozen-lockfile` to restore the pinned versions — see [Pinned versions](#pinned-versions). |
 | `EADDRINUSE` from `codelens serve` | Port 7777 is already taken, most likely by an earlier `serve`. Use `codelens serve -p 7800`, or stop the old one. |
 | The web UI answers `403 Forbidden` | You opened `127.0.0.1:7777` without the token. Copy the whole URL that `serve` printed, token and all — `--open` does it for you. |
 
@@ -488,7 +496,9 @@ to see the real tree.
 
 `web-tree-sitter@0.25.10` + `tree-sitter-wasms@0.1.13`. Runtime 0.26 **cannot load** 0.1.13
 grammars (an ABI error at `Language.load`). Both are pinned to exact versions, which doubles as a
-supply-chain measure: `npm ci` reproduces the same tree every time.
+supply-chain measure: `yarn.lock` is committed with integrity hashes, so
+`yarn install --frozen-lockfile` reproduces the same tree every time and fails loudly rather than
+silently resolving something new.
 
 ### Schema changes rebuild the index
 
@@ -498,7 +508,7 @@ it automatically.
 ## Tests
 
 ```bash
-npm test
+yarn test
 ```
 
 131 tests across five fixture suites plus regression, security and multi-repo coverage:
