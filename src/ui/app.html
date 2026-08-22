@@ -20,13 +20,14 @@
     --code-bg: #012b36;
     --edge: rgba(147,161,161,.5); --edge-dim: rgba(147,161,161,.15);
     --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --ui-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     --panel-w: 520px;
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; }
   body {
     background: var(--bg); color: var(--ink); overflow: hidden;
-    font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font: 13px/1.5 var(--ui-font);
   }
   header {
     position: absolute; inset: 0 auto auto 0; width: 100%; z-index: 3;
@@ -171,6 +172,8 @@
  *
  * Solarized leads because it was designed around reduced eye strain rather
  * than maximum contrast, which is the complaint a pure black canvas earns.
+ * Matrix breaks that rule on purpose -- it is the look, not a default -- so it
+ * also carries its own font and repo hues to keep the whole page in palette.
  */
 const THEMES = {
   'solarized-dark': {
@@ -223,6 +226,19 @@ const THEMES = {
       'code-bg': '#292e39', edge: 'rgba(216,222,233,.45)', 'edge-dim': 'rgba(216,222,233,.14)',
     },
   },
+  matrix: {
+    label: 'Matrix',
+    glow: true,
+    font: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
+    vars: {
+      bg: '#000000', panel: '#020a04', line: '#0d3b18', ink: '#00c740',
+      'ink-strong': '#adffc0', muted: '#1d7a33', accent: '#39ff70', warn: '#b6ff00',
+      seed: '#d6ffe0', cross: '#00ffa3', class: '#00ff41', method: '#00d437',
+      fn: '#5cff87', field: '#0aa62f', file: '#7dffa0', sql: '#00ffa3', route: '#b6ff00',
+      'code-bg': '#000000', edge: 'rgba(0,255,65,.38)', 'edge-dim': 'rgba(0,255,65,.12)',
+    },
+    repoColors: ['#00ff41', '#00ffa3', '#b6ff00', '#5cff87', '#00c740', '#adffc0', '#0aa62f'],
+  },
   'one-dark': {
     label: 'One Dark',
     vars: {
@@ -235,12 +251,24 @@ const THEMES = {
   },
 };
 
+// Held so the canvas can ask about more than colour -- whether to glow, for one.
+let theme = THEMES['solarized-dark'];
+
 function applyTheme(name) {
-  const theme = THEMES[name] ?? THEMES['solarized-dark'];
+  theme = THEMES[name] ?? THEMES['solarized-dark'];
   for (const [key, value] of Object.entries(theme.vars)) {
     document.documentElement.style.setProperty('--' + key, value);
   }
+  // A theme may set the interface font too; the rest fall back to the default.
+  document.documentElement.style.setProperty(
+    '--ui-font',
+    theme.font ?? '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+  );
   try { localStorage.setItem('codelens.theme', name); } catch { /* private mode */ }
+  // Swatches and the canvas hold colours of their own; CSS variables miss them.
+  renderFilters();
+  renderRepos();
+  draw();
 }
 
 const $ = (id) => document.getElementById(id);
@@ -265,7 +293,10 @@ const REPO_COLORS = ['#7aa2ff', '#2dd4bf', '#fbbf24', '#f472b6', '#a78bfa', '#4a
 let repos = [];
 let activeRepo = null; // null = every repository
 
-const repoColor = (id) => REPO_COLORS[id % REPO_COLORS.length];
+const repoColor = (id) => {
+  const palette = theme.repoColors ?? REPO_COLORS;
+  return palette[id % palette.length];
+};
 const repoName = (id) => repos.find((r) => r.id === id)?.name ?? '';
 
 const KINDS = [
@@ -458,8 +489,14 @@ function draw() {
     } else {
       ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
     }
-    ctx.fillStyle = n.isRepo ? repoColor(n.repo) : n.seed ? css('--seed') : colorOf(n.kind);
+    const fill = n.isRepo ? repoColor(n.repo) : n.seed ? css('--seed') : colorOf(n.kind);
+    if (theme.glow && !dim) {
+      ctx.shadowColor = fill;
+      ctx.shadowBlur = 14;
+    }
+    ctx.fillStyle = fill;
     ctx.fill();
+    ctx.shadowBlur = 0;
     // Selection is drawn on the node itself; the repository ring sits outside
     // it, so picking a node never hides which repository it came from.
     if (n === hover || selected?.id === n.id) {
@@ -481,9 +518,15 @@ function draw() {
     if (label) {
       ctx.font = (n.isRepo || n.seed ? '600 ' : '') +
         Math.max(10, (n.isRepo ? 13 : 11) * view.k) + 'px ui-monospace, monospace';
-      ctx.fillStyle = dim ? css('--muted') : css('--ink-strong');
+      const labelColor = dim ? css('--muted') : css('--ink-strong');
+      if (theme.glow && !dim) {
+        ctx.shadowColor = labelColor;
+        ctx.shadowBlur = 8;
+      }
+      ctx.fillStyle = labelColor;
       ctx.textAlign = 'center';
       ctx.fillText(n.name.length > 26 ? n.name.slice(0, 25) + '…' : n.name, p.x, p.y + r + 13);
+      ctx.shadowBlur = 0;
     }
     ctx.globalAlpha = 1;
   }
@@ -757,10 +800,13 @@ document.addEventListener('keydown', (e) => {
 });
 
 // ---- filter chips -----------------------------------------------------------
-$('filters').innerHTML = KINDS.map(([key, label]) =>
-  '<span class="chip" data-k="' + key + '" aria-pressed="true">' +
-  '<span class="dot" style="background:' + css(COLORS[KINDS.find((x) => x[0] === key)[2][0]]) + '"></span>' +
-  esc(label) + '</span>').join('');
+function renderFilters() {
+  $('filters').innerHTML = KINDS.map(([key, label, kinds]) =>
+    '<span class="chip" data-k="' + key + '" aria-pressed="' + enabled.has(key) + '">' +
+    '<span class="dot" style="background:' + css(COLORS[kinds[0]]) + '"></span>' +
+    esc(label) + '</span>').join('');
+}
+renderFilters();
 
 $('filters').addEventListener('click', (e) => {
   const chip = e.target.closest('.chip');
