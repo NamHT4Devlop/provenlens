@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.shop.mapper.OrderMapper">
+
+  <select id="findById" resultType="com.shop.mapper.Order">
+    SELECT id, reference FROM orders WHERE id = #{id}
+  </select>
+
+  <select id="findAll" resultType="com.shop.mapper.Order">
+    SELECT id, reference FROM orders ORDER BY id
+  </select>
+
+  <insert id="insertOrder" parameterType="com.shop.mapper.Order">
+    INSERT INTO orders (reference) VALUES (#{reference})
+  </insert>
+
+</mapper>

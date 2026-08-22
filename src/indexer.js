@@ -7,6 +7,7 @@ import { resolveJava } from './resolve/java.js';
 import { resolveRuby } from './resolve/ruby.js';
 import { resolveTypeScript } from './resolve/typescript.js';
 import { discoverFiles } from './project.js';
+import { runBindings } from './bindings/index.js';
 import { setMeta } from './db.js';
 
 function sha1(text) {
@@ -231,6 +232,10 @@ export async function indexProject(db, root, { full = false, onProgress } = {}) 
     if (count > 0) resolveStats[name] = fn(db, root);
   }
 
+  // Bindings run last: they join endpoints the call graph cannot see, and the
+  // Flyway plugin reads statements the MyBatis plugin has just created.
+  const bindingStats = runBindings(db, root);
+
   setMeta(db, 'last_indexed_at', Date.now());
-  return { ...stats, resolve: resolveStats };
+  return { ...stats, resolve: resolveStats, bindings: bindingStats };
 }

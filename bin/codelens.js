@@ -48,16 +48,25 @@ function reportIndex(stats) {
   );
   if (stats.pending) {
     const pendingLangs = Object.keys(stats.byLang).filter((l) => !IMPLEMENTED_LANGUAGES.includes(l));
-    console.log(
-      `${stats.pending} file(s) discovered but not parsed — no extractor yet for: ${pendingLangs.join(', ')}`,
-    );
+    if (pendingLangs.length) {
+      console.log(
+        `${stats.pending} file(s) discovered but not parsed — no extractor yet for: ${pendingLangs.join(', ')}`,
+      );
+    }
   }
   for (const [lang, r] of Object.entries(stats.resolve ?? {})) {
-    const total = r.direct + r.viaImpl + r.uniqueName + r.unresolved;
-    const pct = total ? (((r.direct + r.viaImpl) / total) * 100).toFixed(1) : '0.0';
+    // Library calls are excluded from the denominator: they are not misses,
+    // and counting them makes the figure mostly a measure of framework use.
+    const inRepo = r.direct + r.viaImpl + r.uniqueName + r.unresolved;
+    const pct = inRepo ? (((r.direct + r.viaImpl + r.uniqueName) / inRepo) * 100).toFixed(1) : '0.0';
     console.log(
       `${lang}: ${r.direct} direct, ${r.viaImpl} via impl, ${r.uniqueName} by name, ` +
-        `${r.unresolved} unresolved (${pct}% typed)`,
+        `${r.unresolved} missed, ${r.external ?? 0} library (${pct}% of in-repo calls linked)`,
+    );
+  }
+  for (const [plugin, b] of Object.entries(stats.bindings ?? {})) {
+    console.log(
+      `${plugin}: ${b.provider ?? 0} provider(s), ${b.consumer ?? 0} consumer(s), ${b.wired} wired`,
     );
   }
 }
@@ -127,13 +136,39 @@ program
     console.log(`root:    ${root}`);
     console.log(`indexed: ${last ? new Date(Number(last)).toISOString() : 'never'}`);
     console.log(`files:   ${s.files}   symbols: ${s.symbols}   types: ${s.types}`);
-    console.log(`edges:   ${s.edges}   call sites: ${s.refs}   unresolved: ${s.unresolved}`);
-    const resolvedPct = s.refs ? (((s.refs - s.unresolved) / s.refs) * 100).toFixed(1) : '0.0';
-    console.log(`resolution: ${resolvedPct}% of call sites linked`);
+    const external = db.prepare('SELECT COUNT(*) AS n FROM unresolved WHERE external = 1').get().n;
+    const linked = s.refs - s.unresolved;
+    const inRepo = s.refs - external;
+    const pct = inRepo ? ((linked / inRepo) * 100).toFixed(1) : '0.0';
+    console.log(`edges:   ${s.edges}   call sites: ${s.refs}`);
+    console.log(
+      `calls:   ${linked} linked, ${external} into libraries, ${s.unresolved - external} missed`,
+    );
+    console.log(`resolution: ${pct}% of the calls that could be in this repo`);
+
+    const bindings = db
+      .prepare('SELECT plugin, role, COUNT(*) AS n FROM bindings GROUP BY plugin, role')
+      .all();
+    if (bindings.length) {
+      const byPlugin = {};
+      for (const b of bindings) (byPlugin[b.plugin] ??= {})[b.role] = b.n;
+      console.log('framework bindings:');
+      for (const [plugin, roles] of Object.entries(byPlugin)) {
+        console.log(
+          `  ${plugin.padEnd(10)} ${roles.provider ?? 0} provider(s), ${roles.consumer ?? 0} consumer(s)`,
+        );
+      }
+    }
     console.log('by language:');
     for (const l of s.byLang) {
-      const impl = IMPLEMENTED_LANGUAGES.includes(l.lang) ? '' : '  (no extractor yet)';
-      console.log(`  ${l.lang.padEnd(12)} ${String(l.n).padStart(5)}${impl}`);
+      // xml and sql have no grammar but are read by the binding plugins, so
+      // they are covered, just not parsed.
+      const note = IMPLEMENTED_LANGUAGES.includes(l.lang)
+        ? ''
+        : ['xml', 'sql'].includes(l.lang)
+          ? '  (read by framework bindings)'
+          : '  (no extractor yet)';
+      console.log(`  ${l.lang.padEnd(12)} ${String(l.n).padStart(5)}${note}`);
     }
   });
 

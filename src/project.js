@@ -51,8 +51,12 @@ function buildIgnore(root) {
   return ig;
 }
 
-/** Yields every indexable source file under `root`, as repo-relative paths. */
-export function discoverFiles(root, { maxBytes = 2_000_000 } = {}) {
+/**
+ * Walks the tree once, honouring .gitignore, and returns the repo-relative
+ * paths `accept` says yes to. Binding plugins use it for XML and SQL, which
+ * have no grammar but still wire the system together.
+ */
+export function walkFiles(root, accept, { maxBytes = 2_000_000 } = {}) {
   const ig = buildIgnore(root);
   const found = [];
 
@@ -71,7 +75,7 @@ export function discoverFiles(root, { maxBytes = 2_000_000 } = {}) {
       if (entry.isDirectory()) {
         visit(abs);
       } else if (entry.isFile()) {
-        if (!langForPath(rel)) continue;
+        if (!accept(rel)) continue;
         try {
           if (statSync(abs).size > maxBytes) continue;
         } catch {
@@ -84,4 +88,9 @@ export function discoverFiles(root, { maxBytes = 2_000_000 } = {}) {
 
   visit(root);
   return found.sort();
+}
+
+/** Every source file with a grammar, as repo-relative paths. */
+export function discoverFiles(root, opts) {
+  return walkFiles(root, (rel) => Boolean(langForPath(rel)), opts);
 }

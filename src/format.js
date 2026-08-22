@@ -20,6 +20,12 @@ function confidenceNote(e) {
   return ` [${e.via}, confidence ${e.confidence.toFixed(2)}]`;
 }
 
+/** Symbols a plugin invented (SQL statements, routes, migrations) say so. */
+function originNote(s) {
+  const modifiers = JSON.parse(s.modifiers || '[]');
+  return modifiers.includes('generated') ? '  (derived, not written in this file)' : '';
+}
+
 function subtypesOf(db, symbolId) {
   return db
     .prepare(
@@ -71,7 +77,7 @@ export function formatExplore(db, root, query, { maxMatches = 3, maxLines = 120 
 
   for (const [i, sym] of shown.entries()) {
     out.push(`## Match ${i + 1}/${shown.length} — ${label(sym)}`);
-    out.push(`${sym.file_path}:${sym.start_line}-${sym.end_line}`, '');
+    out.push(`${sym.file_path}:${sym.start_line}-${sym.end_line}${originNote(sym)}`, '');
 
     const src = symbolSource(root, sym, { maxLines });
     if (src) out.push('```' + sym.lang, src, '```', '');
@@ -112,6 +118,20 @@ export function formatExplore(db, root, query, { maxMatches = 3, maxLines = 120 
       out.push(`### Calls out to (${callees.length})`);
       for (const c of callees) {
         out.push(`- ${c.fqn} — ${c.file_path}:${c.start_line}${confidenceNote(c)} (from L${c.call_line})`);
+      }
+      out.push('');
+    }
+
+    // Links no call graph can see: a queue name, a route URI, a statement id.
+    const wiredOut = calleesOf(db, sym.id).filter((c) => c.via?.startsWith('binding:'));
+    const wiredIn = callersOf(db, sym.id).filter((c) => c.via?.startsWith('binding:'));
+    if (wiredOut.length || wiredIn.length) {
+      out.push('### Wired by framework');
+      for (const c of wiredOut) {
+        out.push(`- ${c.edge_kind} -> ${c.fqn} — ${c.file_path}:${c.start_line}${confidenceNote(c)}`);
+      }
+      for (const c of wiredIn) {
+        out.push(`- ${c.fqn} ${c.edge_kind} this — ${c.file_path}:${c.start_line}${confidenceNote(c)}`);
       }
       out.push('');
     }
