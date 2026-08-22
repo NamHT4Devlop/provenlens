@@ -69,6 +69,21 @@ function typeFromAnnotation(node, src) {
   return normalizeType(text(ann, src));
 }
 
+/** Literal string values of the arguments; null wherever it is not a literal. */
+function stringArgs(argsNode, src) {
+  if (!argsNode) return null;
+  const out = [];
+  let any = false;
+  for (let i = 0; i < argsNode.namedChildCount; i++) {
+    const arg = argsNode.namedChild(i);
+    if (arg && (arg.type === 'string' || arg.type === 'template_string')) {
+      out.push(src.slice(arg.startIndex, arg.endIndex).replace(/^['"`]|['"`]$/g, ''));
+      any = true;
+    } else out.push(null);
+  }
+  return any ? out : null;
+}
+
 export function extractTypeScript(tree, src, ctx = {}) {
   const modulePath = modulePathOf(ctx.path ?? '');
   const symbols = [];
@@ -435,22 +450,40 @@ export function extractTypeScript(tree, src, ctx = {}) {
         if (fn.type === 'member_expression') {
           const obj = childByField(fn, 'object');
           const prop = childByField(fn, 'property');
+
+          // Receiver first, so a.b().c() can link c() back to b().
+          let receiverRefTmp = null;
+          if (obj) {
+            const before = refs.length;
+            walk(obj, typeStack, scopeId, false);
+            if (obj.type === 'call_expression' && refs.length > before) {
+              receiverRefTmp = refs.length - 1;
+            }
+          }
+
           if (prop) {
             refs.push({
               fromTmpId: scopeId,
               name: text(prop, src),
               receiver: obj ? text(obj, src) : null,
+              receiverRefTmp,
               arity: args ? args.namedChildCount : null,
+              str_args: stringArgs(args, src),
               line: node.startPosition.row + 1,
               kind: 'call',
             });
           }
-        } else if (fn.type === 'identifier') {
+          if (args) walk(args, typeStack, scopeId, false);
+          return;
+        }
+        if (fn.type === 'identifier') {
           refs.push({
             fromTmpId: scopeId,
             name: text(fn, src),
             receiver: null,
+            receiverRefTmp: null,
             arity: args ? args.namedChildCount : null,
+            str_args: stringArgs(args, src),
             line: node.startPosition.row + 1,
             kind: 'call',
           });

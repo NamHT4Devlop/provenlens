@@ -50,6 +50,19 @@ function symbolArgName(node, src) {
   return /^[a-z_][\w]*[?!=]?$/i.test(unquoted) ? unquoted : null;
 }
 
+/** Literal string values of the arguments; null wherever it is not a literal. */
+function stringArgs(callNode, src) {
+  const out = [];
+  let any = false;
+  for (const arg of argNodes(callNode)) {
+    if (arg.type === 'string' || arg.type === 'simple_symbol') {
+      out.push(src.slice(arg.startIndex, arg.endIndex).replace(/^[:'"]|['"]$/g, ''));
+      any = true;
+    } else out.push(null);
+  }
+  return any ? out : null;
+}
+
 function argNodes(callNode) {
   const args = childByField(callNode, 'arguments');
   if (!args) return [];
@@ -238,17 +251,40 @@ export function extractRuby(tree, src, ctx = {}) {
         if (containerFqn && applyMacro(node, containerFqn, nest[nest.length - 1])) return;
       }
 
+      // Receiver first, so foo.bar.baz can link baz back to bar.
+      let receiverRefTmp = null;
+      if (receiverNode) {
+        const before = refs.length;
+        walk(receiverNode, nest, scopeId, false, classScopeId);
+        if (receiverNode.type === 'call' && refs.length > before) receiverRefTmp = refs.length - 1;
+      }
+
       if (methodName) {
         refs.push({
           fromTmpId: scopeId,
           name: methodName,
           receiver: receiverNode ? text(receiverNode, src) : null,
+          receiverRefTmp,
           arity: argNodes(node).length,
+          str_args: stringArgs(node, src),
           line: node.startPosition.row + 1,
           kind: methodName === 'new' && receiverNode ? 'new' : 'call',
         });
+
+        if ((methodName === 'require' || methodName === 'require_relative') && argNodes(node).length) {
+          const arg = text(argNodes(node)[0], src).replace(/^['"]|['"]$/g, '');
+          imports.push({ fqn: arg, simple: arg.split('/').pop(), is_wildcard: 0, is_static: 0 });
+        }
       }
-      // Fall through so nested calls inside the receiver/arguments are seen.
+
+      // Arguments and any block still need walking; the receiver already was.
+      for (let i = 0; i < node.namedChildCount; i++) {
+        const c = node.namedChild(i);
+        if (!c || c === receiverNode || c === methodNode) continue;
+        if (receiverNode && c.startIndex === receiverNode.startIndex) continue;
+        walk(c, nest, scopeId, false, classScopeId);
+      }
+      return;
     }
 
     if (node.type === 'assignment') {
@@ -287,14 +323,6 @@ export function extractRuby(tree, src, ctx = {}) {
           line: node.startPosition.row + 1,
           kind: 'ident_call',
         });
-      }
-    }
-
-    if (node.type === 'call' && childByField(node, 'method')) {
-      const m = text(childByField(node, 'method'), src);
-      if ((m === 'require' || m === 'require_relative') && argNodes(node).length) {
-        const arg = text(argNodes(node)[0], src).replace(/^['"]|['"]$/g, '');
-        imports.push({ fqn: arg, simple: arg.split('/').pop(), is_wildcard: 0, is_static: 0 });
       }
     }
 

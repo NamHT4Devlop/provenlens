@@ -7,10 +7,11 @@ import { callersOf, impactOf } from '../src/query.js';
 let db;
 let one;
 let stats;
-let unresolvedCalls;
+let missedCalls;
+let externalCalls;
 
 before(async () => {
-  ({ db, one, stats, unresolvedCalls } = await buildIndex('ruby'));
+  ({ db, one, stats, missedCalls, externalCalls } = await buildIndex('ruby'));
 });
 
 describe('inflection', () => {
@@ -30,7 +31,7 @@ describe('inflection', () => {
 
 describe('extraction', () => {
   test('indexes every fixture file', () => {
-    assert.equal(stats.parsed, 6);
+    assert.equal(stats.parsed, 7);
   });
 
   test('turns belongs_to into a reader typed with the associated class', () => {
@@ -73,12 +74,12 @@ describe('resolution', () => {
     assert.ok(callers[0].confidence < 1, 'an inferred association edge must not claim certainty');
   });
 
-  test('resolves a mixin method to the module that defines it', () => {
+  test('resolves a mixin method through the include chain', () => {
     const audit = one('Auditable#audit');
-    assert.ok(
-      callersOf(db, audit.id).some((c) => c.fqn === 'DonationRecorder#record'),
-      'expected the service object to reach the mixin method',
-    );
+    const caller = callersOf(db, audit.id).find((c) => c.fqn === 'DonationRecorder#record');
+    assert.ok(caller, 'expected the service object to reach the mixin method');
+    // Via the ancestor chain, not by matching the name and hoping.
+    assert.equal(caller.via, 'self-chain');
   });
 
   test('traces controller -> service object -> instance method', () => {
@@ -103,15 +104,19 @@ describe('resolution', () => {
   test('drops bare identifiers instead of reporting them as missed calls', () => {
     assert.ok(stats.resolve.ruby.dropped > 0);
     assert.ok(
-      !unresolvedCalls().some((c) => c === '(self).amount'),
-      'a local variable read must not be counted as an unresolved call',
+      ![...missedCalls(), ...externalCalls()].includes('(self).amount'),
+      'a local variable read must not be counted as a call at all',
     );
   });
 
-  test('leaves only framework calls unresolved', () => {
-    // Everything remaining must belong to Rails or Ruby core, not the fixture.
-    assert.deepEqual(unresolvedCalls(), [
+  test('misses nothing that lives in the fixture', () => {
+    assert.deepEqual(missedCalls(), []);
+  });
+
+  test('attributes each remaining call to the gem it comes from', () => {
+    assert.deepEqual(externalCalls(), [
       '(self).format',
+      '(self).protect_from_forgery',
       '(self).render',
       '(self).render',
       '(self).validates',
@@ -120,5 +125,15 @@ describe('resolution', () => {
       'Rails.logger.info',
       'donations.sum',
     ]);
+  });
+
+  test('names the gem rather than just saying external', () => {
+    const owners = db
+      .prepare('SELECT DISTINCT owner FROM unresolved WHERE external = 1 ORDER BY owner')
+      .all()
+      .map((r) => r.owner);
+    // render comes from the controller base class, validates from the model one.
+    assert.ok(owners.includes('ActionController::Base'));
+    assert.ok(owners.includes('ActiveRecord::Base'));
   });
 });

@@ -3,7 +3,7 @@ import { mkdirSync, rmSync, existsSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 /** Bump whenever the schema changes: the index is a cache, so it is rebuilt. */
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 const SCHEMA = `
 PRAGMA journal_mode = WAL;
@@ -97,6 +97,11 @@ CREATE TABLE IF NOT EXISTS refs (
   arity           INTEGER,
   -- JSON array of raw argument expressions, typed later to pick an overload.
   arg_types       TEXT,
+  -- JSON array of string literal argument values, nulls for everything else.
+  -- Frameworks wire themselves together with these: queue names, route URIs.
+  str_args        TEXT,
+  -- For a.b().c(), the ref for b() so the chain can be walked left to right.
+  receiver_ref_id INTEGER,
   line            INTEGER,
   kind            TEXT NOT NULL
 );
@@ -129,6 +134,22 @@ CREATE TABLE IF NOT EXISTS unresolved (
   owner    TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_unresolved_external ON unresolved(external);
+
+-- Endpoints that frameworks connect by matching strings rather than by calls:
+-- a Camel from()/to() URI, an SQS queue name, a MyBatis statement id. A plugin
+-- emits providers and consumers; a generic pass joins them on the key column.
+CREATE TABLE IF NOT EXISTS bindings (
+  id        INTEGER PRIMARY KEY,
+  file_id   INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+  symbol_id INTEGER REFERENCES symbols(id) ON DELETE CASCADE,
+  plugin    TEXT NOT NULL,
+  role      TEXT NOT NULL,
+  key       TEXT NOT NULL,
+  line      INTEGER,
+  detail    TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_bindings_key    ON bindings(plugin, key);
+CREATE INDEX IF NOT EXISTS idx_bindings_symbol ON bindings(symbol_id);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
   name, fqn, signature, tokenize = 'unicode61'

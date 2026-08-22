@@ -73,8 +73,9 @@ export async function indexProject(db, root, { full = false, onProgress } = {}) 
      VALUES (?, ?, ?, ?, ?, ?)`,
   );
   const insertRef = db.prepare(
-    `INSERT INTO refs (file_id, from_symbol_id, name, receiver, arity, arg_types, line, kind)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO refs (file_id, from_symbol_id, name, receiver, arity, arg_types, str_args,
+                       receiver_ref_id, line, kind)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
 
   db.exec('BEGIN');
@@ -155,7 +156,8 @@ export async function indexProject(db, root, { full = false, onProgress } = {}) 
           ).lastInsertRowid,
         );
         tmpToReal.set(s.tmpId, id);
-        if (['class', 'interface', 'enum', 'record', 'annotation'].includes(s.kind)) {
+        // 'module' matters: a Ruby mixin is a real type for method lookup.
+        if (['class', 'interface', 'enum', 'record', 'annotation', 'module'].includes(s.kind)) {
           insertType.run(s.fqn, id, s.kind, JSON.stringify(s.supertypes ?? []));
         }
         stats.symbols++;
@@ -171,20 +173,27 @@ export async function indexProject(db, root, { full = false, onProgress } = {}) 
           l.init_kind ?? null,
         );
       }
-      for (const r of result.refs) {
+      // Refs are inserted in extraction order, and a chain link always points
+      // at an earlier ref, so ids are known by the time they are needed.
+      const refIds = new Array(result.refs.length).fill(null);
+      result.refs.forEach((r, i) => {
         // An extractor that cannot name a call site has nothing to resolve.
-        if (!r.name) continue;
-        insertRef.run(
-          fileId,
-          r.fromTmpId == null ? null : (tmpToReal.get(r.fromTmpId) ?? null),
-          r.name,
-          r.receiver,
-          r.arity,
-          r.arg_types ? JSON.stringify(r.arg_types) : null,
-          r.line,
-          r.kind,
+        if (!r.name) return;
+        refIds[i] = Number(
+          insertRef.run(
+            fileId,
+            r.fromTmpId == null ? null : (tmpToReal.get(r.fromTmpId) ?? null),
+            r.name,
+            r.receiver,
+            r.arity,
+            r.arg_types ? JSON.stringify(r.arg_types) : null,
+            r.str_args ? JSON.stringify(r.str_args) : null,
+            r.receiverRefTmp == null ? null : refIds[r.receiverRefTmp],
+            r.line,
+            r.kind,
+          ).lastInsertRowid,
         );
-      }
+      });
 
       stats.parsed++;
       onProgress?.(rel, stats);

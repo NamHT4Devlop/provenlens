@@ -198,7 +198,7 @@ export function resolveTypeScript(db, root) {
     if (!type || seen.has(type.fqn)) return [];
     seen.add(type.fqn);
     const chain = [type];
-    for (const raw of type.supertypes) {
+    for (const raw of type.supertypes ?? []) {
       const superType = resolveTypeName(raw, type.file_id, type.module);
       if (superType) chain.push(...typeChain(superType, seen));
     }
@@ -223,6 +223,40 @@ export function resolveTypeScript(db, root) {
     return null;
   }
 
+  /** 'react' | '@tanstack/react-query' | null for a relative path. */
+  function packageOf(specifier) {
+    if (!specifier || specifier.startsWith('.')) return null;
+    const parts = specifier.split('/');
+    return specifier.startsWith('@') ? parts.slice(0, 2).join('/') : parts[0];
+  }
+
+  /**
+   * Names the package a type or value comes from, or null if it could be local.
+   * An import that resolves to no file in the tree is a node_modules import,
+   * which needs no list of known libraries to recognise.
+   */
+  function externalOwner(name, fileId, module) {
+    if (!name) return null;
+    if (/\[\]$/.test(name)) return 'Array';
+    for (const imp of importsByFile.get(fileId) ?? []) {
+      if (imp.kind !== 'import' || imp.simple !== name) continue;
+      if (resolveModule(module, imp.fqn)) return null;
+      return packageOf(imp.fqn) ?? 'unresolved-module';
+    }
+    return null;
+  }
+
+  /** The first ancestor that is not indexed -- where an unknown member lives. */
+  function externalAncestor(type) {
+    for (const t of typeChain(type)) {
+      for (const raw of t.supertypes) {
+        if (resolveTypeName(raw, t.file_id, t.module)) continue;
+        return externalOwner(raw, t.file_id, t.module) ?? raw;
+      }
+    }
+    return null;
+  }
+
   const localsByScope = new Map();
   for (const row of db.prepare('SELECT scope_symbol_id, name, type_name FROM locals').all()) {
     if (row.scope_symbol_id == null) continue;
@@ -233,7 +267,23 @@ export function resolveTypeScript(db, root) {
   const symbolById = new Map(allSymbols.map((s) => [s.id, s]));
   const fileById = new Map(files.map((f) => [f.id, f]));
 
-  function receiverType(ref, fromSymbol) {
+  const refById = new Map();
+  const chainMemo = new Map();
+
+  /** Resolves an inner call in a chain so its return type can type the next. */
+  function chainTarget(ref, depth) {
+    if (!ref || depth > 8) return null;
+    if (chainMemo.has(ref.id)) return chainMemo.get(ref.id);
+    chainMemo.set(ref.id, null);
+
+    const fromSymbol = symbolById.get(ref.from_symbol_id);
+    const recv = receiverType(ref, fromSymbol, depth + 1);
+    const result = recv?.fqn ? findMember(recv, ref.name) : null;
+    chainMemo.set(ref.id, result);
+    return result;
+  }
+
+  function receiverType(ref, fromSymbol, depth = 0) {
     const file = fileById.get(ref.file_id);
     const module = file?.pkg;
     const enclosingType = fromSymbol?.container_fqn ? types.get(fromSymbol.container_fqn) : null;
@@ -241,25 +291,58 @@ export function resolveTypeScript(db, root) {
 
     if (!raw || raw === 'this') return enclosingType;
 
+    // `svc.load().render()` -- carry the inner call's return type forward.
+    if (ref.receiver_ref_id != null) {
+      const target = chainTarget(refById.get(ref.receiver_ref_id), depth);
+      if (target?.type_name) {
+        const hit = resolveTypeName(target.type_name, ref.file_id, module);
+        if (hit) return hit;
+        const owner = externalOwner(target.type_name, ref.file_id, module);
+        if (owner) return { external: owner };
+      }
+    }
+
     // `this.repository.save(...)` -- the dominant shape in class-based TS.
     const thisField = /^this\.([A-Za-z_$][\w$]*)$/.exec(raw);
     if (thisField) {
       const field = enclosingType ? findMember(enclosingType, thisField[1]) : null;
-      return field?.type_name
-        ? resolveTypeName(field.type_name, ref.file_id, module)
-        : undefined;
+      if (!field?.type_name) return { complex: true };
+      const hit = resolveTypeName(field.type_name, ref.file_id, module);
+      if (hit) return hit;
+      return { external: externalOwner(field.type_name, ref.file_id, module) };
     }
 
-    if (!/^[A-Za-z_$][\w$]*$/.test(raw)) return undefined; // chained or complex
+    if (!/^[A-Za-z_$][\w$]*$/.test(raw)) {
+      const head = /^([A-Za-z_$][\w$]*)/.exec(raw)?.[1];
+      const owner = head ? externalOwner(head, ref.file_id, module) : null;
+      return owner ? { external: owner } : { complex: true };
+    }
 
-    const local = localsByScope.get(ref.from_symbol_id)?.get(raw);
-    if (local) return resolveTypeName(local, ref.file_id, module);
+    const scope = localsByScope.get(ref.from_symbol_id);
+    if (scope?.has(raw)) {
+      const local = scope.get(raw);
+      if (!local) return { complex: true };
+      const hit = resolveTypeName(local, ref.file_id, module);
+      if (hit) return hit;
+      const owner = externalOwner(local, ref.file_id, module);
+      return owner ? { external: owner } : { complex: true };
+    }
 
     const field = enclosingType ? findMember(enclosingType, raw) : null;
-    if (field?.type_name) return resolveTypeName(field.type_name, ref.file_id, module);
+    if (field?.type_name) {
+      const hit = resolveTypeName(field.type_name, ref.file_id, module);
+      if (hit) return hit;
+      const owner = externalOwner(field.type_name, ref.file_id, module);
+      return owner ? { external: owner } : { complex: true };
+    }
 
-    // A bare capitalised receiver is usually an imported class used statically.
-    if (/^[A-Z]/.test(raw)) return resolveTypeName(raw, ref.file_id, module) ?? undefined;
+    // A bare receiver that was imported comes from wherever it was imported.
+    const imported = externalOwner(raw, ref.file_id, module);
+    if (imported) return { external: imported };
+    if (/^[A-Z]/.test(raw)) {
+      const hit = resolveTypeName(raw, ref.file_id, module);
+      return hit ?? { complex: true };
+    }
 
     return null;
   }
@@ -283,7 +366,8 @@ export function resolveTypeScript(db, root) {
     const ref = refAt.get(local.scope_symbol_id, local.line);
     if (!ref) continue;
     const type = receiverType(ref, symbolById.get(ref.from_symbol_id));
-    if (!type) continue;
+    // receiverType may report a library or an untypeable chain instead.
+    if (!type?.fqn) continue;
     const target = findMember(type, ref.name);
     if (!target?.type_name) continue;
     updateLocal.run(target.type_name, local.id);
@@ -304,11 +388,26 @@ export function resolveTypeScript(db, root) {
     `INSERT OR IGNORE INTO edges (from_symbol_id, to_symbol_id, kind, confidence, via, line)
      VALUES (?, ?, ?, ?, ?, ?)`,
   );
-  const insertUnresolved = db.prepare(
-    'INSERT OR IGNORE INTO unresolved (ref_id, reason) VALUES (?, ?)',
+  const insertRow = db.prepare(
+    'INSERT OR IGNORE INTO unresolved (ref_id, reason, external, owner) VALUES (?, ?, ?, ?)',
   );
-
-  const stats = { direct: 0, viaImpl: 0, uniqueName: 0, unresolved: 0, inheritance: 0 };
+  const stats = {
+    direct: 0,
+    viaImpl: 0,
+    uniqueName: 0,
+    unresolved: 0,
+    external: 0,
+    inheritance: 0,
+  };
+  const insertUnresolved = (refId, reason) => {
+    insertRow.run(refId, reason, 0, null);
+    stats.unresolved++;
+  };
+  /** A call into node_modules or the runtime: expected, not a miss. */
+  const insertExternal = (refId, owner) => {
+    insertRow.run(refId, owner ? `external:${owner}` : 'external', 1, owner ?? null);
+    stats.external++;
+  };
 
   for (const t of types.values()) {
     for (const raw of t.supertypes) {
@@ -328,14 +427,15 @@ export function resolveTypeScript(db, root) {
 
   const refs = db
     .prepare(
-      `SELECT r.* FROM refs r JOIN files f ON f.id = r.file_id WHERE f.lang IN (${LANG_LIST})`,
+      `SELECT r.* FROM refs r JOIN files f ON f.id = r.file_id
+        WHERE f.lang IN (${LANG_LIST}) AND r.kind != 'annotation'`,
     )
     .all();
+  for (const r of refs) refById.set(r.id, r);
 
   for (const ref of refs) {
     if (ref.from_symbol_id == null) {
-      insertUnresolved.run(ref.id, 'no-enclosing-symbol');
-      stats.unresolved++;
+      insertUnresolved(ref.id, 'no-enclosing-symbol');
       continue;
     }
     const fromSymbol = symbolById.get(ref.from_symbol_id);
@@ -343,9 +443,10 @@ export function resolveTypeScript(db, root) {
 
     if (ref.kind === 'new') {
       const type = resolveTypeName(ref.name, ref.file_id, file?.pkg);
-      if (!type) {
-        insertUnresolved.run(ref.id, 'unknown-type');
-        stats.unresolved++;
+      if (!type?.fqn) {
+        const owner = externalOwner(ref.name, ref.file_id, file?.pkg);
+        if (owner) insertExternal(ref.id, owner);
+        else insertUnresolved(ref.id, 'unknown-type');
         continue;
       }
       insertEdge.run(ref.from_symbol_id, type.symbol_id, 'instantiates', 1.0, 'direct', ref.line);
@@ -378,11 +479,11 @@ export function resolveTypeScript(db, root) {
       // Otherwise it may be a method on `this` reached without the prefix.
     }
 
-    const type = receiverType(ref, fromSymbol);
+    const type = receiverType(ref, fromSymbol, 0);
 
-    if (type === undefined) {
-      insertUnresolved.run(ref.id, 'external-or-complex-receiver');
-      stats.unresolved++;
+    if (type && !type.fqn) {
+      if (type.complex) insertUnresolved(ref.id, 'complex-receiver-chain');
+      else insertExternal(ref.id, type.external);
       continue;
     }
 
@@ -404,8 +505,9 @@ export function resolveTypeScript(db, root) {
         }
         continue;
       }
-      insertUnresolved.run(ref.id, `no-such-member-on:${type.name}`);
-      stats.unresolved++;
+      const inherited = externalAncestor(type);
+      if (inherited) insertExternal(ref.id, inherited);
+      else insertUnresolved(ref.id, `no-such-member-on:${type.name}`);
       continue;
     }
 
@@ -413,9 +515,15 @@ export function resolveTypeScript(db, root) {
     if (byName.length === 1) {
       insertEdge.run(ref.from_symbol_id, byName[0].id, 'calls', 0.5, 'unique-name', ref.line);
       stats.uniqueName++;
+    } else if (byName.length) {
+      insertUnresolved(ref.id, 'ambiguous-name');
     } else {
-      insertUnresolved.run(ref.id, byName.length ? 'ambiguous-name' : 'unknown-method');
-      stats.unresolved++;
+      // A bare call to something imported from a package.
+      const owner = !ref.receiver
+        ? externalOwner(ref.name, ref.file_id, fileById.get(ref.file_id)?.pkg)
+        : null;
+      if (owner) insertExternal(ref.id, owner);
+      else insertUnresolved(ref.id, 'unknown-method');
     }
   }
 

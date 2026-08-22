@@ -23,12 +23,21 @@ export async function buildIndex(fixture) {
     return hits[0];
   };
 
-  const unresolvedCalls = () =>
+  const callsWhere = (external) =>
     db
-      .prepare('SELECT r.receiver, r.name FROM unresolved u JOIN refs r ON r.id = u.ref_id')
-      .all()
+      .prepare(
+        `SELECT r.receiver, r.name FROM unresolved u JOIN refs r ON r.id = u.ref_id
+          WHERE u.external = ?`,
+      )
+      .all(external)
       .map((r) => `${r.receiver ?? '(self)'}.${r.name}`)
       .sort();
 
-  return { db, root, stats, one, unresolvedCalls };
+  /** Call sites the resolver genuinely failed on -- these are the bugs. */
+  const missedCalls = () => callsWhere(0);
+  /** Call sites into a library, which are expected and not failures. */
+  const externalCalls = () => callsWhere(1);
+  const unresolvedCalls = () => [...missedCalls(), ...externalCalls()].sort();
+
+  return { db, root, stats, one, missedCalls, externalCalls, unresolvedCalls };
 }

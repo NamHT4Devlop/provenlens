@@ -9,10 +9,11 @@ let db;
 let one;
 let root;
 let stats;
-let unresolvedCalls;
+let missedCalls;
+let externalCalls;
 
 before(async () => {
-  ({ db, one, root, stats, unresolvedCalls } = await buildIndex('ts'));
+  ({ db, one, root, stats, missedCalls, externalCalls } = await buildIndex('ts'));
 });
 
 const calls = (fqnSuffix) => {
@@ -124,12 +125,13 @@ describe('resolution', () => {
     assert.equal(stats.resolve.typescript.uniqueName, 0);
   });
 
-  test('leaves only runtime built-ins unresolved', () => {
-    assert.deepEqual(unresolvedCalls(), [
-      'amount.toFixed',
-      'name.trim',
-      'name.trim().toUpperCase',
-      'this.store.push',
-    ]);
+  test('recognises an array receiver as the runtime Array, not project code', () => {
+    assert.deepEqual(externalCalls(), ['this.store.push']);
+  });
+
+  test('what remains is untyped JS, reported honestly rather than guessed', () => {
+    // format.js has no annotations, so `amount` and `name` have no type to
+    // follow. Reporting them beats inventing an edge from the method name.
+    assert.deepEqual(missedCalls(), ['amount.toFixed', 'name.trim', 'name.trim().toUpperCase']);
   });
 });

@@ -1,4 +1,4 @@
-class ApplicationRecord
+class ApplicationRecord < ActiveRecord::Base
   def save
     persist!
   end

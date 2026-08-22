@@ -49,24 +49,35 @@ function firstOfType(node, type) {
   return namedChildrenOfType(node, type)[0] ?? null;
 }
 
-/** Collects `@Foo` / `@Foo(...)` names from a `modifiers` node. */
+/**
+ * Collects `@Foo` / `@Foo(...)` names from a `modifiers` node.
+ * `withArgs` also returns the string literals each annotation was given, which
+ * is how `@SqsListener("orders")` names the queue it listens to.
+ */
 function readModifiers(node, src) {
   const modifiers = [];
   const annotations = [];
+  const annotationArgs = [];
   const mods = firstOfType(node, 'modifiers');
-  if (!mods) return { modifiers, annotations };
+  if (!mods) return { modifiers, annotations, annotationArgs };
 
   for (let i = 0; i < mods.childCount; i++) {
     const c = mods.child(i);
     if (!c) continue;
     if (c.type === 'marker_annotation' || c.type === 'annotation') {
       const nameNode = childByField(c, 'name');
-      if (nameNode) annotations.push(text(nameNode, src));
+      if (!nameNode) continue;
+      const name = text(nameNode, src);
+      annotations.push(name);
+      const strings = [...text(c, src).matchAll(/"([^"\\]*(?:\\.[^"\\]*)*)"/g)].map((m) => m[1]);
+      if (strings.length) {
+        annotationArgs.push({ name, strings, line: c.startPosition.row + 1 });
+      }
     } else if (!c.isNamed) {
       modifiers.push(text(c, src));
     }
   }
-  return { modifiers, annotations };
+  return { modifiers, annotations, annotationArgs };
 }
 
 function text(node, src) {
@@ -151,6 +162,21 @@ function argumentTokens(argsNode, src) {
     }
   }
   return out;
+}
+
+/** Literal string values of the arguments; null wherever it is not a literal. */
+function stringArgs(argsNode, src) {
+  if (!argsNode) return null;
+  const out = [];
+  let any = false;
+  for (let i = 0; i < argsNode.namedChildCount; i++) {
+    const arg = argsNode.namedChild(i);
+    if (arg && arg.type === 'string_literal') {
+      out.push(text(arg, src).replace(/^["']|["']$/g, ''));
+      any = true;
+    } else out.push(null);
+  }
+  return any ? out : null;
 }
 
 export function extractJava(tree, src) {
@@ -259,7 +285,7 @@ export function extractJava(tree, src) {
       const params = paramList(childByField(node, 'parameters'), src);
       const retNode = childByField(node, 'type');
       const ret = retNode ? normalizeType(text(retNode, src)) : null;
-      const { modifiers, annotations } = readModifiers(node, src);
+      const { modifiers, annotations, annotationArgs } = readModifiers(node, src);
 
       const id = addSymbol({
         name: simpleName,
@@ -277,6 +303,21 @@ export function extractJava(tree, src) {
         annotations,
         ...pos(node),
       });
+
+      // Annotations carrying string literals ride the ref pipeline, so the
+      // binding plugins can read them without a second traversal.
+      for (const ann of annotationArgs) {
+        refs.push({
+          fromTmpId: id,
+          name: `@${ann.name}`,
+          receiver: null,
+          receiverRefTmp: null,
+          arity: ann.strings.length,
+          str_args: ann.strings,
+          line: ann.line,
+          kind: 'annotation',
+        });
+      }
 
       for (const p of params) {
         if (p.name) locals.push({ scopeTmpId: id, name: p.name, type_name: p.type });
@@ -368,17 +409,34 @@ export function extractJava(tree, src) {
       const nameNode = childByField(node, 'name');
       const objNode = childByField(node, 'object');
       const args = childByField(node, 'arguments');
+
+      // Walk the receiver first so that in a.b().c() the ref for b() already
+      // exists and c() can point at it; that link is what lets the resolver
+      // carry a return type along the chain.
+      let receiverRefTmp = null;
+      if (objNode) {
+        const before = refs.length;
+        walk(objNode, typeStack, scopeId);
+        if (objNode.type === 'method_invocation' && refs.length > before) {
+          receiverRefTmp = refs.length - 1;
+        }
+      }
+
       if (nameNode) {
         refs.push({
           fromTmpId: scopeId,
           name: text(nameNode, src),
           receiver: objNode ? text(objNode, src) : null,
+          receiverRefTmp,
           arity: args ? args.namedChildCount : null,
           arg_types: argumentTokens(args, src),
+          str_args: stringArgs(args, src),
           line: node.startPosition.row + 1,
           kind: 'call',
         });
       }
+      if (args) walk(args, typeStack, scopeId);
+      return;
     }
 
     if (node.type === 'object_creation_expression') {

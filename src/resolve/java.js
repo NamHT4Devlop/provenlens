@@ -259,11 +259,46 @@ export function resolveJava(db) {
     return wildcard;
   }
 
-  function receiverType(ref, fromSymbol) {
+  const refById = new Map();
+  const chainMemo = new Map();
+
+  /**
+   * The method an inner call in a chain resolves to, so its declared return
+   * type can become the next receiver. Memoised, depth-limited, and seeded with
+   * null before recursing so a cyclic chain cannot spin.
+   */
+  function chainTarget(ref, depth) {
+    if (!ref || depth > 8) return null;
+    if (chainMemo.has(ref.id)) return chainMemo.get(ref.id);
+    chainMemo.set(ref.id, null);
+
+    const fromSymbol = symbolById.get(ref.from_symbol_id);
+    const recv = receiverType(ref, fromSymbol, depth + 1);
+    const result =
+      typeof recv === 'string' && recv
+        ? findMethod(recv, ref.name, ref.arity, ref, fromSymbol?.container_fqn)
+        : null;
+
+    chainMemo.set(ref.id, result);
+    return result;
+  }
+
+  function receiverType(ref, fromSymbol, depth = 0) {
     const enclosing = fromSymbol?.container_fqn ?? null;
     let raw = ref.receiver;
 
     if (!raw || raw === 'this') return enclosing;
+
+    // `repo.findAll().size()` -- carry the inner call's return type along.
+    if (ref.receiver_ref_id != null) {
+      const target = chainTarget(refById.get(ref.receiver_ref_id), depth);
+      if (target?.type_name) {
+        const hit = resolveTypeName(target.type_name, ref.file_id);
+        if (hit) return hit;
+        const owner = externalOwner(target.type_name, ref.file_id);
+        if (owner) return { external: owner };
+      }
+    }
 
     // `this.repository.save(...)` is ordinary Java; treat it as the field.
     const thisField = /^this\.([A-Za-z_$][\w$]*)$/.exec(raw);
@@ -373,8 +408,10 @@ export function resolveJava(db) {
   }
 
   const refs = db
-    .prepare(`SELECT r.* FROM refs r JOIN files f ON f.id = r.file_id WHERE f.lang = 'java'`)
+    .prepare(`SELECT r.* FROM refs r JOIN files f ON f.id = r.file_id
+        WHERE f.lang = 'java' AND r.kind != 'annotation'`)
     .all();
+  for (const r of refs) refById.set(r.id, r);
 
   for (const ref of refs) {
     if (ref.from_symbol_id == null) {
@@ -405,7 +442,7 @@ export function resolveJava(db) {
       continue;
     }
 
-    const recv = receiverType(ref, fromSymbol);
+    const recv = receiverType(ref, fromSymbol, 0);
 
     if (recv && typeof recv === 'object') {
       if (recv.complex) insertUnresolved(ref.id, 'complex-receiver-chain');

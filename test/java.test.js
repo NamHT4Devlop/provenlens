@@ -6,9 +6,11 @@ import { impactOf, callersOf, calleesOf } from '../src/query.js';
 let db;
 let one;
 let stats;
+let missedCalls;
+let externalCalls;
 
 before(async () => {
-  ({ db, one, stats } = await buildIndex('java'));
+  ({ db, one, stats, missedCalls, externalCalls } = await buildIndex('java'));
 });
 
 describe('extraction', () => {
@@ -94,18 +96,16 @@ describe('resolution', () => {
     assert.ok(oneArgCalls.every((c) => c.arity === 1));
   });
 
-  test('leaves only genuinely external calls unresolved', () => {
-    const reasons = db
-      .prepare(
-        `SELECT r.receiver, r.name FROM unresolved u JOIN refs r ON r.id = u.ref_id`,
-      )
-      .all()
-      .map((r) => `${r.receiver ?? '-'}.${r.name}`);
+  test('misses nothing that lives in the fixture', () => {
+    assert.deepEqual(missedCalls(), []);
+  });
 
-    // Everything left over must be JDK surface, not project code.
-    assert.deepEqual(
-      reasons.sort(),
-      ['-.ArrayList', 'System.out.println', 'd.getId().equals', 'store.add'].sort(),
-    );
+  test('attributes every remaining call to the JDK', () => {
+    assert.deepEqual(externalCalls(), [
+      '(self).ArrayList',
+      'System.out.println',
+      'd.getId().equals',
+      'store.add',
+    ]);
   });
 });
