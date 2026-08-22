@@ -16,6 +16,29 @@ const JAVA_LANG = new Set([
   'StringBuilder', 'Iterable', 'Comparable', 'Runnable', 'Class', 'Number',
 ]);
 
+/**
+ * Methods the language and the standard library give every value, reached on a
+ * receiver whose type we could not work out. Like the JS list, this is an
+ * assumption rather than a proof, and it is recorded under its own owner so it
+ * can be discounted. A receiver whose type IS known resolves against that type
+ * first, so a project method named `size` is never shadowed by this.
+ */
+const JAVA_RUNTIME = new Set([
+  // java.lang.Object
+  'equals', 'hashCode', 'toString', 'getClass', 'clone', 'notify', 'notifyAll', 'wait',
+  // Collections and Optional
+  'size', 'isEmpty', 'iterator', 'contains', 'containsKey', 'containsValue', 'keySet',
+  'entrySet', 'putAll', 'addAll', 'removeAll', 'retainAll', 'toArray', 'isPresent',
+  'isBlank', 'orElse', 'orElseGet', 'orElseThrow', 'ifPresent', 'ifPresentOrElse',
+  // Streams
+  'stream', 'collect', 'findFirst', 'findAny', 'anyMatch', 'allMatch', 'noneMatch',
+  'flatMap', 'distinct', 'limit', 'skip', 'sorted', 'count', 'boxed', 'mapToInt',
+  'mapToObj', 'mapToLong', 'joining', 'toList',
+  // CompletableFuture
+  'thenApply', 'thenAccept', 'thenRun', 'thenCompose', 'thenCombine', 'exceptionally',
+  'whenComplete', 'join', 'complete', 'completeExceptionally',
+]);
+
 export function resolveJava(db) {
   // ---- load the world into memory (personal-scale repos fit comfortably) ----
 
@@ -382,17 +405,52 @@ export function resolveJava(db) {
     uniqueName: 0,
     unresolved: 0,
     external: 0,
+    notInProject: 0,
+    runtime: 0,
     inheritance: 0,
+  };
+
+  const refOutcome = new Map();
+  /**
+   * What each ref resolved to, so a chain can inherit it. If `a.b()` returned
+   * something from a library, `.c()` on that result is a library call too --
+   * a proof, not a guess. Refs are inserted receiver-first, so the inner link
+   * is always decided before the outer one is examined.
+   */
+  const inheritedExternal = (ref) => {
+    if (ref.receiver_ref_id == null) return undefined;
+    const inner = refOutcome.get(ref.receiver_ref_id);
+    return inner?.external ? (inner.owner ?? null) : undefined;
   };
 
   const insertUnresolved = (refId, reason) => {
     insertRow.run(refId, reason, 0, null);
+    refOutcome.set(refId, { external: false });
     stats.unresolved++;
   };
   /** A call into a library: expected, not a miss. */
   const insertExternal = (refId, owner) => {
     insertRow.run(refId, owner ? `external:${owner}` : 'external', 1, owner ?? null);
+    refOutcome.set(refId, { external: true, owner });
     stats.external++;
+  };
+  /**
+   * The called name is declared nowhere in the index, so the call cannot
+   * target this project. Weaker than naming the library, but still a proof
+   * rather than a guess -- recorded separately so it stays auditable.
+   */
+  const insertNotInProject = (refId) => {
+    insertRow.run(refId, 'external:not-in-project', 1, null);
+    refOutcome.set(refId, { external: true, owner: null });
+    stats.external++;
+    stats.notInProject++;
+  };
+  /** A JDK method on an untyped receiver: assumed, not proven. */
+  const insertRuntime = (refId) => {
+    insertRow.run(refId, 'external:jdk-runtime', 1, 'jdk-runtime');
+    refOutcome.set(refId, { external: true, owner: 'jdk-runtime' });
+    stats.external++;
+    stats.runtime++;
   };
 
   // Type-level inheritance edges first -- useful on their own.
@@ -426,6 +484,7 @@ export function resolveJava(db) {
       if (!target) {
         const owner = externalOwner(ref.name, ref.file_id);
         if (owner) insertExternal(ref.id, owner);
+        else if (!bySimpleName.has(ref.name)) insertNotInProject(ref.id);
         else insertUnresolved(ref.id, 'unknown-type');
         continue;
       }
@@ -445,8 +504,14 @@ export function resolveJava(db) {
     const recv = receiverType(ref, fromSymbol, 0);
 
     if (recv && typeof recv === 'object') {
-      if (recv.complex) insertUnresolved(ref.id, 'complex-receiver-chain');
-      else insertExternal(ref.id, recv.external);
+      const carried = inheritedExternal(ref);
+      if (!recv.complex) insertExternal(ref.id, recv.external);
+      // However tangled the receiver is, a name declared nowhere in the index
+      // cannot be a call into this project.
+      else if (!methodsByName.has(ref.name)) insertNotInProject(ref.id);
+      else if (carried !== undefined) insertExternal(ref.id, carried);
+      else if (JAVA_RUNTIME.has(ref.name)) insertRuntime(ref.id);
+      else insertUnresolved(ref.id, 'complex-receiver-chain');
       continue;
     }
 
@@ -455,6 +520,7 @@ export function resolveJava(db) {
       const target = findMethod(recvType, ref.name, ref.arity, ref, fromSymbol?.container_fqn);
       if (target) {
         insertEdge.run(ref.from_symbol_id, target.id, 'calls', 1.0, 'direct', ref.line);
+        refOutcome.set(ref.id, { external: false });
         stats.direct++;
 
         // Calling through an interface is the normal case in Spring; the real
@@ -471,11 +537,25 @@ export function resolveJava(db) {
         }
         continue;
       }
-      // The type is known but the method is not on it, so it comes from an
-      // ancestor we never indexed -- JpaRepository#findById, RouteBuilder#from.
+      // The type is known but the method is not on it. Three ways that can be
+      // explained without guessing, in order of how much they tell us.
       const inherited = externalAncestor(recvType);
-      if (inherited) insertExternal(ref.id, inherited);
-      else insertUnresolved(ref.id, `no-such-method-on:${recvType}`);
+      if (inherited) {
+        insertExternal(ref.id, inherited);
+        continue;
+      }
+      // A bare call inside a class that declares no such method is usually a
+      // static import: assertThat, status(), view() in a test.
+      const imported = !ref.receiver ? staticImportOwner(ref.name, ref.file_id) : null;
+      if (imported) {
+        insertExternal(ref.id, imported);
+        continue;
+      }
+      if (!methodsByName.has(ref.name)) {
+        insertNotInProject(ref.id);
+        continue;
+      }
+      insertUnresolved(ref.id, `no-such-method-on:${recvType}`);
       continue;
     }
 
@@ -502,6 +582,10 @@ export function resolveJava(db) {
         insertExternal(ref.id, owner);
         continue;
       }
+    }
+    if (!methodsByName.has(ref.name)) {
+      insertNotInProject(ref.id);
+      continue;
     }
     insertUnresolved(ref.id, 'unknown-method');
   }

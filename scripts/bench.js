@@ -45,6 +45,32 @@ console.log(`calls:    ${s.refs} = ${linked} linked + ${external} library + ${mi
 console.log(`library share:      ${pct(external, s.refs)}%`);
 console.log(`IN-REPO RESOLUTION: ${pct(linked, inRepo)}%`);
 
+// The library bucket is not one thing. Naming an import is a proof; assuming
+// `.map` on an untyped receiver is an Array is not. Keep them visible.
+const byEvidence = db
+  .prepare(
+    `SELECT CASE
+              WHEN owner IN ('js-runtime', 'jdk-runtime', 'Kernel') THEN 'runtime built-in (assumed)'
+              WHEN reason = 'external:not-in-project' THEN 'name declared nowhere (proven)'
+              WHEN owner IS NOT NULL THEN 'named library (proven)'
+              ELSE 'other'
+            END AS evidence,
+            COUNT(*) AS n
+       FROM unresolved WHERE external = 1 GROUP BY evidence ORDER BY n DESC`,
+  )
+  .all();
+if (byEvidence.length) {
+  console.log('  library bucket by evidence:');
+  for (const row of byEvidence) {
+    console.log(`    ${String(row.n).padStart(7)}  ${row.evidence}`);
+  }
+  const assumed = byEvidence.find((r) => r.evidence.includes('assumed'))?.n ?? 0;
+  if (assumed) {
+    // What the figure would be if every assumption were wrong.
+    console.log(`  if every assumption were wrong: ${pct(linked, inRepo + assumed)}%`);
+  }
+}
+
 const bindings = db.prepare('SELECT COUNT(*) n FROM bindings').get().n;
 if (bindings) {
   const rows = db

@@ -126,12 +126,30 @@ describe('resolution', () => {
   });
 
   test('recognises an array receiver as the runtime Array, not project code', () => {
-    assert.deepEqual(externalCalls(), ['this.store.push']);
+    const arrayPush = db
+      .prepare(
+        `SELECT u.owner FROM unresolved u JOIN refs r ON r.id = u.ref_id
+          WHERE r.name = 'push' AND u.external = 1`,
+      )
+      .get();
+    assert.equal(arrayPush.owner, 'Array', 'store.push is Array.push, named as such');
   });
 
-  test('what remains is untyped JS, reported honestly rather than guessed', () => {
-    // format.js has no annotations, so `amount` and `name` have no type to
-    // follow. Reporting them beats inventing an edge from the method name.
-    assert.deepEqual(missedCalls(), ['amount.toFixed', 'name.trim', 'name.trim().toUpperCase']);
+  test('proves untyped JS calls target the runtime, since nothing declares them', () => {
+    // format.js has no annotations, so `amount` has no type to follow -- but
+    // no symbol named toFixed exists anywhere here, so the call provably does
+    // not target this project.
+    const proven = db
+      .prepare(
+        `SELECT r.name FROM unresolved u JOIN refs r ON r.id = u.ref_id
+          WHERE u.reason = 'external:not-in-project' ORDER BY r.name`,
+      )
+      .all()
+      .map((r) => r.name);
+    assert.deepEqual(proven, ['toFixed', 'toUpperCase', 'trim']);
+  });
+
+  test('leaves nothing genuinely missed in this fixture', () => {
+    assert.deepEqual(missedCalls(), []);
   });
 });

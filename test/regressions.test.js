@@ -210,3 +210,140 @@ describe('robustness', () => {
     cleanup();
   });
 });
+
+describe('externality evidence', () => {
+  test('proves a call external when nothing in the index declares that name', async () => {
+    const { db, cleanup } = await tempProject({
+      'App.java': [
+        'package app;',
+        'import java.util.List;',
+        'public class App {',
+        '  private List<String> items;',
+        '  public int run() { return items.size(); }',
+        '  public String odd() { return thisNameExistsNowhere(); }',
+        '}',
+      ].join('\n'),
+    });
+
+    const rows = db
+      .prepare(
+        `SELECT r.name, u.reason, u.external FROM unresolved u JOIN refs r ON r.id = u.ref_id
+          WHERE r.name = 'thisNameExistsNowhere'`,
+      )
+      .all();
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].external, 1, 'a name declared nowhere cannot target this project');
+    assert.equal(rows[0].reason, 'external:not-in-project');
+    cleanup();
+  });
+
+  test('does not claim a call is external when the name does exist here', async () => {
+    const { db, cleanup } = await tempProject({
+      'Helper.java': [
+        'package app;',
+        'public class Helper {',
+        '  public String describe() { return "x"; }',
+        '}',
+      ].join('\n'),
+      'App.java': [
+        'package app;',
+        'public class App {',
+        '  private App other;',
+        '  public String use() { return other.describe(); }',
+        '}',
+      ].join('\n'),
+    });
+
+    // `other` is an App, which has no describe() -- but Helper declares one, so
+    // calling this external would be a guess rather than a proof.
+    const row = db
+      .prepare(
+        `SELECT u.external FROM unresolved u JOIN refs r ON r.id = u.ref_id
+          WHERE r.name = 'describe'`,
+      )
+      .get();
+    assert.ok(row, 'expected the call to be recorded');
+    assert.equal(row.external, 0, 'a name declared here must stay a miss, not a proof');
+    cleanup();
+  });
+
+  test('prefers the proof over the assumption when both could apply', async () => {
+    const { db, cleanup } = await tempProject({
+      'a.js': ['export function f(xs) {', '  return xs.reduceRight((x) => x);', '}'].join('\n'),
+    });
+
+    // Nothing here declares reduceRight, so it is proven external rather than
+    // merely assumed to be an Array method.
+    const row = db
+      .prepare(
+        `SELECT u.reason FROM unresolved u JOIN refs r ON r.id = u.ref_id
+          WHERE r.name = 'reduceRight'`,
+      )
+      .get();
+    assert.equal(row.reason, 'external:not-in-project');
+    cleanup();
+  });
+
+  test('falls back to the runtime label only when the name also exists here', async () => {
+    const { db, cleanup } = await tempProject({
+      'coll.ts': ['export class Coll {', '  map(): number { return 1; }', '}'].join('\n'),
+      'use.js': ['export function f(xs) {', '  return xs.map((x) => x);', '}'].join('\n'),
+    });
+
+    // Coll declares map, so the proof no longer applies; an untyped receiver
+    // calling .map is assumed to be an Array, under its own owner.
+    const row = db
+      .prepare(
+        `SELECT u.owner, u.reason FROM unresolved u JOIN refs r ON r.id = u.ref_id
+          JOIN files fl ON fl.id = r.file_id WHERE r.name = 'map' AND fl.path = 'use.js'`,
+      )
+      .get();
+    assert.equal(row.owner, 'js-runtime');
+    cleanup();
+  });
+
+  test('a project method is never shadowed by the built-in list', async () => {
+    const { db, cleanup } = await tempProject({
+      'box.ts': [
+        'export class Box {',
+        '  get(): number { return 1; }',
+        '}',
+        'const b = new Box();',
+        'export const v = b.get();',
+      ].join('\n'),
+    });
+
+    // `get` is in the runtime list, but the receiver's type is known here.
+    const edge = db
+      .prepare(
+        `SELECT s.name FROM edges e JOIN symbols s ON s.id = e.to_symbol_id
+          WHERE e.kind = 'calls' AND s.name = 'get'`,
+      )
+      .get();
+    assert.ok(edge, 'a typed receiver must resolve to the project method');
+    cleanup();
+  });
+
+  test('carries externality along a chain', async () => {
+    const { db, cleanup } = await tempProject({
+      'App.java': [
+        'package app;',
+        'import com.vendor.Client;',
+        'public class App {',
+        '  private Client client;',
+        '  public int go() { return client.fetch().reduceIt(); }',
+        '}',
+      ].join('\n'),
+    });
+
+    // fetch() is on a vendor type, so whatever it returned is vendor too.
+    const row = db
+      .prepare(
+        `SELECT u.external FROM unresolved u JOIN refs r ON r.id = u.ref_id
+          WHERE r.name = 'reduceIt'`,
+      )
+      .get();
+    assert.equal(row.external, 1);
+    cleanup();
+  });
+});

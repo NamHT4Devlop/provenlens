@@ -65,29 +65,55 @@ calls = linked + library + missed
 ```
 
 - **linked** — đã nối được thành cạnh
-- **library** — chứng minh được là nằm ngoài cây index (JAR, gem, node_modules). Không phải lỗi.
+- **library** — nằm ngoài cây index (JAR, gem, node_modules, runtime). Không phải lỗi.
 - **missed** — chỗ resolver thật sự hụt. **Chỉ nhóm này mới là bug.**
 
 Chỉ số đáng nhìn là **in-repo resolution** = `linked / (calls − library)`.
 
-Điều quan trọng: **không hard-code danh sách framework nào cả.** Bằng chứng nằm sẵn trong code —
-`import` có FQN không nằm trong index thì chắc chắn là JAR; import trong TS không trỏ tới file nào
-thì là `node_modules`; tổ tiên không được index thì method thiếu đến từ đó (`JpaRepository#findById`,
-`RouteBuilder#from`, `ActionController::Base#render`). Cơ chế này tự đúng với mọi thư viện bạn thêm.
+### Bốn loại bằng chứng, xếp theo độ chắc
+
+Nhóm `library` **không phải một khối đồng nhất**, nên `bench` tách rõ để bạn tự kiểm toán:
+
+| Bằng chứng | Loại | Cơ sở |
+|---|---|---|
+| Named library | **Chứng minh** | `import` có FQN không nằm trong index → chắc chắn là JAR; import TS không trỏ tới file nào → `node_modules` |
+| Inherited | **Chứng minh** | Tổ tiên không được index thì method thiếu đến từ đó (`JpaRepository#findById`, `RouteBuilder#from`, `ActionController::Base#render`) |
+| Name declared nowhere | **Chứng minh** | Không symbol nào trong index mang tên đó → lời gọi **không thể** trỏ vào repo. Trên petclinic: `assertThat` gọi 68 lần, `andExpect` 77 lần, khai báo trong repo: **0** |
+| Runtime built-in | **Giả định** | `.map` trên receiver không suy được kiểu gần như chắc chắn là `Array.map`. Không có import để lần, không có tổ tiên để đi — cùng loại với `Kernel` của Ruby |
+
+Ba loại đầu là chứng minh. Loại thứ tư là suy luận mạnh, nên nó **mang nhãn owner riêng**
+(`js-runtime`, `jdk-runtime`, `Kernel`) và `bench` in luôn con số *"nếu mọi giả định đều sai"* —
+tức cận dưới tuyệt đối.
+
+**Không hard-code danh sách framework nào cả.** Ba luật đầu suy ra từ chính source, nên tự đúng
+với mọi thư viện bạn thêm mà không cần cập nhật gì.
+
+Và luật chứng minh **luôn chạy trước** luật giả định: nếu chứng minh được thì không đoán.
 
 ### Số đo trên repo thật
 
-| Repo | Loại | In-repo resolution | Thư viện |
+| Repo | Loại | In-repo resolution | Cận dưới nếu mọi giả định sai |
 |---|---|---|---|
-| spring-petclinic | Spring Boot + Data | 41.5% | 46.6% |
-| spring-cloud-aws | 803 file Java | 37.7% | 49.7% |
-| human-essentials | Rails, 1043 file | 38.9% | — |
-| agenta | 3891 file TS/JS | 27.7% | 28.3% |
-| mybatis jpetstore | MyBatis + Flyway | 29.6% | 57.4% |
-| camel-spring-boot-examples | ~50 ví dụ Camel | 11.5% | 45.2% |
+| spring-petclinic | Spring Boot + Data | **98.9%** | 98.1% |
+| camel-spring-boot-examples | ~50 ví dụ Camel | **91.1%** | 90.2% |
+| mybatis jpetstore | MyBatis + Flyway | **89.1%** | 89.1% |
+| human-essentials | Rails, 1043 file | **77.2%** | 75.9% |
+| spring-cloud-aws | 803 file Java | **76.7%** | 75.8% |
+| agenta | 3891 file TS/JS | **66.7%** | 43.3% |
 
-Camel thấp là **trung thực**: repo đó là ~50 project độc lập, trung bình 6 file, gần như chỉ gọi
-DSL Camel — vốn không có đồ thị nội bộ để tìm. Đo bằng `./scripts/bench.js <repo> --detail`.
+Cột cuối là điều kiện tự kiểm: giả sử **mọi** phán đoán runtime đều sai thì con số còn lại bao
+nhiêu. Java gần như toàn bộ dựa trên chứng minh (chênh dưới 1%); agenta dựa vào giả định nhiều
+nhất vì JS không có kiểu để lần.
+
+Ba repo còn dưới 90% vì lý do khác nhau, đều là **giới hạn thật chứ không phải lỗi phân loại**:
+
+- **spring-cloud-aws** — chuỗi builder fluent (`X.builder().a().b().build()`), cần suy kiểu qua
+  từng mắt xích của SDK bên ngoài.
+- **human-essentials** — Ruby không có kiểu; phần còn lại là `ambiguous-name` (tên có thật trong
+  repo nhưng nhiều ứng viên).
+- **agenta** — TS generic và `atom()`/hook trả về kiểu suy từ tham số kiểu.
+
+Đo lại bất cứ lúc nào bằng `./scripts/bench.js <repo> --detail`.
 
 ## Lệnh
 
@@ -171,6 +197,9 @@ Mỗi cạnh mang `confidence` + ghi chú `via` giải thích cách suy ra, đ�
 | 0.6 | `binding:flyway` | Khớp bảng ↔ entity theo **quy ước đặt tên** |
 | 0.5 / 0.4 | `unique-name` | Không có thông tin kiểu, đúng một method trùng tên (Ruby thấp hơn) |
 
+Fallback `unique-name` **không được áp dụng** khi tên đó là built-in của runtime: nối `xs.map()`
+vào một method `map` bất kỳ trong repo là bịa ra cạnh, không phải suy luận.
+
 Symbol do plugin sinh ra (câu SQL, route, migration) được đánh dấu `generated` và `explore` ghi rõ
 *"derived, not written in this file"*.
 
@@ -194,7 +223,7 @@ Index là cache. Tăng `SCHEMA_VERSION` trong `src/db.js` là index cũ bị xo�
 npm test
 ```
 
-84 test trên 5 bộ fixture cộng một bộ hồi quy:
+91 test trên 5 bộ fixture cộng một bộ hồi quy:
 
 | Fixture | Mô phỏng | Chuỗi mà grep không lần ra |
 |---|---|---|

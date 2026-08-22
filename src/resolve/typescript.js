@@ -17,6 +17,45 @@ const LANG_LIST = TS_LANGS.map((l) => `'${l}'`).join(', ');
 
 const EXTENSIONS = ['.ts', '.tsx', '.d.ts', '.js', '.jsx', '.mts', '.cts', '.mjs', '.cjs'];
 
+/**
+ * Methods every value carries because the language gives them, not because a
+ * package does. There is no import to follow and no ancestor to walk, so they
+ * cannot be proven external the way a library call can -- this is a strong
+ * assumption, and it is recorded under its own owner so it stays separable
+ * from the proofs.
+ *
+ * Only consulted when the receiver has no known type. A receiver typed to a
+ * class in this project resolves against that class first, so a project method
+ * named `get` or `map` is never shadowed by this list.
+ */
+const JS_RUNTIME = new Set([
+  // Array
+  'map', 'filter', 'forEach', 'reduce', 'reduceRight', 'find', 'findIndex', 'findLast',
+  'some', 'every', 'includes', 'indexOf', 'lastIndexOf', 'join', 'slice', 'splice',
+  'concat', 'sort', 'reverse', 'flat', 'flatMap', 'push', 'pop', 'shift', 'unshift',
+  'fill', 'at', 'keys', 'values', 'entries', 'isArray', 'from', 'of',
+  // Map and Set
+  'get', 'set', 'has', 'delete', 'clear', 'add',
+  // Promise
+  'then', 'catch', 'finally', 'all', 'allSettled', 'race', 'resolve', 'reject',
+  // String
+  'split', 'trim', 'trimStart', 'trimEnd', 'replace', 'replaceAll', 'toLowerCase',
+  'toUpperCase', 'startsWith', 'endsWith', 'padStart', 'padEnd', 'substring', 'substr',
+  'charAt', 'charCodeAt', 'codePointAt', 'match', 'matchAll', 'repeat', 'normalize',
+  'localeCompare', 'search',
+  // Object, Number, JSON and friends
+  'hasOwnProperty', 'toString', 'valueOf', 'toFixed', 'toPrecision', 'stringify',
+  'parse', 'assign', 'freeze', 'bind', 'call', 'apply', 'toISOString', 'getTime',
+]);
+
+/** Constructors the runtime provides, for `new Set()` and the like. */
+const JS_GLOBALS = new Set([
+  'Set', 'Map', 'WeakMap', 'WeakSet', 'Promise', 'Date', 'RegExp', 'Error', 'TypeError',
+  'RangeError', 'Array', 'Object', 'String', 'Number', 'Boolean', 'Proxy', 'URL',
+  'URLSearchParams', 'AbortController', 'TextEncoder', 'TextDecoder', 'Intl', 'Blob',
+  'FormData', 'Headers', 'Request', 'Response', 'Event', 'EventTarget',
+]);
+
 /** Reads `compilerOptions.paths` so alias imports resolve like the compiler does. */
 export function readTsconfigPaths(root) {
   for (const name of ['tsconfig.json', 'jsconfig.json']) {
@@ -397,16 +436,50 @@ export function resolveTypeScript(db, root) {
     uniqueName: 0,
     unresolved: 0,
     external: 0,
+    notInProject: 0,
+    runtime: 0,
     inheritance: 0,
   };
+  const refOutcome = new Map();
+  /**
+   * What each ref resolved to, so a chain can inherit it. If `a.b()` returned
+   * something from a library, `.c()` on that result is a library call too --
+   * a proof, not a guess. Refs are inserted receiver-first, so the inner link
+   * is always decided before the outer one is examined.
+   */
+  const inheritedExternal = (ref) => {
+    if (ref.receiver_ref_id == null) return undefined;
+    const inner = refOutcome.get(ref.receiver_ref_id);
+    return inner?.external ? (inner.owner ?? null) : undefined;
+  };
+
   const insertUnresolved = (refId, reason) => {
     insertRow.run(refId, reason, 0, null);
+    refOutcome.set(refId, { external: false });
     stats.unresolved++;
   };
   /** A call into node_modules or the runtime: expected, not a miss. */
   const insertExternal = (refId, owner) => {
     insertRow.run(refId, owner ? `external:${owner}` : 'external', 1, owner ?? null);
+    refOutcome.set(refId, { external: true, owner });
     stats.external++;
+  };
+  /**
+   * The called name is declared nowhere in the index, so the call cannot target
+   * this project. Weaker than naming the package, but a proof all the same.
+   */
+  const insertNotInProject = (refId) => {
+    insertRow.run(refId, 'external:not-in-project', 1, null);
+    refOutcome.set(refId, { external: true, owner: null });
+    stats.external++;
+    stats.notInProject++;
+  };
+  /** A language built-in on an untyped receiver: assumed, not proven. */
+  const insertRuntime = (refId) => {
+    insertRow.run(refId, 'external:js-runtime', 1, 'js-runtime');
+    refOutcome.set(refId, { external: true, owner: 'js-runtime' });
+    stats.external++;
+    stats.runtime++;
   };
 
   for (const t of types.values()) {
@@ -446,6 +519,8 @@ export function resolveTypeScript(db, root) {
       if (!type?.fqn) {
         const owner = externalOwner(ref.name, ref.file_id, file?.pkg);
         if (owner) insertExternal(ref.id, owner);
+        else if (JS_GLOBALS.has(ref.name)) insertRuntime(ref.id);
+        else if (!callablesByName.has(ref.name)) insertNotInProject(ref.id);
         else insertUnresolved(ref.id, 'unknown-type');
         continue;
       }
@@ -482,8 +557,14 @@ export function resolveTypeScript(db, root) {
     const type = receiverType(ref, fromSymbol, 0);
 
     if (type && !type.fqn) {
-      if (type.complex) insertUnresolved(ref.id, 'complex-receiver-chain');
-      else insertExternal(ref.id, type.external);
+      const carried = inheritedExternal(ref);
+      if (!type.complex) insertExternal(ref.id, type.external);
+      else if (!callablesByName.has(ref.name)) insertNotInProject(ref.id);
+      else if (carried !== undefined) insertExternal(ref.id, carried);
+      // The receiver has no type we could work out; a language built-in is by
+      // far the likeliest reading of `.map` or `.get` at that point.
+      else if (JS_RUNTIME.has(ref.name)) insertRuntime(ref.id);
+      else insertUnresolved(ref.id, 'complex-receiver-chain');
       continue;
     }
 
@@ -507,11 +588,18 @@ export function resolveTypeScript(db, root) {
       }
       const inherited = externalAncestor(type);
       if (inherited) insertExternal(ref.id, inherited);
+      else if (!callablesByName.has(ref.name)) insertNotInProject(ref.id);
       else insertUnresolved(ref.id, `no-such-member-on:${type.name}`);
       continue;
     }
 
     const byName = callablesByName.get(ref.name) ?? [];
+    // A receiver we could not type, calling something the language provides:
+    // linking that to whichever project method shares the name invents an edge.
+    if (ref.receiver && JS_RUNTIME.has(ref.name)) {
+      insertRuntime(ref.id);
+      continue;
+    }
     if (byName.length === 1) {
       insertEdge.run(ref.from_symbol_id, byName[0].id, 'calls', 0.5, 'unique-name', ref.line);
       stats.uniqueName++;
@@ -523,6 +611,7 @@ export function resolveTypeScript(db, root) {
         ? externalOwner(ref.name, ref.file_id, fileById.get(ref.file_id)?.pkg)
         : null;
       if (owner) insertExternal(ref.id, owner);
+      else if (!callablesByName.has(ref.name)) insertNotInProject(ref.id);
       else insertUnresolved(ref.id, 'unknown-method');
     }
   }

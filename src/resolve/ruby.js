@@ -247,17 +247,44 @@ export function resolveRuby(db) {
     uniqueName: 0,
     unresolved: 0,
     external: 0,
+    notInProject: 0,
     inheritance: 0,
     dropped: 0,
   };
+  const refOutcome = new Map();
+  /**
+   * What each ref resolved to, so a chain can inherit it. If `a.b()` returned
+   * something from a library, `.c()` on that result is a library call too --
+   * a proof, not a guess. Refs are inserted receiver-first, so the inner link
+   * is always decided before the outer one is examined.
+   */
+  const inheritedExternal = (ref) => {
+    if (ref.receiver_ref_id == null) return undefined;
+    const inner = refOutcome.get(ref.receiver_ref_id);
+    return inner?.external ? (inner.owner ?? null) : undefined;
+  };
+
   const insertUnresolved = (refId, reason) => {
     insertRow.run(refId, reason, 0, null);
+    refOutcome.set(refId, { external: false });
     stats.unresolved++;
   };
   /** A call into a gem or Ruby core: expected, not a miss. */
   const insertExternal = (refId, owner) => {
     insertRow.run(refId, owner ? `external:${owner}` : 'external', 1, owner ?? null);
+    refOutcome.set(refId, { external: true, owner });
     stats.external++;
+  };
+  /**
+   * The called name is declared nowhere in the index, so it cannot be a call
+   * into this project. Ruby leans on this hardest: an RSpec spec file is almost
+   * entirely `expect`, `it`, `let` and friends, none of which the app defines.
+   */
+  const insertNotInProject = (refId) => {
+    insertRow.run(refId, 'external:not-in-project', 1, null);
+    refOutcome.set(refId, { external: true, owner: null });
+    stats.external++;
+    stats.notInProject++;
   };
 
   for (const t of types.values()) {
@@ -330,7 +357,10 @@ export function resolveRuby(db) {
     }
 
     if (info === undefined) {
+      const carried = inheritedExternal(ref);
       if (ref.kind === 'ident_call') stats.dropped++;
+      else if (!methodsByName.has(ref.name)) insertNotInProject(ref.id);
+      else if (carried !== undefined) insertExternal(ref.id, carried);
       else insertUnresolved(ref.id, 'complex-receiver-chain');
       continue;
     }
@@ -392,6 +422,7 @@ export function resolveRuby(db) {
           : fromSymbol?.container_fqn;
       const inherited = !ref.receiver ? externalAncestor(owner) : null;
       if (inherited) insertExternal(ref.id, inherited);
+      else if (!methodsByName.has(ref.name)) insertNotInProject(ref.id);
       else insertUnresolved(ref.id, 'unknown-method');
     }
   }

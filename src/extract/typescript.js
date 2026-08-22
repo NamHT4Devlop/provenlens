@@ -223,11 +223,18 @@ export function extractTypeScript(tree, src, ctx = {}) {
     for (let i = 0; i < paramsNode.namedChildCount; i++) {
       const p = paramsNode.namedChild(i);
       if (!p) continue;
-      if (!['required_parameter', 'optional_parameter'].includes(p.type)) continue;
 
-      const patt = childByField(p, 'pattern') ?? firstOfType(p, 'identifier');
+      // JavaScript writes a parameter as a bare identifier; only TypeScript
+      // wraps it in required_parameter. Missing this made every parameter in a
+      // .js file invisible, so calls on one fell through to name guessing.
+      const isPlain = ['identifier', 'assignment_pattern', 'rest_pattern'].includes(p.type);
+      if (!isPlain && !['required_parameter', 'optional_parameter'].includes(p.type)) continue;
+
+      const patt = isPlain
+        ? (p.type === 'identifier' ? p : (childByField(p, 'left') ?? firstOfType(p, 'identifier')))
+        : (childByField(p, 'pattern') ?? firstOfType(p, 'identifier'));
       const name = patt ? text(patt, src) : null;
-      const typeName = typeFromAnnotation(p, src);
+      const typeName = isPlain ? null : typeFromAnnotation(p, src);
       params.push({ name, type: typeName });
 
       if (name && ownerTmpId != null) {
