@@ -153,7 +153,7 @@ thuộc tính ActiveRecord. Giờ chúng nằm trong index, mẫu số lớn hơ
 | `codelens affected [files...]` | File đã đổi chạm tới cái gì + **test nào đã phủ** |
 | `codelens install [target]` | Đăng ký MCP vào agent (`--dry-run` xem trước) |
 | `codelens uninit [path]` | Xoá index khỏi project |
-| `codelens serve [-p 7777] [-o]` | **Web UI** để search và duyệt đồ thị trong trình duyệt |
+| `codelens serve [paths...] [-p 7777] [-o]` | **Web UI** — search và duyệt đồ thị, một hoặc **nhiều repo** cùng lúc |
 | `codelens mcp [path]` | MCP server qua stdio |
 
 `query`, `callers`, `callees`, `impact`, `affected` đều nhận `--json` để nối vào tool khác.
@@ -163,6 +163,29 @@ thuộc tính ActiveRecord. Giờ chúng nằm trong index, mẫu số lớn hơ
 ```bash
 codelens serve --open
 ```
+
+**Nhiều repo cùng lúc.** Trỏ vào thư mục chứa nhiều service, nó tự tìm mọi repo đã `init` bên trong:
+
+```bash
+codelens serve ~/work/services --open
+```
+
+Hoặc liệt kê thẳng: `codelens serve ./order-service ./notify-service`.
+
+Thanh trên có chip chọn repo — **không chọn gì thì hiện tất cả**, chọn một repo thì thu hẹp vào
+repo đó. Mỗi repo một màu, vẽ thành **vòng ngoài node** nên không đè lên màu theo loại symbol.
+
+**Cạnh xuyên repo.** Đây mới là lý do mở nhiều repo: producer SQS ở service này và listener ở
+service kia chỉ dính nhau qua **tên queue**, không có lời gọi nào. codelens khớp các endpoint
+binding giữa các index và vẽ chúng thành **đường xanh ngọc nét đứt, có nhãn tên queue**:
+
+```
+order-service:publishOrder  ──sqs: order-events──▶  notify-service:onOrder     (Java)
+                            └─sqs: order-events──▶  audit-service:OrderAuditWorker  (Ruby)
+```
+
+Xuyên repo **và** xuyên ngôn ngữ. Symbol được đánh địa chỉ theo `repo:id` vì mỗi index đánh số
+riêng từ 1 — ID trần sẽ đụng nhau ngay khi mở repo thứ hai.
 
 Một trang tự chứa, không build step, không dependency ngoài: gõ để tìm symbol, chọn để xem source
 thật kèm số dòng, rồi **bấm vào bất kỳ liên kết nào để đi tiếp trong đồ thị** — caller, callee,
@@ -269,7 +292,7 @@ Index là cache. Tăng `SCHEMA_VERSION` trong `src/db.js` là index cũ bị xo�
 npm test
 ```
 
-102 test trên 5 bộ fixture cộng một bộ hồi quy:
+127 test trên 5 bộ fixture cộng hồi quy, bảo mật và multi-repo:
 
 | Fixture | Mô phỏng | Chuỗi mà grep không lần ra |
 |---|---|---|
@@ -291,14 +314,14 @@ viện. Nếu resolver sau này hụt một call nội bộ, test đỏ ngay.
 - **Chuỗi fluent** vẫn là nhóm miss lớn nhất. Kiểu được lan truyền qua chuỗi khi mọi mắt xích nằm
   trong repo; chạm vào kiểu thư viện là dừng.
 - **JS thuần không có type annotation** → không suy được kiểu receiver. Báo là miss, không đoán bừa.
-- **SQS xuyên repo**: chỉ nối được hai đầu nếu cùng nằm trong repo đang index. Cần index nhiều repo
-  cùng lúc mới trace được luồng xuyên microservice.
+- **SQS xuyên repo**: đã hỗ trợ — `codelens serve <workspace>` khớp endpoint giữa các index.
+  Riêng CLI vẫn làm việc trên một repo tại một thời điểm.
 - **Inflector Ruby** đơn giản, không xử lý bất quy tắc (`people`/`person`).
 - **MyBatis dạng annotation** (`@Select` trên method) không cần binding — SQL đã nằm sẵn trong method.
 
 ## Việc còn lại
 
-- [ ] Chỉ mục nhiều repo để trace luồng xuyên microservice
+- [ ] Đưa multi-repo xuống CLI và MCP (hiện mới có ở web UI)
 - [ ] Ruby: `delegate`, `method_missing`, concern `included do`
 - [ ] TS: generic, decorator (NestJS/Angular DI)
 - [ ] Đọc `.d.ts` trong `node_modules` để resolve API thư viện

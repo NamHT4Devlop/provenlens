@@ -34,6 +34,32 @@ export function findProjectRoot(start = process.cwd()) {
   }
 }
 
+/**
+ * Every indexed repository at or just below `start`.
+ *
+ * A microservice workspace is usually one folder holding several service
+ * checkouts, so a directory that is not itself indexed is scanned one level
+ * down rather than reported as empty.
+ */
+export function discoverProjects(start = process.cwd()) {
+  const dir = resolve(start);
+  const own = findProjectRoot(dir);
+  if (own) return [own];
+
+  let entries;
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+
+  return entries
+    .filter((e) => e.isDirectory() && !e.name.startsWith('.'))
+    .map((e) => join(dir, e.name))
+    .filter((child) => existsSync(join(child, INDEX_DIR, DB_FILE)))
+    .sort();
+}
+
 export function dbPathFor(root) {
   return join(root, INDEX_DIR, DB_FILE);
 }

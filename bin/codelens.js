@@ -381,14 +381,16 @@ program
 
 program
   .command('serve')
-  .argument('[path]', 'project directory')
+  .argument('[paths...]', 'project directories, or one folder holding several')
   .option('-p, --port <n>', 'port to listen on', '7777')
   .option('-o, --open', 'open a browser once it is up')
-  .description('browse and search the graph in a local web UI')
-  .action(async (path, opts) => {
+  .description('browse and search the graph in a local web UI, across one or more repos')
+  .action(async (paths, opts) => {
     const { startServer } = await import('../src/server.js');
     try {
-      await startServer(path ? resolve(path) : process.cwd(), {
+      // A folder of service checkouts is scanned one level down, so pointing
+      // at a workspace opens every repository in it.
+      await startServer(paths.length ? paths.map((p) => resolve(p)) : [process.cwd()], {
         port: Number(opts.port),
         open: Boolean(opts.open),
       });

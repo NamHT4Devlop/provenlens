@@ -47,6 +47,15 @@
   }
   .chip[aria-pressed="true"] { color: var(--ink); border-color: color-mix(in srgb, var(--accent) 50%, var(--line)); }
   .chip .dot { width: 9px; height: 9px; border-radius: 50%; }
+  #repos { display: flex; gap: 6px; flex-wrap: wrap; }
+  .repo {
+    display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; cursor: pointer;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 999px;
+    font-size: 11.5px; color: var(--muted); user-select: none; white-space: nowrap;
+  }
+  .repo[aria-pressed="true"] { color: var(--ink); border-color: currentColor; }
+  .repo .swatch { width: 8px; height: 8px; border-radius: 2px; }
+  .repo .n { opacity: .6; font-size: 10.5px; }
   .spacer { flex: 1; }
   .hint { color: var(--muted); font-size: 11.5px; white-space: nowrap; }
   #stage { position: absolute; inset: 0; }
@@ -112,6 +121,7 @@
     <input id="q" placeholder="Search for nodes in the graph" autocomplete="off" spellcheck="false">
     <div id="suggest"></div>
   </div>
+  <div id="repos"></div>
   <div class="filters" id="filters"></div>
   <div class="spacer"></div>
   <div class="hint" id="stats"></div>
@@ -143,6 +153,14 @@ const COLORS = {
 };
 const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 const colorOf = (kind) => css(COLORS[kind] ?? '--muted');
+
+// One hue per repository, used as a ring so it never fights the kind colour.
+const REPO_COLORS = ['#7aa2ff', '#2dd4bf', '#fbbf24', '#f472b6', '#a78bfa', '#4ade80', '#fb923c'];
+let repos = [];
+let activeRepo = null; // null = every repository
+
+const repoColor = (id) => REPO_COLORS[id % REPO_COLORS.length];
+const repoName = (id) => repos.find((r) => r.id === id)?.name ?? '';
 
 const KINDS = [
   ['class', 'Types', ['class', 'interface', 'enum', 'record', 'module']],
@@ -260,9 +278,14 @@ function draw() {
     const p = toScreen(a), q = toScreen(b);
     const dim = selected && e.from !== selected.id && e.to !== selected.id;
 
-    ctx.strokeStyle = dim ? 'rgba(147,160,177,.16)' : 'rgba(147,160,177,.46)';
-    ctx.lineWidth = e.confidence != null && e.confidence < 1 ? 1 : 1.4;
-    if (e.confidence != null && e.confidence < 1) ctx.setLineDash([4, 3]);
+    // An edge that leaves the repository is the whole point of opening several,
+    // so it is drawn to stand out rather than blend in.
+    ctx.strokeStyle = e.crossRepo
+      ? (dim ? 'rgba(45,212,191,.3)' : 'rgba(45,212,191,.85)')
+      : dim ? 'rgba(147,160,177,.16)' : 'rgba(147,160,177,.46)';
+    ctx.lineWidth = e.crossRepo ? 2 : e.confidence != null && e.confidence < 1 ? 1 : 1.4;
+    if (e.crossRepo) ctx.setLineDash([7, 4]);
+    else if (e.confidence != null && e.confidence < 1) ctx.setLineDash([4, 3]);
     ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(q.x, q.y); ctx.stroke();
     ctx.setLineDash([]);
 
@@ -285,7 +308,7 @@ function draw() {
       if (a2 > Math.PI / 2 || a2 < -Math.PI / 2) a2 += Math.PI;
       ctx.rotate(a2);
       ctx.font = '9px ui-monospace, monospace';
-      ctx.fillStyle = 'rgba(147,160,177,.75)';
+      ctx.fillStyle = e.crossRepo ? 'rgba(45,212,191,.95)' : 'rgba(147,160,177,.75)';
       ctx.textAlign = 'center';
       ctx.fillText(e.label.toUpperCase(), 0, -4);
       ctx.restore();
@@ -303,8 +326,17 @@ function draw() {
     ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
     ctx.fillStyle = n.seed ? css('--seed') : colorOf(n.kind);
     ctx.fill();
+    // Selection is drawn on the node itself; the repository ring sits outside
+    // it, so picking a node never hides which repository it came from.
     if (n === hover || selected?.id === n.id) {
       ctx.lineWidth = 2.5; ctx.strokeStyle = '#fff'; ctx.stroke();
+    }
+    if (repos.length > 1) {
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, r + 3.5, 0, Math.PI * 2);
+      ctx.lineWidth = 2.5;
+      ctx.strokeStyle = repoColor(n.repo);
+      ctx.stroke();
     }
     if (n.isTest) {
       ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(45,212,191,.9)';
@@ -382,8 +414,11 @@ function relList(items) {
     const conf = c.confidence != null && c.confidence < 1
       ? ' <span class="conf">' + esc(c.via) + ' · ' + c.confidence.toFixed(2) + '</span>' : '';
     const edge = c.edge && c.edge !== 'calls' ? '<span class="tag">' + esc(c.edge) + '</span>' : '';
+    const from = repos.length > 1 && c.repoName
+      ? '<span style="color:' + repoColor(c.repo) + '">' + esc(c.repoName) + '</span> · ' : '';
     return '<li>' + edge + '<a class="sym" data-id="' + c.id + '">' + esc(c.fqn) + '</a>' +
-      '<div class="meta" title="' + esc(c.file) + '">' + esc(shortPath(c.file, 4)) + ':' + where + conf + '</div></li>';
+      '<div class="meta" title="' + esc(c.file) + '">' + from + esc(shortPath(c.file, 4)) + ':' +
+      where + conf + '</div></li>';
   }).join('') + '</ul>';
 }
 
@@ -392,8 +427,9 @@ async function showPanel(id) {
   const p = [];
   p.push('<span class="close" id="closePanel">×</span>');
   p.push('<h2><span class="tag">' + esc(d.kind) + '</span>' + esc(d.fqn) + '</h2>');
-  p.push('<div class="loc" title="' + esc(d.file) + '">' + esc(d.file) + ':' + d.startLine + '–' + d.endLine +
-    (d.derived ? ' · derived' : '') + '</div>');
+  p.push('<div class="loc" title="' + esc(d.file) + '">' +
+    (repos.length > 1 ? '<span style="color:' + repoColor(d.repo) + '">' + esc(d.repoName) + '</span> · ' : '') +
+    esc(d.file) + ':' + d.startLine + '–' + d.endLine + (d.derived ? ' · derived' : '') + '</div>');
   if (d.source) p.push('<pre>' + esc(d.source) + '</pre>');
   if (d.members.length) {
     p.push('<h3>Members (' + d.members.length + ')</h3><ul>' + d.members.map((m) =>
@@ -404,6 +440,9 @@ async function showPanel(id) {
   p.push('<h3>Callers (' + d.callers.length + ')</h3>' + relList(d.callers));
   p.push('<h3>Calls out to (' + d.callees.length + ')</h3>' + relList(d.callees));
   if (d.wired.length) p.push('<h3>Wired by framework</h3>' + relList(d.wired));
+  if (d.crossRepo?.length) {
+    p.push('<h3>Across repositories (' + d.crossRepo.length + ')</h3>' + relList(d.crossRepo));
+  }
   p.push('<h3>Blast radius</h3><div class="meta">' + d.blast.symbols + ' symbol(s) across ' +
     d.blast.files + ' file(s) reach this.</div>');
 
@@ -491,7 +530,7 @@ $('png').onclick = () => {
 document.addEventListener('click', (e) => {
   if (e.target.id === 'closePanel') { $('panel').classList.remove('on'); return; }
   const link = e.target.closest('a.sym');
-  if (link) { e.preventDefault(); focusSymbol(Number(link.dataset.id)).catch(() => {}); }
+  if (link) { e.preventDefault(); focusSymbol(link.dataset.id).catch(() => {}); }
 });
 
 // ---- search -----------------------------------------------------------------
@@ -504,12 +543,14 @@ $('q').addEventListener('input', (e) => {
   const q = e.target.value.trim();
   if (!q) { $('suggest').classList.remove('on'); return; }
   timer = setTimeout(async () => {
-    hits = await api('/api/search', { q, limit: 20 });
+    hits = await api('/api/search', { q, limit: 20, repo: activeRepo ?? 'all' });
     cursor = -1;
     $('suggest').innerHTML = hits.length
       ? hits.map((h, i) =>
           '<div class="sg" data-i="' + i + '"><b>' + esc(h.name) + '</b>' +
-          '<i>' + esc(h.kind) + ' · ' + esc(shortPath(h.file)) + ':' + h.line + '</i></div>').join('')
+          '<i>' + (repos.length > 1
+            ? '<span style="color:' + repoColor(h.repo) + '">' + esc(h.repoName) + '</span> · ' : '') +
+          esc(h.kind) + ' · ' + esc(shortPath(h.file)) + ':' + h.line + '</i></div>').join('')
       : '<div class="sg"><i>No symbol matches that.</i></div>';
     $('suggest').classList.add('on');
   }, 110);
@@ -562,9 +603,38 @@ $('filters').addEventListener('click', (e) => {
   kick(0.4);
 });
 
+function renderRepos() {
+  if (repos.length < 2) { $('repos').innerHTML = ''; return; }
+  const chip = (id, label, count) =>
+    '<span class="repo" data-r="' + id + '" aria-pressed="' + (activeRepo === id || (id === 'all' && activeRepo === null)) + '"' +
+    (id === 'all' ? '' : ' style="color:' + repoColor(id) + '"') + '>' +
+    (id === 'all' ? '' : '<span class="swatch" style="background:' + repoColor(id) + '"></span>') +
+    esc(label) + (count ? ' <span class="n">' + count.toLocaleString() + '</span>' : '') + '</span>';
+
+  $('repos').innerHTML =
+    chip('all', 'All repos') + repos.map((r) => chip(r.id, r.name, r.symbols)).join('');
+}
+
+$('repos').addEventListener('click', (e) => {
+  const chip = e.target.closest('.repo');
+  if (!chip) return;
+  activeRepo = chip.dataset.r === 'all' ? null : Number(chip.dataset.r);
+  renderRepos();
+  // Scoping changes what a search means, so the canvas starts fresh.
+  nodes = []; edges = []; byId = new Map(); selected = null;
+  applyFilters();
+  $('panel').classList.remove('on');
+  const q = $('q').value.trim();
+  if (q) $('q').dispatchEvent(new Event('input'));
+});
+
 api('/api/overview').then((o) => {
-  $('root').textContent = o.root.split('/').pop();
+  repos = o.repos;
+  $('root').textContent = repos.length === 1
+    ? repos[0].name
+    : repos.length + ' repos';
   $('stats').textContent = o.symbols.toLocaleString() + ' symbols · ' + o.resolution + '% resolved';
+  renderRepos();
 }).catch(() => {});
 
 applyFilters();

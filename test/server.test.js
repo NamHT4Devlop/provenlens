@@ -137,7 +137,18 @@ describe('the API stays read-only and bounded', () => {
   test('answers real data once authorised', async () => {
     const overview = await (await ask('/api/overview')).json();
     assert.ok(overview.symbols > 0);
-    assert.ok(overview.root.endsWith('java'));
+    assert.equal(overview.repos.length, 1);
+    assert.ok(overview.repos[0].root.endsWith('java'));
+  });
+
+  test('addresses a symbol by repository and id together', async () => {
+    // Each index numbers its symbols from one, so an id alone is ambiguous
+    // the moment a second repository is open.
+    const hits = await (await ask('/api/search?q=Donation&limit=1')).json();
+    assert.match(hits[0].id, /^\d+:\d+$/);
+    assert.equal(hits[0].repo, 0);
+    assert.equal((await ask(`/api/symbol?id=${hits[0].id}`)).status, 200);
+    assert.equal((await ask('/api/symbol?id=99:1')).status, 404);
   });
 
   test('caps how much one request can pull', async () => {
