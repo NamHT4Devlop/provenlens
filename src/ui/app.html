@@ -5,11 +5,22 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>codelens</title>
 <style>
+  /*
+   * Palettes come from the editor themes people have read code in for years.
+   * Solarized was designed around reduced eye strain rather than contrast,
+   * which is why it is the default here: a pure black canvas is punishing to
+   * look at for any length of time.
+   */
   :root {
-    --bg: #0b0e13; --panel: #131820; --line: #232b36; --ink: #e8ecf2; --muted: #93a0b1;
-    --accent: #7aa2ff; --warn: #e8a24a; --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    --class: #d946a6; --method: #ec4899; --fn: #f0669b; --field: #8b5cf6;
-    --file: #38bdf8; --sql: #2dd4bf; --route: #fbbf24; --seed: #6366f1;
+    --bg: #002b36; --panel: #073642; --line: #0d4a5a; --ink: #93a1a1;
+    --ink-strong: #eee8d5; --muted: #657b83; --accent: #268bd2; --warn: #cb4b16;
+    --seed: #6c71c4; --cross: #2aa198;
+    --class: #d33682; --method: #dc322f; --fn: #cb4b16; --field: #6c71c4;
+    --file: #268bd2; --sql: #2aa198; --route: #b58900;
+    --code-bg: #012b36;
+    --edge: rgba(147,161,161,.5); --edge-dim: rgba(147,161,161,.15);
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --panel-w: 520px;
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; }
@@ -22,89 +33,104 @@
     display: flex; gap: 10px; align-items: center; padding: 10px 14px;
     background: linear-gradient(var(--bg), color-mix(in srgb, var(--bg) 70%, transparent));
   }
-  .brand { font-weight: 650; letter-spacing: -.01em; white-space: nowrap; }
+  .brand { font-weight: 650; letter-spacing: -.01em; white-space: nowrap; color: var(--ink-strong); }
   .brand span { color: var(--muted); font-weight: 400; font-size: 11.5px; margin-left: 7px; }
   .search { position: relative; flex: 0 1 380px; }
   #q {
-    width: 100%; padding: 8px 12px; font: inherit; color: var(--ink);
+    width: 100%; padding: 8px 12px; font: inherit; color: var(--ink-strong);
     background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
   }
   #q:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
   #suggest {
-    position: absolute; top: 40px; left: 0; right: 0; max-height: 320px; overflow: auto;
+    position: absolute; top: 40px; left: 0; right: 0; max-height: 340px; overflow: auto;
     background: var(--panel); border: 1px solid var(--line); border-radius: 8px; display: none;
   }
   #suggest.on { display: block; }
-  .sg { padding: 7px 11px; cursor: pointer; border-bottom: 1px solid var(--line); }
-  .sg:hover, .sg[aria-selected="true"] { background: color-mix(in srgb, var(--accent) 16%, transparent); }
-  .sg b { font-family: var(--mono); font-weight: 600; font-size: 12.5px; }
-  .sg i { display: block; color: var(--muted); font-style: normal; font-size: 11px; font-family: var(--mono); }
-  .filters { display: flex; gap: 6px; flex-wrap: wrap; }
-  .chip {
+  .sg { padding: 8px 12px; cursor: pointer; border-bottom: 1px solid var(--line); }
+  .sg:hover, .sg[aria-selected="true"] { background: color-mix(in srgb, var(--accent) 22%, transparent); }
+  .sg b { font-family: var(--mono); font-weight: 600; font-size: 13px; color: var(--ink-strong); }
+  .sg i { display: block; color: var(--muted); font-style: normal; font-size: 11.5px; font-family: var(--mono); }
+  .filters, #repos { display: flex; gap: 6px; flex-wrap: wrap; }
+  .chip, .repo {
     display: inline-flex; align-items: center; gap: 5px; padding: 4px 9px; cursor: pointer;
-    background: var(--panel); border: 1px solid var(--line); border-radius: 999px;
-    font-size: 11.5px; color: var(--muted); user-select: none;
-  }
-  .chip[aria-pressed="true"] { color: var(--ink); border-color: color-mix(in srgb, var(--accent) 50%, var(--line)); }
-  .chip .dot { width: 9px; height: 9px; border-radius: 50%; }
-  #repos { display: flex; gap: 6px; flex-wrap: wrap; }
-  .repo {
-    display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; cursor: pointer;
     background: var(--panel); border: 1px solid var(--line); border-radius: 999px;
     font-size: 11.5px; color: var(--muted); user-select: none; white-space: nowrap;
   }
-  .repo[aria-pressed="true"] { color: var(--ink); border-color: currentColor; }
+  .chip[aria-pressed="true"] { color: var(--ink-strong); border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); }
+  .repo[aria-pressed="true"] { color: var(--ink-strong); border-color: currentColor; }
+  .chip .dot { width: 9px; height: 9px; border-radius: 50%; }
   .repo .swatch { width: 8px; height: 8px; border-radius: 2px; }
   .repo .n { opacity: .6; font-size: 10.5px; }
   .spacer { flex: 1; }
   .hint { color: var(--muted); font-size: 11.5px; white-space: nowrap; }
+  #theme {
+    padding: 5px 8px; font: inherit; font-size: 11.5px; color: var(--muted);
+    background: var(--panel); border: 1px solid var(--line); border-radius: 7px; cursor: pointer;
+  }
   #stage { position: absolute; inset: 0; }
   canvas { display: block; width: 100%; height: 100%; cursor: grab; }
   canvas.dragging { cursor: grabbing; }
   .overlay {
-    position: absolute; z-index: 2; background: color-mix(in srgb, var(--panel) 88%, transparent);
+    position: absolute; z-index: 2; background: color-mix(in srgb, var(--panel) 92%, transparent);
     border: 1px solid var(--line); border-radius: 8px; backdrop-filter: blur(6px);
   }
   #counts { left: 14px; bottom: 14px; padding: 7px 11px; color: var(--muted); font-size: 11.5px; }
-  #counts b { color: var(--ink); font-weight: 600; }
+  #counts b { color: var(--ink-strong); font-weight: 600; }
   #tools { right: 14px; bottom: 14px; display: flex; gap: 2px; padding: 4px; }
   #tools button {
     width: 30px; height: 28px; display: grid; place-items: center; cursor: pointer;
     background: transparent; border: 0; color: var(--muted); border-radius: 6px; font-size: 14px;
   }
-  #tools button:hover { background: var(--line); color: var(--ink); }
+  #tools button:hover { background: var(--line); color: var(--ink-strong); }
+
   #panel {
-    position: absolute; top: 92px; right: 14px; bottom: 56px; width: min(390px, 42vw);
-    z-index: 2; padding: 16px 18px; overflow: auto; display: none;
+    position: absolute; top: 92px; right: 14px; bottom: 56px; width: var(--panel-w);
+    z-index: 2; padding: 18px 22px; overflow: auto; display: none;
   }
   #panel.on { display: block; }
-  /* Only take the whole width when there is genuinely no room beside the graph. */
-  @media (max-width: 620px) { #panel { left: 14px; width: auto; top: 120px; } }
-  #panel h2 {
-    margin: 0 0 3px; font-size: 15px; font-family: var(--mono); font-weight: 620;
-    overflow-wrap: anywhere; line-height: 1.35;
+  /*
+   * Dragging this edge widens the panel; source is the thing being read.
+   * Wide enough to hit on a high-density display, and visible without hovering
+   * first -- an invisible ten-pixel strip is a control nobody finds.
+   */
+  #grip {
+    position: absolute; top: 92px; bottom: 56px; z-index: 3; width: 18px;
+    right: calc(var(--panel-w) + 10px); cursor: col-resize; display: none;
   }
-  #panel .loc { color: var(--muted); font-size: 11.5px; font-family: var(--mono);
-                word-break: break-all; margin-bottom: 12px; }
-  #panel h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
-              color: var(--muted); margin: 18px 0 7px; }
+  #grip.on { display: block; }
+  #grip::after {
+    content: ''; position: absolute; top: 50%; left: 6px; width: 6px; height: 54px;
+    transform: translateY(-50%); border-radius: 3px; background: var(--line);
+    opacity: .85; transition: opacity .15s, background .15s;
+  }
+  #grip:hover::after, #grip.dragging::after { opacity: 1; background: var(--accent); }
+  @media (max-width: 700px) { #panel { left: 14px; width: auto; top: 120px; } #grip { display: none; } }
+
+  #panel h2 {
+    margin: 0 0 4px; font-size: 17px; font-family: var(--mono); font-weight: 620;
+    overflow-wrap: anywhere; line-height: 1.35; color: var(--ink-strong);
+  }
+  #panel .loc { color: var(--muted); font-size: 12.5px; font-family: var(--mono);
+                word-break: break-all; margin-bottom: 14px; }
+  #panel h3 { font-size: 11.5px; text-transform: uppercase; letter-spacing: .06em;
+              color: var(--muted); margin: 20px 0 8px; }
   #panel pre {
-    background: #0d1117; border: 1px solid var(--line); border-radius: 7px; padding: 10px 12px;
-    overflow: auto; font-family: var(--mono); font-size: 12px; line-height: 1.5; margin: 0;
-    max-height: 320px;
+    background: var(--code-bg); border: 1px solid var(--line); border-radius: 7px;
+    padding: 12px 14px; overflow: auto; font-family: var(--mono); font-size: 13.5px;
+    line-height: 1.62; margin: 0; max-height: 46vh; color: var(--ink);
   }
   #panel ul { list-style: none; margin: 0; padding: 0; }
-  #panel li { padding: 5px 0; border-bottom: 1px solid var(--line); }
-  a.sym { color: var(--accent); cursor: pointer; font-family: var(--mono); font-size: 12px;
+  #panel li { padding: 6px 0; border-bottom: 1px solid var(--line); }
+  a.sym { color: var(--accent); cursor: pointer; font-family: var(--mono); font-size: 13px;
           overflow-wrap: anywhere; }
   a.sym:hover { text-decoration: underline; }
-  .meta { color: var(--muted); font-size: 11px; }
+  .meta { color: var(--muted); font-size: 12px; }
   .conf { color: var(--warn); }
   .tag { display: inline-block; padding: 0 6px; margin-right: 5px; border-radius: 999px;
-         font-size: 10px; text-transform: uppercase; letter-spacing: .04em;
+         font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em;
          background: var(--line); color: var(--muted); }
-  .close { float: right; cursor: pointer; color: var(--muted); font-size: 18px; line-height: 1; }
-  .close:hover { color: var(--ink); }
+  .close { float: right; cursor: pointer; color: var(--muted); font-size: 20px; line-height: 1; }
+  .close:hover { color: var(--ink-strong); }
   #empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted);
            text-align: center; pointer-events: none; padding: 0 24px; }
   kbd { font-family: var(--mono); font-size: 11px; border: 1px solid var(--line);
@@ -124,8 +150,10 @@
   <div id="repos"></div>
   <div class="filters" id="filters"></div>
   <div class="spacer"></div>
+  <select id="theme" title="Colour scheme"></select>
   <div class="hint" id="stats"></div>
 </header>
+<div id="grip" title="Drag to resize"></div>
 
 <div class="overlay" id="counts"><b id="nNodes">0</b> nodes &nbsp; <b id="nEdges">0</b> edges</div>
 <div class="overlay" id="tools">
@@ -137,6 +165,84 @@
 <div class="overlay" id="panel"></div>
 
 <script>
+/**
+ * Editor palettes, kept as data so the canvas and the page cannot drift apart:
+ * everything drawn reads these same variables.
+ *
+ * Solarized leads because it was designed around reduced eye strain rather
+ * than maximum contrast, which is the complaint a pure black canvas earns.
+ */
+const THEMES = {
+  'solarized-dark': {
+    label: 'Solarized Dark',
+    vars: {
+      bg: '#002b36', panel: '#073642', line: '#0d4a5a', ink: '#93a1a1',
+      'ink-strong': '#eee8d5', muted: '#657b83', accent: '#268bd2', warn: '#cb4b16',
+      seed: '#6c71c4', cross: '#2aa198', class: '#d33682', method: '#dc322f',
+      fn: '#cb4b16', field: '#6c71c4', file: '#268bd2', sql: '#2aa198', route: '#b58900',
+      'code-bg': '#012b36', edge: 'rgba(147,161,161,.5)', 'edge-dim': 'rgba(147,161,161,.15)',
+    },
+  },
+  'solarized-light': {
+    label: 'Solarized Light',
+    vars: {
+      bg: '#fdf6e3', panel: '#eee8d5', line: '#ded8c5', ink: '#586e75',
+      'ink-strong': '#073642', muted: '#93a1a1', accent: '#268bd2', warn: '#cb4b16',
+      seed: '#6c71c4', cross: '#2aa198', class: '#d33682', method: '#dc322f',
+      fn: '#cb4b16', field: '#6c71c4', file: '#268bd2', sql: '#2aa198', route: '#b58900',
+      'code-bg': '#f7f0dd', edge: 'rgba(88,110,117,.5)', 'edge-dim': 'rgba(88,110,117,.15)',
+    },
+  },
+  gruvbox: {
+    label: 'Gruvbox Dark',
+    vars: {
+      bg: '#282828', panel: '#32302f', line: '#504945', ink: '#d5c4a1',
+      'ink-strong': '#fbf1c7', muted: '#a89984', accent: '#83a598', warn: '#fe8019',
+      seed: '#d3869b', cross: '#8ec07c', class: '#fabd2f', method: '#fb4934',
+      fn: '#fe8019', field: '#d3869b', file: '#83a598', sql: '#8ec07c', route: '#fabd2f',
+      'code-bg': '#1d2021', edge: 'rgba(213,196,161,.45)', 'edge-dim': 'rgba(213,196,161,.14)',
+    },
+  },
+  monokai: {
+    label: 'Monokai',
+    vars: {
+      bg: '#272822', panel: '#3e3d32', line: '#49483e', ink: '#cfcfc2',
+      'ink-strong': '#f8f8f2', muted: '#8f908a', accent: '#66d9ef', warn: '#fd971f',
+      seed: '#ae81ff', cross: '#a6e22e', class: '#f92672', method: '#fd971f',
+      fn: '#e6db74', field: '#ae81ff', file: '#66d9ef', sql: '#a6e22e', route: '#e6db74',
+      'code-bg': '#1e1f1c', edge: 'rgba(207,207,194,.45)', 'edge-dim': 'rgba(207,207,194,.14)',
+    },
+  },
+  nord: {
+    label: 'Nord',
+    vars: {
+      bg: '#2e3440', panel: '#3b4252', line: '#4c566a', ink: '#d8dee9',
+      'ink-strong': '#eceff4', muted: '#7b88a1', accent: '#88c0d0', warn: '#d08770',
+      seed: '#b48ead', cross: '#a3be8c', class: '#81a1c1', method: '#bf616a',
+      fn: '#d08770', field: '#b48ead', file: '#88c0d0', sql: '#a3be8c', route: '#ebcb8b',
+      'code-bg': '#292e39', edge: 'rgba(216,222,233,.45)', 'edge-dim': 'rgba(216,222,233,.14)',
+    },
+  },
+  'one-dark': {
+    label: 'One Dark',
+    vars: {
+      bg: '#282c34', panel: '#21252b', line: '#3e4451', ink: '#abb2bf',
+      'ink-strong': '#dcdfe4', muted: '#7f848e', accent: '#61afef', warn: '#d19a66',
+      seed: '#c678dd', cross: '#56b6c2', class: '#e5c07b', method: '#e06c75',
+      fn: '#d19a66', field: '#c678dd', file: '#61afef', sql: '#56b6c2', route: '#e5c07b',
+      'code-bg': '#21252b', edge: 'rgba(171,178,191,.45)', 'edge-dim': 'rgba(171,178,191,.14)',
+    },
+  },
+};
+
+function applyTheme(name) {
+  const theme = THEMES[name] ?? THEMES['solarized-dark'];
+  for (const [key, value] of Object.entries(theme.vars)) {
+    document.documentElement.style.setProperty('--' + key, value);
+  }
+  try { localStorage.setItem('codelens.theme', name); } catch { /* private mode */ }
+}
+
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -304,8 +410,8 @@ function draw() {
     // An edge that leaves the repository is the whole point of opening several,
     // so it is drawn to stand out rather than blend in.
     ctx.strokeStyle = e.crossRepo
-      ? (dim ? 'rgba(45,212,191,.3)' : 'rgba(45,212,191,.85)')
-      : dim ? 'rgba(147,160,177,.16)' : 'rgba(147,160,177,.46)';
+      ? (dim ? css('--edge-dim') : css('--cross'))
+      : dim ? css('--edge-dim') : css('--edge');
     ctx.lineWidth = e.crossRepo ? 2 : e.confidence != null && e.confidence < 1 ? 1 : 1.4;
     if (e.crossRepo) ctx.setLineDash([7, 4]);
     else if (e.confidence != null && e.confidence < 1) ctx.setLineDash([4, 3]);
@@ -316,7 +422,7 @@ function draw() {
     const ang = Math.atan2(q.y - p.y, q.x - p.x);
     const r = radiusOf(b) * view.k + 3;
     const hx = q.x - Math.cos(ang) * r, hy = q.y - Math.sin(ang) * r;
-    ctx.fillStyle = dim ? 'rgba(147,160,177,.16)' : 'rgba(147,160,177,.6)';
+    ctx.fillStyle = dim ? css('--edge-dim') : css('--edge');
     ctx.beginPath();
     ctx.moveTo(hx, hy);
     ctx.lineTo(hx - Math.cos(ang - 0.4) * 8, hy - Math.sin(ang - 0.4) * 8);
@@ -331,7 +437,7 @@ function draw() {
       if (a2 > Math.PI / 2 || a2 < -Math.PI / 2) a2 += Math.PI;
       ctx.rotate(a2);
       ctx.font = '9px ui-monospace, monospace';
-      ctx.fillStyle = e.crossRepo ? 'rgba(45,212,191,.95)' : 'rgba(147,160,177,.75)';
+      ctx.fillStyle = e.crossRepo ? css('--cross') : css('--muted');
       ctx.textAlign = 'center';
       ctx.fillText(e.label.toUpperCase(), 0, -4);
       ctx.restore();
@@ -357,7 +463,7 @@ function draw() {
     // Selection is drawn on the node itself; the repository ring sits outside
     // it, so picking a node never hides which repository it came from.
     if (n === hover || selected?.id === n.id) {
-      ctx.lineWidth = 2.5; ctx.strokeStyle = '#fff'; ctx.stroke();
+      ctx.lineWidth = 2.5; ctx.strokeStyle = css('--ink-strong'); ctx.stroke();
     }
     if (repos.length > 1 && !n.isRepo) {
       ctx.beginPath();
@@ -367,7 +473,7 @@ function draw() {
       ctx.stroke();
     }
     if (n.isTest) {
-      ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(45,212,191,.9)';
+      ctx.lineWidth = 2; ctx.strokeStyle = css('--cross');
       ctx.setLineDash([3, 3]); ctx.stroke(); ctx.setLineDash([]);
     }
 
@@ -375,7 +481,7 @@ function draw() {
     if (label) {
       ctx.font = (n.isRepo || n.seed ? '600 ' : '') +
         Math.max(10, (n.isRepo ? 13 : 11) * view.k) + 'px ui-monospace, monospace';
-      ctx.fillStyle = dim ? 'rgba(232,236,242,.4)' : '#e8ecf2';
+      ctx.fillStyle = dim ? css('--muted') : css('--ink-strong');
       ctx.textAlign = 'center';
       ctx.fillText(n.name.length > 26 ? n.name.slice(0, 25) + '…' : n.name, p.x, p.y + r + 13);
     }
@@ -433,6 +539,7 @@ function mergeGraph(g, seedAt, { pinExisting = false } = {}) {
 async function loadLanding() {
   nodes = []; edges = []; byId = new Map(); selected = null;
   $('panel').classList.remove('on');
+  $('grip').classList.remove('on');
   const g = await api('/api/landing', { limit: 10, repo: activeRepo ?? 'all' });
   mergeGraph(g);
   fit();
@@ -495,6 +602,7 @@ async function showPanel(id) {
   const pane = $('panel');
   pane.innerHTML = p.join('');
   pane.classList.add('on');
+  $('grip').classList.add('on');
   pane.scrollTop = 0;
   requestAnimationFrame(() => { pane.scrollTop = 0; });
 }
@@ -585,7 +693,11 @@ $('png').onclick = () => {
 };
 
 document.addEventListener('click', (e) => {
-  if (e.target.id === 'closePanel') { $('panel').classList.remove('on'); return; }
+  if (e.target.id === 'closePanel') {
+    $('panel').classList.remove('on');
+    $('grip').classList.remove('on');
+    return;
+  }
   const link = e.target.closest('a.sym');
   if (link) { e.preventDefault(); focusSymbol(link.dataset.id).catch(() => {}); }
 });
@@ -688,6 +800,47 @@ $('repos').addEventListener('click', (e) => {
     loadLanding().catch(() => {});
   }
 });
+
+$('theme').innerHTML = Object.entries(THEMES)
+  .map(([key, t]) => '<option value="' + key + '">' + esc(t.label) + '</option>')
+  .join('');
+
+let savedTheme = 'solarized-dark';
+try { savedTheme = localStorage.getItem('codelens.theme') || savedTheme; } catch { /* ignore */ }
+$('theme').value = THEMES[savedTheme] ? savedTheme : 'solarized-dark';
+applyTheme($('theme').value);
+$('theme').addEventListener('change', (e) => applyTheme(e.target.value));
+
+// Dragging the panel edge: reading source is what the panel is for, so how
+// much room it gets should be the reader's call.
+(() => {
+  const grip = $('grip');
+  let from = null;
+  const width = () => parseInt(getComputedStyle(document.documentElement).getPropertyValue('--panel-w'), 10);
+
+  grip.addEventListener('mousedown', (e) => {
+    from = { x: e.clientX, w: width() };
+    grip.classList.add('dragging');
+    e.preventDefault();
+  });
+  window.addEventListener('mousemove', (e) => {
+    if (!from) return;
+    const next = Math.max(320, Math.min(window.innerWidth - 260, from.w + (from.x - e.clientX)));
+    document.documentElement.style.setProperty('--panel-w', next + 'px');
+  });
+  window.addEventListener('mouseup', () => {
+    if (!from) return;
+    from = null;
+    grip.classList.remove('dragging');
+    // A width chosen once should not have to be chosen again on reload.
+    try { localStorage.setItem('codelens.panelWidth', String(width())); } catch { /* ignore */ }
+  });
+
+  try {
+    const saved = Number(localStorage.getItem('codelens.panelWidth'));
+    if (saved >= 320) document.documentElement.style.setProperty('--panel-w', saved + 'px');
+  } catch { /* ignore */ }
+})();
 
 api('/api/overview').then((o) => {
   repos = o.repos;
