@@ -394,3 +394,35 @@ export function graphAround(db, seedIds, { depth = 1, maxNodes = 160 } = {}) {
   const kept = [...edges.values()].filter((e) => nodes.has(e.from) && nodes.has(e.to));
   return { nodes: [...nodes.values()], edges: kept, truncated };
 }
+
+/**
+ * The types most other code depends on, which is a fair first answer to
+ * "what is this codebase".
+ *
+ * Ranked by how many edges touch them: a class nothing references is not part
+ * of the shape of the system, however large it is.
+ */
+export function topHubs(db, { limit = 12 } = {}) {
+  const ranked = (kinds) =>
+    db
+      .prepare(
+        `SELECT ${SYMBOL_COLS},
+                (SELECT COUNT(*) FROM edges e
+                  WHERE e.to_symbol_id = s.id OR e.from_symbol_id = s.id) AS degree
+           FROM symbols s JOIN files f ON f.id = s.file_id
+          WHERE s.kind IN (${kinds.map(() => '?').join(', ')}) AND s.fqn IS NOT NULL
+          ORDER BY degree DESC, s.name
+          LIMIT ?`,
+      )
+      .all(...kinds, limit);
+
+  const types = ranked(['class', 'interface', 'module', 'record']).filter((r) => r.degree > 0);
+  if (types.length) return types;
+
+  // A small service may have no type with edges on it -- the work is in a
+  // handful of methods. Showing nothing there would be worse than showing those.
+  const anything = ranked([
+    'class', 'interface', 'module', 'record', 'method', 'class_method', 'function',
+  ]).filter((r) => r.degree > 0);
+  return anything.length ? anything : ranked(['class', 'interface', 'module', 'record']);
+}

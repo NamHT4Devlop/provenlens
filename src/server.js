@@ -27,10 +27,13 @@ import {
   projectStats,
   isTestPath,
   graphAround,
+  topHubs,
 } from './query.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CALL_KINDS = ['calls', 'instantiates'];
+const SYMBOL_COLS = `s.id, s.name, s.fqn, s.kind, s.container_fqn, s.signature,
+  s.start_line, s.end_line, s.modifiers, f.path AS file_path, f.lang`;
 
 /**
  * Only a request that believes it is talking to loopback is served.
@@ -324,6 +327,110 @@ export async function startServer(pathArgs, { port = 7777, open: openBrowser = f
         if (!project) return send(404, { error: 'no such repository' });
         const detail = symbolDetail(projects, project, symbolId);
         return detail ? send(200, detail) : send(404, { error: 'no such symbol' });
+      }
+
+      if (url.pathname === '/api/landing') {
+        // Opening on an empty canvas answers nothing. This is the shape of the
+        // whole workspace: each repository, the types most depended upon in it,
+        // and any binding that crosses between them.
+        const perRepo = Math.min(Number(url.searchParams.get('limit') ?? 10), 30);
+        const nodes = [];
+        const edges = [];
+
+        for (const project of scope(url)) {
+          const repoNodeId = `repo:${project.id}`;
+          const summary = repoSummary(project);
+          nodes.push({
+            id: repoNodeId,
+            repo: project.id,
+            repoName: project.name,
+            name: project.name,
+            fqn: project.root,
+            kind: 'repo',
+            file: project.root,
+            line: 1,
+            lang: summary.langs[0] ?? '',
+            isRepo: true,
+            seed: true,
+            symbols: summary.symbols,
+            resolution: summary.resolution,
+          });
+
+          const hubs = topHubs(project.db, { limit: perRepo });
+          for (const hub of hubs) {
+            nodes.push(publicNode(project, hub, { degree: hub.degree }));
+            edges.push({
+              from: repoNodeId,
+              to: compose(project.id, hub.id),
+              kind: 'contains',
+              label: 'contains',
+              confidence: 1,
+            });
+          }
+
+          // Real edges between those hubs, so the picture is the architecture
+          // rather than a set of unrelated spokes.
+          if (hubs.length > 1) {
+            const ids = hubs.map((h) => h.id);
+            const marks = ids.map(() => '?').join(', ');
+            for (const e of project.db
+              .prepare(
+                `SELECT from_symbol_id, to_symbol_id, kind, confidence, via FROM edges
+                  WHERE from_symbol_id IN (${marks}) AND to_symbol_id IN (${marks})`,
+              )
+              .all(...ids, ...ids)) {
+              if (e.from_symbol_id === e.to_symbol_id) continue;
+              edges.push({
+                from: compose(project.id, e.from_symbol_id),
+                to: compose(project.id, e.to_symbol_id),
+                kind: e.kind,
+                label: e.kind,
+                via: e.via,
+                confidence: e.confidence,
+              });
+            }
+          }
+
+          // Queue endpoints are the reason to open several repositories at
+          // once, and they live on methods rather than on the types ranked
+          // above -- so they are seeded from the bindings themselves.
+          const endpoints = project.db
+            .prepare(
+              `SELECT DISTINCT b.symbol_id, ${SYMBOL_COLS.replace(/\bs\./g, 's.')}
+                 FROM bindings b
+                 JOIN symbols s ON s.id = b.symbol_id
+                 JOIN files f   ON f.id = s.file_id
+                LIMIT 60`,
+            )
+            .all();
+
+          for (const endpoint of endpoints) {
+            const node = publicNode(project, endpoint);
+            nodes.push(node);
+            edges.push({
+              from: repoNodeId,
+              to: node.id,
+              kind: 'contains',
+              label: 'contains',
+              confidence: 1,
+            });
+          }
+
+          const seeds = [...new Set([...hubs.map((h) => h.id), ...endpoints.map((e) => e.id)])];
+          const cross = crossRepoLinks(projects, project, seeds);
+          nodes.push(...cross.nodes);
+          edges.push(...cross.edges);
+        }
+
+        const seen = new Set();
+        const keptNodes = nodes.filter((n) => (seen.has(n.id) ? false : seen.add(n.id)));
+        const ids = new Set(keptNodes.map((n) => n.id));
+        return send(200, {
+          nodes: keptNodes,
+          // An edge whose other end was never added would draw into nothing.
+          edges: edges.filter((e) => ids.has(e.from) && ids.has(e.to)),
+          truncated: false,
+        });
       }
 
       if (url.pathname === '/api/graph') {

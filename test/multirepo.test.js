@@ -132,6 +132,50 @@ describe('scoping', () => {
   });
 });
 
+describe('the view you get before asking anything', () => {
+  test('offers every repository and what is most central in each', async () => {
+    // An empty canvas answers nothing about a codebase you have not seen.
+    const landing = (await get('/api/landing?limit=5')).json();
+    const repoNodes = landing.nodes.filter((n) => n.isRepo);
+    assert.equal(repoNodes.length, 3);
+    assert.deepEqual(repoNodes.map((n) => n.name).sort(), [
+      'audit-service',
+      'notify-service',
+      'order-service',
+    ]);
+    assert.ok(landing.nodes.length > repoNodes.length, 'each repo should bring some content');
+  });
+
+  test('attaches the content to the repository it came from', async () => {
+    const landing = (await get('/api/landing?limit=5')).json();
+    for (const edge of landing.edges.filter((e) => e.kind === 'contains')) {
+      const from = landing.nodes.find((n) => n.id === edge.from);
+      const to = landing.nodes.find((n) => n.id === edge.to);
+      assert.ok(from.isRepo, 'a contains edge starts at a repository');
+      assert.equal(from.repo, to.repo, 'and stays inside it');
+    }
+  });
+
+  test('narrows to one repository when scoped', async () => {
+    const repos = (await get('/api/repos')).json();
+    const order = repos.find((r) => r.name === 'order-service');
+    const landing = (await get(`/api/landing?limit=5&repo=${order.id}`)).json();
+    const repoNodes = landing.nodes.filter((n) => n.isRepo);
+    assert.equal(repoNodes.length, 1);
+    assert.equal(repoNodes[0].name, 'order-service');
+  });
+
+  test('shows the queue link between services without being asked', async () => {
+    // The reason to open several repositories at once should be visible on
+    // arrival, not only after a search.
+    const landing = (await get('/api/landing?limit=10')).json();
+    assert.ok(
+      landing.edges.some((e) => e.crossRepo),
+      'the producer/consumer link should be in the opening view',
+    );
+  });
+});
+
 describe('links that cross a repository boundary', () => {
   test('joins an SQS producer to the listener in another service', async () => {
     const hits = (await get('/api/search?q=publishOrder&limit=5')).json();

@@ -113,7 +113,7 @@
 </head>
 <body>
 <div id="stage"><canvas id="cv"></canvas></div>
-<div id="empty">Search for a symbol to grow the graph around it.<br><span class="hint">Click a node to expand · drag to move · scroll to zoom</span></div>
+<div id="empty">Loading the workspace…</div>
 
 <header>
   <div class="brand">codelens<span id="root"></span></div>
@@ -222,7 +222,7 @@ function kick(v = 1) { alpha = v; }
  * `cool` is the decay: the settling pass uses a slower one so more of the work
  * happens while repulsion is still strong enough to separate the nodes.
  */
-function tick(cool = 0.985) {
+function tick(cool = 0.985, movable = null) {
   alpha *= cool;
   const visible = nodes.filter((n) => n.shown);
   const cx = cv.clientWidth / 2;
@@ -259,6 +259,9 @@ function tick(cool = 0.985) {
   }
   for (const n of visible) {
     if (n === dragNode) continue;
+    // During an expansion only the new nodes move, so the picture the reader
+    // was already looking at stays where they left it.
+    if (movable && !movable.has(n.id)) continue;
     n.x += n.vx; n.y += n.vy;
   }
 }
@@ -270,9 +273,9 @@ function tick(cool = 0.985) {
  * never settles: Chrome throttles requestAnimationFrame to a few frames a
  * minute there, so the picture would be frozen mid-spread on return.
  */
-function settle(iterations = 600) {
+function settle(iterations = 600, movable = null) {
   alpha = 1;
-  for (let i = 0; i < iterations && alpha > 0.002; i++) tick(0.992);
+  for (let i = 0; i < iterations && alpha > 0.002; i++) tick(0.992, movable);
   alpha = 0.02;
 }
 
@@ -282,7 +285,7 @@ function step() {
   requestAnimationFrame(step);
 }
 
-const radiusOf = (n) => (n.seed ? 17 : n.kind === 'file' ? 13 : 11);
+const radiusOf = (n) => (n.isRepo ? 22 : n.seed ? 17 : n.kind === 'file' ? 13 : 11);
 const toScreen = (n) => ({ x: n.x * view.k + view.x, y: n.y * view.k + view.y });
 
 function draw() {
@@ -343,15 +346,20 @@ function draw() {
 
     ctx.globalAlpha = dim ? 0.35 : 1;
     ctx.beginPath();
-    ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
-    ctx.fillStyle = n.seed ? css('--seed') : colorOf(n.kind);
+    if (n.isRepo) {
+      // A repository is not a symbol, so it is not drawn as one.
+      ctx.roundRect(p.x - r, p.y - r * 0.72, r * 2, r * 1.44, 6 * view.k);
+    } else {
+      ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+    }
+    ctx.fillStyle = n.isRepo ? repoColor(n.repo) : n.seed ? css('--seed') : colorOf(n.kind);
     ctx.fill();
     // Selection is drawn on the node itself; the repository ring sits outside
     // it, so picking a node never hides which repository it came from.
     if (n === hover || selected?.id === n.id) {
       ctx.lineWidth = 2.5; ctx.strokeStyle = '#fff'; ctx.stroke();
     }
-    if (repos.length > 1) {
+    if (repos.length > 1 && !n.isRepo) {
       ctx.beginPath();
       ctx.arc(p.x, p.y, r + 3.5, 0, Math.PI * 2);
       ctx.lineWidth = 2.5;
@@ -363,9 +371,10 @@ function draw() {
       ctx.setLineDash([3, 3]); ctx.stroke(); ctx.setLineDash([]);
     }
 
-    const label = allLabels || n.seed || n === hover || selected?.id === n.id || n.adjacent;
+    const label = n.isRepo || allLabels || n.seed || n === hover || selected?.id === n.id || n.adjacent;
     if (label) {
-      ctx.font = (n.seed ? '600 ' : '') + Math.max(10, 11 * view.k) + 'px ui-monospace, monospace';
+      ctx.font = (n.isRepo || n.seed ? '600 ' : '') +
+        Math.max(10, (n.isRepo ? 13 : 11) * view.k) + 'px ui-monospace, monospace';
       ctx.fillStyle = dim ? 'rgba(232,236,242,.4)' : '#e8ecf2';
       ctx.textAlign = 'center';
       ctx.fillText(n.name.length > 26 ? n.name.slice(0, 25) + '…' : n.name, p.x, p.y + r + 13);
@@ -390,9 +399,11 @@ function applyFilters() {
   $('empty').style.display = nodes.some((n) => n.shown) ? 'none' : 'grid';
 }
 
-function mergeGraph(g, seedAt) {
+function mergeGraph(g, seedAt, { pinExisting = false } = {}) {
+  const fresh = new Set();
   for (const n of g.nodes) {
     if (byId.has(n.id)) { if (n.seed) byId.get(n.id).seed = true; continue; }
+    fresh.add(n.id);
     const angle = Math.random() * Math.PI * 2;
     const spread = 90 + Math.random() * 130;
     const node = {
@@ -411,14 +422,29 @@ function mergeGraph(g, seedAt) {
   }
   applyFilters();
   markAdjacent();
-  settle();
+  settle(pinExisting ? 320 : 600, pinExisting ? fresh : null);
+}
+
+/**
+ * What the page shows before anything is asked of it: each repository, the
+ * types most depended upon inside it, and any binding that crosses between
+ * them. An empty canvas answers nothing about a codebase you have not seen.
+ */
+async function loadLanding() {
+  nodes = []; edges = []; byId = new Map(); selected = null;
+  $('panel').classList.remove('on');
+  const g = await api('/api/landing', { limit: 10, repo: activeRepo ?? 'all' });
+  mergeGraph(g);
+  fit();
 }
 
 async function focusSymbol(id, { reset = false } = {}) {
   if (reset) { nodes = []; edges = []; byId = new Map(); }
   const at = byId.get(id);
   const g = await api('/api/graph', { ids: id, depth: 1 });
-  mergeGraph(g, at);
+  // Growing from a node already on screen should add to the picture, not
+  // rearrange it.
+  mergeGraph(g, at, { pinExisting: !reset && Boolean(at) });
   selected = byId.get(id) ?? null;
   if (selected) selected.seed = true;
   markAdjacent();
@@ -479,7 +505,12 @@ function nodeAt(sx, sy) {
     const n = nodes[i];
     if (!n.shown) continue;
     const p = toScreen(n);
-    if (Math.hypot(p.x - sx, p.y - sy) <= radiusOf(n) * view.k + 4) return n;
+    const r = radiusOf(n) * view.k;
+    if (n.isRepo) {
+      if (Math.abs(p.x - sx) <= r + 3 && Math.abs(p.y - sy) <= r * 0.72 + 3) return n;
+      continue;
+    }
+    if (Math.hypot(p.x - sx, p.y - sy) <= r + 4) return n;
   }
   return null;
 }
@@ -506,6 +537,12 @@ window.addEventListener('mouseup', () => { dragNode = null; panning = null; cv.c
 cv.addEventListener('click', (e) => {
   const n = nodeAt(e.offsetX, e.offsetY);
   if (!n) return;
+  if (n.isRepo) {
+    activeRepo = n.repo;
+    renderRepos();
+    loadLanding().catch(() => {});
+    return;
+  }
   selected = n;
   markAdjacent();
   focusSymbol(n.id).catch(() => {});
@@ -641,11 +678,15 @@ $('repos').addEventListener('click', (e) => {
   activeRepo = chip.dataset.r === 'all' ? null : Number(chip.dataset.r);
   renderRepos();
   // Scoping changes what a search means, so the canvas starts fresh.
-  nodes = []; edges = []; byId = new Map(); selected = null;
-  applyFilters();
-  $('panel').classList.remove('on');
   const q = $('q').value.trim();
-  if (q) $('q').dispatchEvent(new Event('input'));
+  if (q) {
+    nodes = []; edges = []; byId = new Map(); selected = null;
+    applyFilters();
+    $('panel').classList.remove('on');
+    $('q').dispatchEvent(new Event('input'));
+  } else {
+    loadLanding().catch(() => {});
+  }
 });
 
 api('/api/overview').then((o) => {
@@ -655,6 +696,7 @@ api('/api/overview').then((o) => {
     : repos.length + ' repos';
   $('stats').textContent = o.symbols.toLocaleString() + ' symbols · ' + o.resolution + '% resolved';
   renderRepos();
+  return loadLanding();
 }).catch(() => {});
 
 applyFilters();
