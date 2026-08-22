@@ -177,10 +177,20 @@ function resize() {
 new ResizeObserver(resize).observe(cv);
 resize();
 
+// Injected by the server when it served this page. Sent as a header rather
+// than a query parameter so it stays out of anything that logs URLs.
+const TOKEN = '__CODELENS_TOKEN__';
+
+// The address bar has done its job once the page is loaded; leaving the token
+// there only invites it into history and screenshots.
+if (location.search.includes('token=')) {
+  history.replaceState(null, '', location.pathname);
+}
+
 async function api(path, params) {
   const url = new URL(path, location.origin);
   for (const [k, v] of Object.entries(params ?? {})) url.searchParams.set(k, v);
-  const res = await fetch(url);
+  const res = await fetch(url, { headers: { 'x-codelens-token': TOKEN } });
   if (!res.ok) throw new Error((await res.json()).error ?? res.statusText);
   return res.json();
 }

@@ -6,6 +6,7 @@
  * it exposes no more than the CLI already does.
  */
 import { createServer } from 'node:http';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -26,6 +27,28 @@ import {
 } from './query.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+
+/**
+ * Only a request that believes it is talking to loopback is served.
+ *
+ * Binding to 127.0.0.1 stops other machines connecting, but not DNS rebinding:
+ * a page on evil.com whose DNS answers 127.0.0.1 looks same-origin to the
+ * browser, so it could read this API. The browser still sends the original
+ * hostname in Host, which is what gives it away.
+ */
+function hostAllowed(req) {
+  const host = String(req.headers.host ?? '')
+    .replace(/:\d+$/, '')
+    .replace(/^\[|\]$/g, '');
+  return host === '127.0.0.1' || host === 'localhost' || host === '::1';
+}
+
+/** Constant-time compare, so a wrong token leaks nothing by how long it took. */
+function sameToken(given, expected) {
+  const a = Buffer.from(String(given ?? ''));
+  const b = Buffer.from(expected);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
 
 const CALL_KINDS = ['calls', 'instantiates'];
 
@@ -133,16 +156,42 @@ export async function startServer(pathArg, { port = 7777, open: openBrowser = fa
   });
 
   const page = readFileSync(join(HERE, 'ui', 'app.html'), 'utf8');
+  // Loopback keeps other machines out; the token keeps other processes on this
+  // machine out. Printed with the URL, the way Jupyter does it.
+  const token = randomBytes(16).toString('hex');
 
   const server = createServer((req, res) => {
     const url = new URL(req.url, 'http://localhost');
     const send = (status, body, type = 'application/json') => {
-      res.writeHead(status, { 'content-type': type, 'cache-control': 'no-store' });
+      res.writeHead(status, {
+        'content-type': type,
+        'cache-control': 'no-store',
+        // Nothing here should ever be framed or sniffed into something else.
+        'x-content-type-options': 'nosniff',
+        'x-frame-options': 'DENY',
+        'referrer-policy': 'no-referrer',
+      });
       res.end(typeof body === 'string' ? body : JSON.stringify(body));
     };
 
+    if (!hostAllowed(req)) {
+      return send(403, { error: 'this server answers only to localhost' });
+    }
+
+    const presented = url.searchParams.get('token') ?? req.headers['x-codelens-token'];
+    if (!sameToken(presented, token)) {
+      const hint = `codelens: this URL needs the token printed when the server started.`;
+      return url.pathname === '/'
+        ? send(403, `<!doctype html><meta charset="utf-8"><body style="font:14px system-ui;padding:40px">
+             <p>${hint}</p><p>Look for <code>?token=…</code> in the terminal.</p>`, 'text/html; charset=utf-8')
+        : send(403, { error: hint });
+    }
+
     try {
-      if (url.pathname === '/') return send(200, page, 'text/html; charset=utf-8');
+      if (url.pathname === '/') {
+        // The page carries the token so its own fetches can present it.
+        return send(200, page.replace('__CODELENS_TOKEN__', token), 'text/html; charset=utf-8');
+      }
 
       if (url.pathname === '/api/overview') return send(200, overview(db, root));
 
@@ -204,8 +253,9 @@ export async function startServer(pathArg, { port = 7777, open: openBrowser = fa
     server.listen(port, '127.0.0.1', done);
   });
 
-  const address = `http://127.0.0.1:${port}`;
-  console.log(`codelens UI on ${address}  (project: ${root})`);
+  const address = `http://127.0.0.1:${port}/?token=${token}`;
+  console.log(`codelens UI on ${address}`);
+  console.log(`project: ${root}`);
   console.log('Ctrl-C to stop');
 
   if (openBrowser) {
@@ -220,5 +270,7 @@ export async function startServer(pathArg, { port = 7777, open: openBrowser = fa
     process.exit(0);
   });
 
-  return { server, address };
+  // The watcher holds the event loop open, so a caller that started the server
+  // programmatically needs a way to shut both down.
+  return { server, address, token, close: () => { watcher.close(); server.close(); } };
 }

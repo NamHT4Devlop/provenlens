@@ -13,10 +13,10 @@
     "test": "node --test --no-warnings \"test/*.test.js\""
   },
   "dependencies": {
-    "commander": "^15.0.0",
-    "ignore": "^7.0.6",
-    "tree-sitter-wasms": "^0.1.13",
-    "web-tree-sitter": "^0.25.10"
+    "commander": "15.0.0",
+    "ignore": "7.0.6",
+    "tree-sitter-wasms": "0.1.13",
+    "web-tree-sitter": "0.25.10"
   },
   "license": "MIT",
   "private": true

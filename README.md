@@ -170,7 +170,16 @@ quan hệ kiểu, liên kết framework, blast radius. Symbol suy ra (reader c�
 câu SQL trong XML) được gắn nhãn `derived`; file test gắn nhãn `test`. Phím `/` để về ô tìm kiếm,
 mũi tên lên/xuống để duyệt.
 
-Server chỉ nghe trên `127.0.0.1`, chỉ đọc, và tự cập nhật index bằng file watcher.
+Server **chỉ nghe trên `127.0.0.1`, chỉ đọc**, và tự cập nhật index bằng file watcher.
+
+Ba lớp chặn, mỗi lớp có test hồi quy trong `test/server.test.js`:
+
+- **Token khi khởi động** (kiểu Jupyter) — in kèm URL, so khớp `timingSafeEqual`. Chặn process
+  khác trên cùng máy đọc index. `--open` xử lý tự động; trang tự gỡ token khỏi thanh địa chỉ sau
+  khi tải để nó không lọt vào history.
+- **Kiểm tra `Host`** — chặn DNS rebinding, tức trang web độc trỏ DNS về `127.0.0.1` để đọc API
+  của bạn. Loopback thôi là chưa đủ cho ca này.
+- **Không có CORS header** — trang cross-origin gửi được request nhưng không đọc được response.
 
 ### Luồng dùng hàng ngày
 
