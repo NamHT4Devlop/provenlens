@@ -74,6 +74,9 @@ function argNodes(callNode) {
   return out;
 }
 
+const RSPEC_BINDERS = new Set(['let', 'let!', 'subject']);
+const RSPEC_DESCRIBERS = new Set(['describe', 'context', 'RSpec.describe', 'feature']);
+
 export function extractRuby(tree, src, ctx = {}) {
   const symbols = [];
   const refs = [];
@@ -154,6 +157,55 @@ export function extractRuby(tree, src, ctx = {}) {
     }
 
     return false;
+  }
+
+  // Created before the walk so RSpec bindings, which live at file level, have
+  // somewhere to attach as they are encountered.
+  const fileScopeId = addSymbol({
+    name: (ctx.path ?? 'file').split('/').pop(),
+    fqn: ctx.path ?? null,
+    kind: 'file',
+    container_fqn: null,
+    type_name: null,
+    signature: `file ${ctx.path ?? ''}`,
+    arity: null,
+    supertypes: [],
+    modifiers: [],
+    annotations: [],
+    start_line: 1,
+    end_line: tree.rootNode.endPosition.row + 1,
+    start_byte: 0,
+    end_byte: tree.rootNode.endIndex,
+  });
+
+  /** What `RSpec.describe Account do` is about; types a bare `subject`. */
+  let describedClass = null;
+
+  /**
+   * The class a `X.new` inside a block constructs, which is what types an
+   * RSpec `let` or `subject`. Only a direct construction counts; anything
+   * cleverer is left untyped rather than guessed at.
+   */
+  function constructedTypeIn(node) {
+    if (!node) return null;
+    let found = null;
+    const scan = (n, depth) => {
+      if (found || depth > 6) return;
+      if (n.type === 'call') {
+        const m = childByField(n, 'method');
+        const r = childByField(n, 'receiver');
+        if (m && r && text(m, src) === 'new' && r.type === 'constant') {
+          found = text(r, src);
+          return;
+        }
+      }
+      for (let i = 0; i < n.namedChildCount; i++) {
+        const c = n.namedChild(i);
+        if (c) scan(c, depth + 1);
+      }
+    };
+    scan(node, 0);
+    return found;
   }
 
   function walk(node, nest, scopeId, inClassBody, classScopeId) {
@@ -251,6 +303,34 @@ export function extractRuby(tree, src, ctx = {}) {
         if (containerFqn && applyMacro(node, containerFqn, nest[nest.length - 1])) return;
       }
 
+      // RSpec binds names with blocks rather than assignment: `let(:user) {
+      // User.new }` makes `user` available to every example below it. Those
+      // bindings are most of a spec file, so without them a spec resolves to
+      // almost nothing.
+      if (methodName && !receiverNode && RSPEC_BINDERS.has(methodName)) {
+        const args = argNodes(node);
+        const bound =
+          methodName === 'subject' ? (symbolArgName(args[0], src) ?? 'subject') : symbolArgName(args[0], src);
+        const block = childByField(node, 'block');
+        const built = constructedTypeIn(block) ?? describedClass;
+        if (bound && built) {
+          locals.push({ scopeTmpId: fileScopeId, name: bound, type_name: built });
+          if (methodName === 'subject' && bound !== 'subject') {
+            locals.push({ scopeTmpId: fileScopeId, name: 'subject', type_name: built });
+          }
+        }
+      }
+
+      // `RSpec.describe Account do` names what the file is about, which is what
+      // `described_class` and a bare `subject` refer to.
+      if (methodName && RSPEC_DESCRIBERS.has(methodName) && !describedClass) {
+        const first = argNodes(node)[0];
+        if (first && first.type === 'constant') {
+          describedClass = text(first, src);
+          locals.push({ scopeTmpId: fileScopeId, name: 'described_class', type_name: describedClass });
+        }
+      }
+
       // Receiver first, so foo.bar.baz can link baz back to bar.
       let receiverRefTmp = null;
       if (receiverNode) {
@@ -332,26 +412,7 @@ export function extractRuby(tree, src, ctx = {}) {
     }
   }
 
-  // Ruby runs plenty of code outside any class: RSpec describe/it blocks,
-  // routes.rb, initializers. Without a file scope those are all orphans.
-  const fileScope = addSymbol({
-    name: (ctx.path ?? 'file').split('/').pop(),
-    fqn: ctx.path ?? null,
-    kind: 'file',
-    container_fqn: null,
-    type_name: null,
-    signature: `file ${ctx.path ?? ''}`,
-    arity: null,
-    supertypes: [],
-    modifiers: [],
-    annotations: [],
-    start_line: 1,
-    end_line: tree.rootNode.endPosition.row + 1,
-    start_byte: 0,
-    end_byte: tree.rootNode.endIndex,
-  });
-
-  walk(tree.rootNode, [], fileScope, false, null);
+  walk(tree.rootNode, [], fileScopeId, false, null);
 
   return { package: null, imports, symbols, refs, locals };
 }

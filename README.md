@@ -29,7 +29,7 @@ codelens explore "DonationService"
 | | Extractor | Resolver | Điểm mạnh riêng |
 |---|---|---|---|
 | Java | ✅ | ✅ | Spring DI xuyên interface, chọn overload theo **kiểu tham số**, `this.field`, tham số lambda |
-| Ruby | ✅ | ✅ | **Quy ước Rails**: `belongs_to`/`has_many`/`attr_*`/`scope` sinh method ảo có kiểu; mixin `include` |
+| Ruby | ✅ | ✅ | **Quy ước Rails**: `belongs_to`/`has_many`/`attr_*`/`scope` sinh method ảo có kiểu; mixin `include`; **RSpec** `let`/`subject`/`described_class` được gán kiểu nên spec nối được vào code nó test |
 | TypeScript / TSX | ✅ | ✅ | **Module resolution thật**: tsconfig `paths`, barrel file, `export *`; parameter property; suy luận kiểu trả về |
 | JavaScript | ✅ | ✅ | Chung đồ thị module với TS |
 | XML, SQL | — | — | Không có grammar, nhưng **được plugin binding đọc** (MyBatis mapper, Flyway migration) |
@@ -98,26 +98,23 @@ Và luật chứng minh **luôn chạy trước** luật giả định: nếu ch
 | mall | Spring Boot + MyBatis, 524 file | **94.5%** | 94.5% |
 | camel-spring-boot-examples | ~50 ví dụ Camel | **91.1%** | 90.1% |
 | mybatis jpetstore | MyBatis + Flyway | **89.1%** | 89.1% |
-| human-essentials | Rails, 994 file | **84.1%** | 82.6% |
-| rubygems.org | Rails, 1338 file | **83.4%** | 80.5% |
-| mybatis spring-boot-starter | MyBatis | **81.1%** | 81.1% |
-| express | JS thuần, 141 file | **79.1%** | 49.7% |
-| agenta | TS/JS, 3891 file | **78.6%** | 43.4% |
-| spring-cloud-aws | Java, 803 file | **77.3%** | 76.4% |
-| nest | TS, 1817 file | **75.2%** | 65.7% |
-| halo | Java 1349 + TS 862 | **74.7%** | 70.7% |
-| mastodon | Rails 3258 + TS 734 | **72.7%** | 69.7% |
+| agenta | TS/JS, 3891 file | **85.0%** | 52.3% |
+| human-essentials | Rails, 994 file | **84.5%** | 83.1% |
+| nest | TS, 1817 file | **84.2%** | 75.1% |
+| rubygems.org | Rails, 1338 file | **83.4%** | 80.6% |
+| mybatis spring-boot-starter | MyBatis | **81.3%** | 81.3% |
+| spring-cloud-aws | Java, 803 file | **77.7%** | 76.8% |
+| express | JS thuần, 141 file | **77.4%** | 52.4% |
+| halo | Java 1349 + TS 862 | **77.0%** | 73.3% |
+| mastodon | Rails 3258 + TS 734 | **75.1%** | 72.8% |
 
 Cột cuối là điều kiện tự kiểm: giả sử **mọi** phán đoán runtime đều sai thì còn lại bao nhiêu.
-Java và Ruby gần như toàn bộ dựa trên chứng minh (chênh 1–4%); JS/TS dựa vào giả định nhiều nhất
+Java và Ruby gần như toàn bộ dựa trên chứng minh (chênh 1–3%); JS/TS dựa vào giả định nhiều hơn
 vì không có kiểu để lần.
 
-Phần còn hụt ở các repo dưới 90% là **giới hạn suy luận thật**, không phải lỗi phân loại:
-
-- **mastodon, human-essentials** — RSpec `let(:x) { ... }` và `subject { ... }` tạo biến trong
-  block; muốn suy kiểu phải mô hình hoá block.
-- **halo, spring-cloud-aws** — chuỗi builder fluent của SDK ngoài.
-- **nest, agenta** — TS generic, kiểu trả về suy từ tham số kiểu (`atom<T>`, hook).
+Phần còn hụt là **giới hạn suy luận thật**, không phải lỗi phân loại: chuỗi builder fluent của SDK
+ngoài (halo, spring-cloud-aws), thuộc tính ActiveRecord sinh từ cột DB chứ không có trong source
+(mastodon), và generic TS có kiểu trả về suy từ tham số kiểu.
 
 Đo lại bất cứ lúc nào bằng `./scripts/bench.js <repo> --detail`.
 
@@ -229,7 +226,7 @@ Index là cache. Tăng `SCHEMA_VERSION` trong `src/db.js` là index cũ bị xo�
 npm test
 ```
 
-95 test trên 5 bộ fixture cộng một bộ hồi quy:
+100 test trên 5 bộ fixture cộng một bộ hồi quy:
 
 | Fixture | Mô phỏng | Chuỗi mà grep không lần ra |
 |---|---|---|

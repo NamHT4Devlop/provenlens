@@ -306,6 +306,27 @@ export function resolveTypeScript(db, root) {
   const symbolById = new Map(allSymbols.map((s) => [s.id, s]));
   const fileById = new Map(files.map((f) => [f.id, f]));
 
+  // A function sees the module's variables. Without this, every module-level
+  // const was invisible from inside the functions that use it.
+  const fileScopeSymbol = new Map(); // file id -> the file-scope symbol id
+  for (const row of db
+    .prepare(
+      `SELECT s.id, s.file_id FROM symbols s JOIN files f ON f.id = s.file_id
+        WHERE s.kind = 'file' AND f.lang IN (${LANG_LIST})`,
+    )
+    .all()) {
+    fileScopeSymbol.set(row.file_id, row.id);
+  }
+
+  /** The declared type of `name` in this scope or the module around it. */
+  function lookupLocal(ref, name) {
+    const own = localsByScope.get(ref.from_symbol_id);
+    if (own?.has(name)) return { found: true, type: own.get(name) };
+    const moduleScope = localsByScope.get(fileScopeSymbol.get(ref.file_id));
+    if (moduleScope?.has(name)) return { found: true, type: moduleScope.get(name) };
+    return { found: false, type: null };
+  }
+
   const refById = new Map();
   const chainMemo = new Map();
 
@@ -357,13 +378,12 @@ export function resolveTypeScript(db, root) {
       return owner ? { external: owner } : { complex: true };
     }
 
-    const scope = localsByScope.get(ref.from_symbol_id);
-    if (scope?.has(raw)) {
-      const local = scope.get(raw);
-      if (!local) return { complex: true };
-      const hit = resolveTypeName(local, ref.file_id, module);
+    const scoped = lookupLocal(ref, raw);
+    if (scoped.found) {
+      if (!scoped.type) return { complex: true };
+      const hit = resolveTypeName(scoped.type, ref.file_id, module);
       if (hit) return hit;
-      const owner = externalOwner(local, ref.file_id, module);
+      const owner = externalOwner(scoped.type, ref.file_id, module);
       return owner ? { external: owner } : { complex: true };
     }
 
@@ -378,9 +398,18 @@ export function resolveTypeScript(db, root) {
     // A bare receiver that was imported comes from wherever it was imported.
     const imported = externalOwner(raw, ref.file_id, module);
     if (imported) return { external: imported };
+
     if (/^[A-Z]/.test(raw)) {
       const hit = resolveTypeName(raw, ref.file_id, module);
-      return hit ?? { complex: true };
+      if (hit) return hit;
+    }
+
+    // Nothing in this module declares it, nothing imports it, and no indexed
+    // type carries the name. A module cannot reach another module's exports
+    // without importing them, so the identifier is ambient: a host global like
+    // `console`, or one a test runner injects such as `vi` or `jest`.
+    if (!(symbolsByModule.get(module) ?? []).some((sym) => sym.name === raw)) {
+      return { ambient: true };
     }
 
     return null;
@@ -438,6 +467,7 @@ export function resolveTypeScript(db, root) {
     external: 0,
     notInProject: 0,
     outOfScope: 0,
+    ambient: 0,
     runtime: 0,
     inheritance: 0,
   };
@@ -486,6 +516,13 @@ export function resolveTypeScript(db, root) {
     refOutcome.set(refId, { external: true, owner: null });
     stats.external++;
     stats.outOfScope++;
+  };
+  /** An identifier the module neither declares nor imports: a host global. */
+  const insertAmbient = (refId) => {
+    insertRow.run(refId, 'external:ambient-global', 1, 'ambient-global');
+    refOutcome.set(refId, { external: true, owner: 'ambient-global' });
+    stats.external++;
+    stats.ambient++;
   };
   /** A language built-in on an untyped receiver: assumed, not proven. */
   const insertRuntime = (refId) => {
@@ -571,7 +608,8 @@ export function resolveTypeScript(db, root) {
 
     if (type && !type.fqn) {
       const carried = inheritedExternal(ref);
-      if (!type.complex) insertExternal(ref.id, type.external);
+      if (type.ambient) insertAmbient(ref.id);
+      else if (!type.complex) insertExternal(ref.id, type.external);
       else if (!callablesByName.has(ref.name)) insertNotInProject(ref.id);
       else if (carried !== undefined) insertExternal(ref.id, carried);
       // The receiver has no type we could work out; a language built-in is by

@@ -448,3 +448,143 @@ describe('scope modelling', () => {
     cleanup();
   });
 });
+
+describe('bindings the resolver must not miss', () => {
+  test('a catch parameter is typed, so it cannot capture the wrong method', async () => {
+    // Without the binding, `e` was untyped and the name fallback attached
+    // e.getMessage() to the enclosing class's own getMessage.
+    const { db, cleanup } = await tempProject({
+      'A.java': [
+        'package p;',
+        'import java.io.IOException;',
+        'public class A {',
+        '  public String getMessage() { return "own"; }',
+        '  public void go() {',
+        '    try { work(); } catch (IOException e) { System.out.println(e.getMessage()); }',
+        '  }',
+        '  void work() {}',
+        '}',
+      ].join('\n'),
+    });
+
+    const wrong = db
+      .prepare(
+        `SELECT COUNT(*) n FROM edges e JOIN symbols s ON s.id = e.to_symbol_id
+          WHERE s.fqn = 'p.A#getMessage' AND e.kind = 'calls'`,
+      )
+      .get();
+    assert.equal(wrong.n, 0, 'the exception must not be mistaken for the class');
+
+    const row = db
+      .prepare(
+        `SELECT u.owner FROM unresolved u JOIN refs r ON r.id = u.ref_id
+          WHERE r.name = 'getMessage'`,
+      )
+      .get();
+    assert.equal(row.owner, 'java.io.IOException');
+    cleanup();
+  });
+
+  test('a try-with-resources variable is typed', async () => {
+    const { db, cleanup } = await tempProject({
+      'B.java': [
+        'package p;',
+        'public class B {',
+        '  Helper open() { return new Helper(); }',
+        '  void go() { try (Helper h = open()) { h.use(); } catch (Exception e) {} }',
+        '}',
+      ].join('\n'),
+      'Helper.java': ['package p;', 'public class Helper {', '  public void use() {}', '}'].join('\n'),
+    });
+
+    const edge = db
+      .prepare(
+        `SELECT e.confidence FROM edges e JOIN symbols s ON s.id = e.to_symbol_id
+          WHERE s.fqn = 'p.Helper#use'`,
+      )
+      .get();
+    assert.ok(edge && edge.confidence === 1);
+    cleanup();
+  });
+
+  test('a module-level constant is visible inside the functions that use it', async () => {
+    const { db, cleanup } = await tempProject({
+      'svc.ts': ['export class Svc {', '  run(): number { return 1; }', '}'].join('\n'),
+      'use.ts': [
+        "import { Svc } from './svc';",
+        'const svc = new Svc();',
+        'export function go(): number {',
+        '  return svc.run();',
+        '}',
+      ].join('\n'),
+    });
+
+    const edge = db
+      .prepare(
+        `SELECT e.confidence FROM edges e JOIN symbols s ON s.id = e.to_symbol_id
+          WHERE s.fqn = 'svc:Svc#run'`,
+      )
+      .get();
+    assert.ok(edge, 'a function must see the module scope around it');
+    assert.equal(edge.confidence, 1);
+    cleanup();
+  });
+
+  test('an identifier the module neither declares nor imports is ambient', async () => {
+    const { db, cleanup } = await tempProject({
+      'thing.ts': ['export class Thing {', '  log(): void {}', '}'].join('\n'),
+      'use.ts': ['export function go(): void {', '  console.log("hi");', '}'].join('\n'),
+    });
+
+    // ES modules cannot reach another module's exports without importing them,
+    // so `console` can only be a host global -- never the project's Thing#log.
+    const wrong = db
+      .prepare(
+        `SELECT COUNT(*) n FROM edges e JOIN symbols s ON s.id = e.to_symbol_id
+          WHERE s.fqn = 'thing:Thing#log'`,
+      )
+      .get();
+    assert.equal(wrong.n, 0);
+
+    const row = db
+      .prepare(
+        `SELECT u.owner FROM unresolved u JOIN refs r ON r.id = u.ref_id WHERE r.name = 'log'`,
+      )
+      .get();
+    assert.equal(row.owner, 'ambient-global');
+    cleanup();
+  });
+
+  test('types an RSpec let and subject from the class they construct', async () => {
+    const { db, cleanup } = await tempProject({
+      'app/account.rb': ['class Account', '  def suspend!; true; end', 'end'].join('\n'),
+      'spec/account_spec.rb': [
+        'RSpec.describe Account do',
+        '  let(:account) { Account.new }',
+        '  subject { Account.new }',
+        "  it 'suspends' do",
+        '    account.suspend!',
+        '  end',
+        'end',
+      ].join('\n'),
+    });
+
+    const edge = db
+      .prepare(
+        `SELECT e.confidence FROM edges e JOIN symbols s ON s.id = e.to_symbol_id
+          WHERE s.fqn = 'Account#suspend!'`,
+      )
+      .get();
+    assert.ok(edge, 'a spec must link to the code it exercises');
+    assert.equal(edge.confidence, 1);
+
+    const bound = db
+      .prepare("SELECT name, type_name FROM locals WHERE name IN ('account','subject','described_class') ORDER BY name")
+      .all();
+    assert.deepEqual(
+      bound.map((b) => `${b.name}:${b.type_name}`),
+      ['account:Account', 'described_class:Account', 'subject:Account'],
+    );
+    cleanup();
+  });
+});

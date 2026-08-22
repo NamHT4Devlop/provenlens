@@ -402,6 +402,40 @@ export function extractJava(tree, src) {
       }
     }
 
+    // Bindings that are not local_variable_declaration. Missing them does not
+    // just lose a link: an untyped receiver falls through to name matching,
+    // which happily attached `e.getMessage()` to the enclosing class's own
+    // getMessage. A wrong edge is worse than a missing one.
+    if (node.type === 'catch_clause' && scopeId != null) {
+      const param = firstOfType(node, 'catch_formal_parameter');
+      if (param) {
+        const nameNode = childByField(param, 'name');
+        const typeNode = firstOfType(param, 'catch_type') ?? childByField(param, 'type');
+        if (nameNode) {
+          // `catch (IOException | SQLException e)` has no single type.
+          const raw = typeNode ? text(typeNode, src) : null;
+          locals.push({
+            scopeTmpId: scopeId,
+            name: text(nameNode, src),
+            type_name: raw && !raw.includes('|') ? normalizeType(raw) : null,
+          });
+        }
+      }
+    }
+
+    if (node.type === 'resource' && scopeId != null) {
+      // try (InputStream in = ...) declares `in` for the whole block.
+      const nameNode = childByField(node, 'name');
+      const typeNode = childByField(node, 'type');
+      if (nameNode) {
+        locals.push({
+          scopeTmpId: scopeId,
+          name: text(nameNode, src),
+          type_name: typeNode ? normalizeType(text(typeNode, src)) : null,
+        });
+      }
+    }
+
     if (node.type === 'enhanced_for_statement') {
       const typeNode = childByField(node, 'type');
       const nameNode = childByField(node, 'name');
