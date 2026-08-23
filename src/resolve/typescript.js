@@ -225,6 +225,9 @@ export function resolveTypeScript(db, root) {
   function resolveTypeName(name, fileId, module) {
     if (!name) return null;
     if (/\[\]$/.test(name)) return undefined;
+    // Already a fully qualified name -- the inference pass stores those, having
+    // resolved them where they were written.
+    if (types.has(name)) return types.get(name);
 
     const local = (symbolsByModule.get(module) ?? []).find(
       (s) => s.name === name && ['class', 'interface'].includes(s.kind),
@@ -487,6 +490,15 @@ export function resolveTypeScript(db, root) {
       return owner ? { external: owner } : { complex: true };
     }
 
+    // A capitalised receiver is usually the class itself -- `Test.create(...)`,
+    // a static call. Resolve it as a type before deciding it came from
+    // outside: every such call on an imported in-repo class was being handed
+    // to the module it was imported from, taking the whole chain with it.
+    if (/^[A-Z]/.test(raw)) {
+      const asType = resolveTypeName(raw, ref.file_id, module);
+      if (asType?.fqn) return asType;
+    }
+
     // A bare receiver that was imported comes from wherever it was imported.
     const imported = externalOwner(raw, ref.file_id, module);
     if (imported) return { external: imported };
@@ -541,7 +553,11 @@ export function resolveTypeScript(db, root) {
     const target = findMember(type, ref.name);
     if (!target?.type_name) continue;
     // `await f()` on a `Promise<T>` holds the T, not the promise.
-    const held = local.init_kind === 'await' && target.type_args ? target.type_args : target.type_name;
+    const bare = local.init_kind === 'await' && target.type_args ? target.type_args : target.type_name;
+    // Resolved where it was WRITTEN, not where the value ends up. A spec that
+    // imports only `Test` still receives a TestingModule from it, and looking
+    // that name up in the spec's own imports finds nothing.
+    const held = resolveTypeName(bare, target.file_id, target.module)?.fqn ?? bare;
     updateLocal.run(held, local.id);
     if (!localsByScope.has(local.scope_symbol_id)) {
       localsByScope.set(local.scope_symbol_id, new Map());

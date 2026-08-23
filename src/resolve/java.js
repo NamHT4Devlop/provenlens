@@ -76,7 +76,8 @@ export function resolveJava(db) {
   const fieldElements = new Map(); // "fqn#field" -> its single generic argument
   for (const row of db
     .prepare(
-      `SELECT s.id, s.name, s.kind, s.arity, s.container_fqn, s.type_name, s.type_args, s.params
+      `SELECT s.id, s.name, s.kind, s.arity, s.container_fqn, s.type_name, s.type_args, s.params,
+              s.file_id
          FROM symbols s JOIN files f ON f.id = s.file_id
         WHERE f.lang = 'java' AND s.kind IN ('method','constructor','field')`,
     )
@@ -601,12 +602,16 @@ export function resolveJava(db) {
       if (typeof recv !== 'string' || !recv) continue;
       const target = findMethod(recv, ref.name, ref.arity, ref, fromSymbol?.container_fqn);
       if (!target?.type_name) continue;
-      updateLocal.run(target.type_name, local.id);
+      // Resolved in the file that DECLARED the method, not the one calling it:
+      // a caller need not import the type it is handed back.
+      const held =
+        resolveTypeName(target.type_name, target.file_id, target.container_fqn) ?? target.type_name;
+      updateLocal.run(held, local.id);
       if (!localsByScope.has(local.scope_symbol_id)) {
         localsByScope.set(local.scope_symbol_id, new Map());
       }
       localsByScope.get(local.scope_symbol_id).set(local.name, {
-        type: target.type_name,
+        type: held,
         args: target.type_args ?? null,
         ownerRef: null,
         init: 'inferred',
