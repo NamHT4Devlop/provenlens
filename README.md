@@ -346,17 +346,17 @@ it is the only way the table means anything.
 | Repo | Stack | In-repo resolution | Floor if every assumption were wrong |
 |---|---|---|---|
 | spring-petclinic | Spring Boot + Data, 51 files | **99.7%** | **98.6%** |
-| mall | Spring Boot + MyBatis, 630 files | **98.9%** | **98.9%** |
-| mybatis spring-boot-starter | MyBatis, 154 files | **98.7%** | **98.7%** |
-| camel-spring-boot-examples | ~50 Camel examples, 325 files | **97.8%** | **97.3%** |
-| mybatis jpetstore | MyBatis + Flyway, 43 files | **97.8%** | **97.8%** |
-| TheAlgorithms/Java | plain Java, 1588 files | **97.1%** | **96.4%** |
+| mall | Spring Boot + MyBatis, 630 files | **99.3%** | **99.2%** |
+| mybatis spring-boot-starter | MyBatis, 154 files | **98.5%** | **98.5%** |
+| camel-spring-boot-examples | ~50 Camel examples, 325 files | **97.3%** | **96.7%** |
+| TheAlgorithms/Java | plain Java, 1588 files | **97.1%** | **96.3%** |
+| mybatis jpetstore | MyBatis + Flyway, 43 files | **95.1%** | **95.1%** |
 | express | plain JS, 141 files | **91.4%** | **91.1%** |
-| java-design-patterns | Java, 1991 files | **90.2%** | 87.8% |
+| java-design-patterns | Java, 1991 files | **91.3%** | 89.2% |
 | rubygems.org | Rails, 1392 files | **88.1%** | 80.4% |
 | mastodon | Rails + TS, 4199 files | **87.4%** | 79.8% |
-| spring-cloud-aws | Java, 816 files | **86.2%** | 84.7% |
-| halo | Java + TS, 2228 files | **85.5%** | 83.3% |
+| halo | Java + TS, 2228 files | **86.1%** | 84.0% |
+| spring-cloud-aws | Java, 816 files | **85.8%** | 84.7% |
 | solidus | Rails, 2329 files | **83.4%** | 74.7% |
 | nest | TS, 1904 files | **83.4%** | 78.0% |
 | discourse | Rails, 14358 files | **78.2%** | 72.2% |
@@ -418,10 +418,18 @@ while gaining 55 links. That is because their remaining misses are not library-t
 untyped callback parameters. It matters far more on a working checkout, where `node_modules` is
 simply there.
 
-**Java still stops at the JAR.** halo is written in Reactor throughout and spring-cloud-aws is 76%
-Mockito, AssertJ and Spring test harness by call volume, and neither `~/.m2` nor `~/.gradle` exists
-on the machine these numbers came from. Reading class-file signatures is the equivalent change and
-has not been done.
+**Java no longer stops at the JAR either.** Signatures are read with `javap`, which ships with
+every JDK and prints return types, parameter types and generic arguments as text — decoding class
+files directly would be a great deal of work to learn the same facts. The JDK's own classes need no
+download at all, and that is most of what it is worth: `Optional`, `List` and `CompletableFuture`
+stop being assumptions and become proofs, which is why the Java floors moved further than the
+headlines did.
+
+One approximation is worth naming. `List<E>.stream()` is declared to return `Stream<E>` — a type
+variable, not a type. Substituting type parameters properly means tracking them through a whole
+signature; what a container method does in practice is hand its element along, so the receiver's
+element type is used instead. It is guarded to names that actually look like a variable, so a real
+type that simply is not indexed stays unknown rather than borrowing one.
 
 **A receiver nothing declares at all.** A method parameter in a dynamically typed language names no
 type anywhere, so `def deliver(recipient)` gives the resolver the name and nothing else. That is why
@@ -668,9 +676,12 @@ attributed to the right library. If a resolver later drops an internal call, a t
 
 ## Known limits
 
-- **A receiver typed only by a JAR or a gem.** For TypeScript and JavaScript this is handled —
-  `.d.ts` files of imported packages are read — but Java stops at the class file and Ruby has no
-  declarations to read at all, which is why the reactive and test-harness rows sit lowest.
+- **A receiver typed only by a gem.** TypeScript, JavaScript and Java are all handled now — `.d.ts`
+  for the first two, `javap` signatures for the third — but Ruby has no declarations to read at
+  all, which is why the Rails rows have the widest gap between headline and floor.
+- **Generic substitution is approximate.** A type variable in a library's return type is filled
+  from the receiver's element type rather than by real inference; it is right for container methods
+  and gives up rather than guess elsewhere.
 - **A callback parameter in JavaScript** is the sharpest form of that. `startHTTPServer((req, res)
   => res.end(...))` says nothing about `res` anywhere, and neither does the helper it is passed to.
   Reported as a miss rather than guessed, which is most of why axios reads 64.7%.
