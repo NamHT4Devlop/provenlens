@@ -332,10 +332,10 @@ it is the only way the table means anything.
 | spring-cloud-aws | Java, 816 files | **86.2%** | 84.7% |
 | halo | Java + TS, 2228 files | **85.5%** | 83.3% |
 | solidus | Rails, 2329 files | **83.4%** | 74.7% |
-| nest | TS, 1904 files | **82.9%** | 77.3% |
+| nest | TS, 1904 files | **83.4%** | 78.0% |
 | discourse | Rails, 14358 files | **78.2%** | 72.2% |
 | typeorm | TS, 3575 files | **71.8%** | 65.3% |
-| axios | JS, 217 files | **64.3%** | 53.9% |
+| axios | JS, 242 files | **64.5%** | 54.0% |
 
 **Seven of the seventeen clear 90% on both columns**, and which seven is the most useful thing the
 table says. Three of those rows moved *down* in the last pass and were kept: an import naming a
@@ -377,16 +377,25 @@ the guessed links as well as the two headline figures.
 ### What is still missed, and why
 
 **A receiver typed only by a dependency.** `contextRunner.run(context -> context.getBean(...))`
-types `context` from Spring Boot's signature; `Mono<T>` types halo's reactive chains from Reactor's;
-`intl.formatMessage(...)` from react-intl's. Everything downstream of such a receiver is
-unresolvable, and not because of a gap in this tool: on the machine these numbers were measured on,
-those declarations **are not present at all** — the clones have no `node_modules`, and there is no
-`~/.m2` or `~/.gradle` cache. No tool can resolve what is not there.
+types `context` from Spring Boot's signature; `Mono<T>` types halo's reactive chains from Reactor's.
+Everything downstream of such a receiver used to be unresolvable.
 
-That is what separates the two halves of the table. spring-cloud-aws is 76% Mockito, AssertJ and
-Spring test harness by call volume; halo is written in Reactor throughout. Reading dependency
-declarations — `.d.ts` from `node_modules`, signatures from JARs — is the one change that would
-move them, and it needs the dependencies installed first.
+For TypeScript and JavaScript it no longer is: codelens **reads the `.d.ts` files of the packages a
+project imports**, so a chain can be typed through a library instead of stopping at one. Those
+files are marked external — never a resolution target, never in a search or a count — and a call
+landing on one is booked as a library call named after its package, proven by the declaration
+rather than assumed from a name.
+
+Measured honestly, with the dependencies installed and again with them moved out of the tree, the
+effect on these clones is modest: axios 64.3% → 64.5%, nest 82.9% → 83.4%, express holds 91.4%
+while gaining 55 links. That is because their remaining misses are not library-typed receivers but
+untyped callback parameters. It matters far more on a working checkout, where `node_modules` is
+simply there.
+
+**Java still stops at the JAR.** halo is written in Reactor throughout and spring-cloud-aws is 76%
+Mockito, AssertJ and Spring test harness by call volume, and neither `~/.m2` nor `~/.gradle` exists
+on the machine these numbers came from. Reading class-file signatures is the equivalent change and
+has not been done.
 
 **A receiver nothing declares at all.** A method parameter in a dynamically typed language names no
 type anywhere, so `def deliver(recipient)` gives the resolver the name and nothing else. That is why
@@ -633,9 +642,9 @@ attributed to the right library. If a resolver later drops an internal call, a t
 
 ## Known limits
 
-- **A receiver typed only by a library** is the largest miss bucket, and the reason the reactive
-  and test-harness rows sit lowest. Types propagate along a chain while every link is in the repo;
-  the moment one is declared in a JAR, a gem or `node_modules`, the chain stops.
+- **A receiver typed only by a JAR or a gem.** For TypeScript and JavaScript this is handled —
+  `.d.ts` files of imported packages are read — but Java stops at the class file and Ruby has no
+  declarations to read at all, which is why the reactive and test-harness rows sit lowest.
 - **A callback parameter in JavaScript** is the sharpest form of that. `startHTTPServer((req, res)
   => res.end(...))` says nothing about `res` anywhere, and neither does the helper it is passed to.
   Reported as a miss rather than guessed, which is most of why axios reads 64.7%.
