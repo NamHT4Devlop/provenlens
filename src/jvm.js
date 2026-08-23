@@ -171,7 +171,36 @@ export function unresolvedImports(db) {
     implicit.push(`java.lang.${simple}`);
   }
 
-  return [...new Set([...wanted, ...implicit])].slice(0, MAX_TYPES);
+  // `Map.Entry` is written as a nested name and lives in a jar as
+  // `java.util.Map$Entry`, which no import ever spells. Every
+  // `for (Map.Entry<K,V> entry : ...)` was left untyped for want of it --
+  // 1,062 calls on `entry` in quarkus, 435 in dubbo. The outer half is a name
+  // some import does resolve, so the inner half can be asked for by hand.
+  const importedFqns = new Map();
+  for (const row of db
+    .prepare(
+      `SELECT DISTINCT i.fqn, i.simple FROM imports i JOIN files f ON f.id = i.file_id
+        WHERE f.lang = 'java' AND f.external = 0 AND i.is_wildcard = 0 AND i.simple IS NOT NULL`,
+    )
+    .all()) {
+    if (!importedFqns.has(row.simple)) importedFqns.set(row.simple, row.fqn);
+  }
+
+  const nested = [];
+  for (const raw of used) {
+    const bare = raw.replace(/\[\]$/, '');
+    const parts = bare.split('.');
+    if (parts.length !== 2) continue;
+    const [outer, inner] = parts;
+    if (!/^[A-Z][A-Za-z0-9_$]*$/.test(outer) || !/^[A-Z][A-Za-z0-9_$]*$/.test(inner)) continue;
+    const outerFqn = importedFqns.get(outer);
+    if (outerFqn) nested.push(`${outerFqn}$${inner}`);
+    // `Map.Entry` needs no import of `Map.Entry` itself, and java.util is the
+    // only place the language puts the ones written this way without one.
+    nested.push(`java.util.${outer}$${inner}`);
+  }
+
+  return [...new Set([...wanted, ...implicit, ...nested])].slice(0, MAX_TYPES);
 }
 
 /**

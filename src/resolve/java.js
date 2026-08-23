@@ -176,6 +176,28 @@ export function resolveJava(db) {
       if (imp.is_wildcard && types.has(`${imp.fqn}.${simple}`)) return `${imp.fqn}.${simple}`;
     }
 
+    // `Map.Entry` written as a nested name: the outer half is a name some
+    // import does resolve, and the jar spells the pair with a dollar sign.
+    if (name.includes('.') && !types.has(name)) {
+      const parts = name.split('.');
+      if (parts.length === 2 && /^[A-Z]/.test(parts[0]) && /^[A-Z]/.test(parts[1])) {
+        const outer = resolveTypeName(parts[0], fileId, enclosing);
+        if (outer && types.has(`${outer}$${parts[1]}`)) return `${outer}$${parts[1]}`;
+        if (types.has(`java.util.${parts[0]}$${parts[1]}`)) {
+          return `java.util.${parts[0]}$${parts[1]}`;
+        }
+      }
+    }
+
+    // `T`, `K`, `V`, `T2` are type variables by universal Java convention, and
+    // a repository large enough will contain a real class by that name -- one
+    // `enum T` nested in a quarkus test was answering for 2,383 type variables
+    // across the whole project. Nested and imported lookups above still apply,
+    // so a genuine `T` in scope is still found; only the whole-project search
+    // by simple name is refused, because that is the one that reaches across
+    // the repository to a class the code never named.
+    if (/^[A-Z][0-9]?$/.test(simple)) return null;
+
     // This project's own types answer first: a classpath signature exists to
     // prove a call leaves the project, never to outvote a type it declares.
     const mine = (bySimpleName.get(simple) ?? []).filter((fqn) => !types.get(fqn)?.isExternal);
