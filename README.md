@@ -338,14 +338,18 @@ And proof **always runs before** assumption: if it can be proven, it is never gu
 
 ### Measured on real repositories
 
-Twenty-seven repositories, none of them chosen for its score. They were added in three rounds,
-each named in advance, and each round pulled the median down: the first eleven sat at 91.4%, and
-the sixteen added after them bring it to 90.0%. That is what picking before measuring costs, and
-it is the only way the table means anything.
+Forty-three repositories, none of them chosen for its score. They were added in four rounds, each
+named in advance, and each round pulled the median down: the first eleven sat at 91.4%, and all
+forty-three bring it to 88.5%. That is what picking before measuring costs, and it is the only way
+the table means anything.
 
-The last ten were chosen for **structural variety** rather than difficulty — a pnpm workspace, a
-Maven multi-module, a Gradle multi-module, a NestJS monorepo, two Ruby gems — because a repository
-laid out in a way I had not tried is where the bugs were, and four real ones came out of it.
+The later rounds were picked for **structural variety** rather than difficulty — pnpm workspaces,
+Maven and Gradle multi-modules, a NestJS monorepo, Ruby gems, a Rails app, a Rails framework —
+because a repository laid out in a way I had not tried is where the bugs were. Eight real ones came
+out of those two rounds, and every fix is in its own commit with the repository that exposed it.
+
+**Twelve clear 90% on both columns, nineteen on the headline, and all forty-three index without
+crashing.**
 
 Every repository here was measured with its dependencies **installed**: `npm`/`pnpm` for the
 JavaScript and TypeScript clones, a JDK plus the jars Maven and Gradle had fetched for the Java
@@ -358,33 +362,49 @@ from 97.3% to 95.2% once its types became readable enough to be counted properly
 | spring-petclinic | Spring Boot + Data, 51 files | **99.7%** | **98.6%** |
 | mall | Spring Boot + MyBatis, 630 files | **99.4%** | **99.3%** |
 | mybatis spring-boot-starter | MyBatis, 154 files | **98.5%** | **98.5%** |
-| TheAlgorithms/Java | plain Java, 1588 files | **97.6%** | **97.0%** |
+| TheAlgorithms/Java | plain Java, 1588 files | **98.0%** | **97.5%** |
+| nx | TS monorepo, 5305 files | **95.4%** | 89.3% |
 | camel-spring-boot-examples | ~50 Camel examples, 325 files | **95.2%** | **94.7%** |
 | mybatis jpetstore | MyBatis + Flyway, 43 files | **95.1%** | **95.1%** |
-| spring-framework | Gradle multi-module, 9901 files | **93.0%** | **91.4%** |
-| apache/dubbo | Maven multi-module, 4190 files | **92.4%** | **90.9%** |
-| nx | TS monorepo, 5305 files | **92.3%** | 83.0% |
-| apache/kafka | Gradle multi-module, 6196 files | **91.8%** | **90.5%** |
+| devise | Rails engine, Ruby | **94.4%** | 85.0% |
+| google/guava | Java, Maven | **94.3%** | **93.7%** |
+| vuejs/core | TS pnpm workspace, 527 files | **93.9%** | 86.8% |
+| spring-framework | Gradle multi-module, 9901 files | **93.1%** | **91.5%** |
+| apache/dubbo | Maven multi-module, 4190 files | **93.0%** | **91.5%** |
+| date-fns | JS, monorepo | **92.9%** | 83.5% |
+| jenkins | Java, Maven | **92.4%** | **90.2%** |
+| apache/kafka | Gradle multi-module, 6196 files | **92.3%** | **91.0%** |
 | express | plain JS, 141 files | **91.4%** | **91.1%** |
-| java-design-patterns | Java, 1991 files | **91.4%** | 89.5% |
-| immich | NestJS + Svelte monorepo, 1094 files | **91.2%** | 85.2% |
-| vuejs/core | TS pnpm workspace, 527 files | **90.0%** | 78.5% |
+| java-design-patterns | Java, 1991 files | **91.4%** | 89.6% |
+| immich | NestJS + Svelte monorepo | **91.4%** | 85.2% |
+| nest | TS, 1904 files | **90.9%** | 86.8% |
+| puma | Ruby | **89.1%** | 77.8% |
+| micronaut-core | Java, Gradle | **88.6%** | 86.1% |
 | sinatra | Ruby, 147 files | **88.5%** | 81.3% |
-| typeorm | TS, 3575 files | **88.1%** | 82.5% |
+| typeorm | TS, 3575 files | **88.2%** | 82.5% |
+| spring-cloud-aws | Java, 816 files | **88.2%** | 86.9% |
 | rubygems.org | Rails, 1392 files | **88.1%** | 80.4% |
-| spring-cloud-aws | Java, 816 files | **88.1%** | 86.8% |
-| halo | Java + TS, 2228 files | **87.5%** | 85.5% |
-| mastodon | Rails + TS, 4199 files | **87.4%** | 80.0% |
-| prettier | JS + TS, 5762 files | **87.2%** | 67.5% |
+| mastodon | Rails + TS, 4199 files | **87.6%** | 80.1% |
+| halo | Java + TS, 2228 files | **87.6%** | 85.4% |
+| prettier | JS + TS, 5762 files | **87.6%** | 68.3% |
+| storybook | TS monorepo | **87.3%** | 74.8% |
+| medusa | TS monorepo | **87.3%** | 74.1% |
 | fastlane | Ruby, 1340 files | **86.7%** | 77.4% |
-| nest | TS, 1904 files | **86.1%** | 80.7% |
+| sidekiq | Ruby | **85.9%** | 79.7% |
+| quarkus | Java, Maven multi-module | **85.0%** | 81.9% |
 | jekyll | Ruby, 171 files | **84.5%** | 75.0% |
 | solidus | Rails, 2329 files | **83.5%** | 74.8% |
-| discourse | Rails, 14358 files | **78.6%** | 72.2% |
-| axios | JS, 242 files | **66.8%** | 56.1% |
+| svelte | JS + TS monorepo | **82.4%** | 68.9% |
+| redmine | Rails app | **81.4%** | 72.7% |
+| astro | TS monorepo | **80.9%** | 68.9% |
+| trpc | TS monorepo | **80.1%** | 73.9% |
+| discourse | Rails, 14358 files | **78.6%** | 72.7% |
+| zod | TS pnpm workspace | **75.7%** | 62.1% |
+| rails | Rails framework | **74.8%** | 62.5% |
+| axios | JS, 242 files | **67.6%** | 56.9% |
 
-**Ten of the twenty-seven clear 90% on both columns**, and which ten is the most useful thing the
-table says. Several rows moved *down* on the way there and were kept: an import naming a library
+**Twelve of the forty-three clear 90% on both columns**, and which twelve is the most useful thing
+the table says. Several rows moved *down* on the way there and were kept: an import naming a library
 type used to fall through to a same-named class in the repository, and nest lost about 3% of its
 links when that stopped. Those links were inventions.
 
@@ -393,17 +413,17 @@ declares the receiver's type**:
 
 - Types declared *inside the repository* — Spring with Lombok, MyBatis, plain Java, a small
   self-contained JS package. Every one of these clears 90% on the headline, and all but
-  java-design-patterns clears it on the floor as well — that one lands at 89.5%, just under.
+  java-design-patterns clears it on the floor as well — that one lands at 89.6%, just under.
 - Types declared by a **dependency** — Reactor in halo, the Spring test harness in
   spring-cloud-aws, TypeORM's own generics. These declarations *are* now read, and reading them is
-  most of what these rows are made of: halo went from 77.0% to 87.5%, typeorm from 71.8% to 88.1%,
-  immich from 68.5% to 91.2%.
+  most of what these rows are made of: halo went from 77.0% to 87.6%, typeorm from 71.8% to 88.2%,
+  immich from 68.5% to 91.4%, trpc from 60.1% to 80.1%.
   What is left is the part reading cannot fix: a signature like `Flux<T>.map(Function<T,R>)`
   answers with type *variables*, and substituting them properly is a different job from reading
   them.
 - Types declared **nowhere** — Ruby, and JavaScript callbacks. `axios` is the clearest case in the
   table: its tests are written as `startHTTPServer((req, res) => res.end(...))`, and nothing in
-  JavaScript ever says what `res` is. 66.8% is the honest reading of that, not a defect.
+  JavaScript ever says what `res` is. 67.6% is the honest reading of that, not a defect.
 
 **Two numbers, and the second is the one that keeps the first honest.** The floor assumes every
 judgement the resolver made without a declaration behind it was wrong — both directions. Calls
@@ -414,7 +434,7 @@ a call flatters the headline exactly as much as one that excuses it, and countin
 made the self-audit a half-audit. `bench` prints the guessed links so the gap is inspectable.
 
 Read the two columns together. spring-petclinic is 99.7% on one guessed link in the whole repo.
-axios is 66.8% on a floor of 56.1% — plain JS annotates nothing, so a tenth of what it *does* link
+axios is 67.6% on a floor of 56.9% — plain JS annotates nothing, so a tenth of what it *does* link
 rests on a convention rather than a declaration. mastodon and rubygems.org sit near 88% with floors
 near 80%, which is what Rails looks like when half the receivers are named after their model and
 nothing else says so.
@@ -538,6 +558,9 @@ a convention. No amount of engineering turns that into a declaration, because Ru
 | `codelens node <name>` | One symbol in full, with callers and callees |
 | `codelens callers <name>` / `callees <name>` | One direction of the relationship |
 | `codelens impact <name>` | Blast radius |
+| `codelens hotspots` | **What the most other code depends on** — read this before changing anything |
+| `codelens dead [--public]` | Methods nothing reaches, with framework entry points and template-named symbols already ruled out |
+| `codelens cycles` | Files that depend on each other, directly or the long way round |
 | `codelens path <from> <to>` | **Shortest directed chain** between two symbols, hop by hop — across repositories when a binding bridges them |
 | `codelens affected [files...] [--fail-if-untested]` | What changed files reach, and **which tests already cover it**; the flag exits 2 when nothing does — a CI gate |
 | `codelens export [name] [-f json\|mermaid]` | The graph around a symbol as JSON or a **Mermaid diagram** ready for a README or PR |
@@ -548,6 +571,36 @@ a convention. No amount of engineering turns that into a declaration, because Ru
 
 `query`, `callers`, `callees`, `impact`, `path`, `export` and `affected` all accept `--json` for
 piping into other tools.
+
+### Three questions a search cannot answer
+
+**`hotspots` — what would hurt most to change.** Not the biggest class: the one the most other
+code depends on. A class that calls a hundred things is large; a method a hundred things call is
+load-bearing, and the two are ranked oppositely.
+
+```
+ callers   files  symbol
+      18       8  org.springframework.samples.petclinic.owner.OwnerRepository#findById
+                  src/main/java/.../OwnerRepository.java:60
+```
+
+**`dead` — what nothing reaches.** This one is built to be *wrong in the safe direction*, because
+the cost of a false positive is a deleted function:
+
+- Framework entry points are excluded outright. Nothing calls a `@Scheduled` method, and deleting
+  it takes the job with it.
+- **Templates and config are read as plain text**, and the words in them rule symbols out.
+  petclinic's `getAddress`, `getCity` and `getTelephone` each look unreached, and each is called by
+  `${owner.address}` in a Thymeleaf page. All three are correctly absent.
+- Public and exported names are held back by default. sinatra has 225 with no caller inside itself
+  and every one is a working API, so the command says *"nothing certain, 225 held back"* rather
+  than printing them as suspects. `--public` shows them.
+- **Every report prints how many calls went unresolved**, because an unresolved call is
+  indistinguishable from no call, and the list is worth exactly what that number says.
+
+**`cycles` — what depends on itself the long way round.** Between *files*, which is the level a
+dependency cycle is actually felt at: two modules that each import the other cannot be understood,
+tested, or extracted separately. Method recursion is normal and is not reported.
 
 **Workspaces.** Every read command accepts a folder of service checkouts, not just one repository:
 run from such a folder, `query`/`explore`/`status` answer per repository under its own heading, the
@@ -772,7 +825,7 @@ attributed to the right library. If a resolver later drops an internal call, a t
   and gives up rather than guess elsewhere.
 - **A callback parameter in JavaScript** is the sharpest form of that. `startHTTPServer((req, res)
   => res.end(...))` says nothing about `res` anywhere, and neither does the helper it is passed to.
-  Reported as a miss rather than guessed, which is most of why axios reads 66.8%.
+  Reported as a miss rather than guessed, which is most of why axios reads 67.6%.
 - **Node object-modules** — `var app = module.exports = {}` then `app.set = function(){}` — are not
   modelled, so their members look external. Modelling them is correct in principle: express really
   does define `res.send`. It is left out because without a way to type the `req`/`res` parameters
