@@ -66,11 +66,12 @@ export function resolveJava(db) {
   }
 
   const bySimpleName = new Map(); // "DonationService" -> [fqn, ...]
+  const externalBySimpleName = new Map(); // the same, for classpath types only
   for (const fqn of types.keys()) {
-    if (types.get(fqn)?.isExternal) continue;
     const simple = fqn.split('.').pop();
-    if (!bySimpleName.has(simple)) bySimpleName.set(simple, []);
-    bySimpleName.get(simple).push(fqn);
+    const target = types.get(fqn)?.isExternal ? externalBySimpleName : bySimpleName;
+    if (!target.has(simple)) target.set(simple, []);
+    target.get(simple).push(fqn);
   }
 
   const methodsByContainer = new Map(); // fqn -> [{id, name, arity, kind}]
@@ -182,6 +183,14 @@ export function resolveJava(db) {
     if (mine.length > 1) return null;
     const candidates = bySimpleName.get(simple);
     if (candidates?.length === 1) return candidates[0];
+
+    // Nothing this project declares carries the name, so a classpath type may.
+    // `java.lang` first, because the language imports it whether or not the
+    // file says so -- which is why `catch (Exception e)` had no type at all,
+    // and every `e.getMessage()` on it went unresolved.
+    if (types.has(`java.lang.${simple}`)) return `java.lang.${simple}`;
+    const fromClasspath = externalBySimpleName.get(simple);
+    if (fromClasspath?.length === 1) return fromClasspath[0];
 
     return null;
   }

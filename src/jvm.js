@@ -135,6 +135,8 @@ export function unresolvedImports(db) {
   const declared = new Set(
     db.prepare("SELECT fqn FROM types").all().map((r) => r.fqn),
   );
+  const declaredSimple = new Set([...declared].map((fqn) => fqn.split('.').pop()));
+
   const wanted = db
     .prepare(
       `SELECT DISTINCT i.fqn FROM imports i JOIN files f ON f.id = i.file_id
@@ -143,7 +145,33 @@ export function unresolvedImports(db) {
     .all()
     .map((r) => r.fqn)
     .filter((fqn) => fqn && !declared.has(fqn));
-  return [...new Set(wanted)].slice(0, MAX_TYPES);
+
+  // `java.lang` is imported implicitly, so no import ever names it and this
+  // search never asked about it. That left `catch (Exception e)` untyped --
+  // 1,677 such locals in dubbo alone, and every `e.getMessage()` on them a
+  // miss. Any simple name the project uses as a type and does not declare is
+  // offered to javap as a java.lang candidate; javap knows which are real,
+  // and simply omits the rest, so nothing here is a guess.
+  const used = db
+    .prepare(
+      `SELECT DISTINCT type_name AS name FROM locals l JOIN files f ON f.id = l.file_id
+        WHERE f.lang = 'java' AND type_name IS NOT NULL
+       UNION
+       SELECT DISTINCT type_name FROM symbols s JOIN files f ON f.id = s.file_id
+        WHERE f.lang = 'java' AND f.external = 0 AND type_name IS NOT NULL`,
+    )
+    .all()
+    .map((r) => r.name);
+
+  const implicit = [];
+  for (const raw of used) {
+    const simple = raw.replace(/\[\]$/, '');
+    if (!/^[A-Z][A-Za-z0-9_$]*$/.test(simple)) continue;
+    if (declaredSimple.has(simple)) continue;
+    implicit.push(`java.lang.${simple}`);
+  }
+
+  return [...new Set([...wanted, ...implicit])].slice(0, MAX_TYPES);
 }
 
 /**
