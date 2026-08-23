@@ -338,10 +338,14 @@ And proof **always runs before** assumption: if it can be proven, it is never gu
 
 ### Measured on real repositories
 
-Seventeen repositories, none of them chosen for its score. The six added last were named in
-advance — two self-contained Java, two Rails, two TypeScript — and five landed below the median the
-other eleven had, pulling it from 91.4% to 88.1%. That is what picking before measuring costs, and
+Twenty-seven repositories, none of them chosen for its score. They were added in three rounds,
+each named in advance, and each round pulled the median down: the first eleven sat at 91.4%, and
+the sixteen added after them bring it to 90.0%. That is what picking before measuring costs, and
 it is the only way the table means anything.
+
+The last ten were chosen for **structural variety** rather than difficulty — a pnpm workspace, a
+Maven multi-module, a Gradle multi-module, a NestJS monorepo, two Ruby gems — because a repository
+laid out in a way I had not tried is where the bugs were, and four real ones came out of it.
 
 Every repository here was measured with its dependencies **installed**: `npm`/`pnpm` for the
 JavaScript and TypeScript clones, a JDK plus the jars Maven and Gradle had fetched for the Java
@@ -355,21 +359,31 @@ from 97.3% to 95.2% once its types became readable enough to be counted properly
 | mall | Spring Boot + MyBatis, 630 files | **99.4%** | **99.3%** |
 | mybatis spring-boot-starter | MyBatis, 154 files | **98.5%** | **98.5%** |
 | TheAlgorithms/Java | plain Java, 1588 files | **97.6%** | **97.0%** |
-| camel-spring-boot-examples | ~50 Camel examples, 325 files | **95.2%** | **94.1%** |
+| camel-spring-boot-examples | ~50 Camel examples, 325 files | **95.2%** | **94.7%** |
 | mybatis jpetstore | MyBatis + Flyway, 43 files | **95.1%** | **95.1%** |
+| spring-framework | Gradle multi-module, 9901 files | **93.0%** | **91.4%** |
+| apache/dubbo | Maven multi-module, 4190 files | **92.4%** | **90.9%** |
+| nx | TS monorepo, 5305 files | **92.3%** | 83.0% |
+| apache/kafka | Gradle multi-module, 6196 files | **91.8%** | **90.5%** |
 | express | plain JS, 141 files | **91.4%** | **91.1%** |
-| java-design-patterns | Java, 1991 files | **91.2%** | 89.4% |
-| typeorm | TS, 3575 files | **88.1%** | 82.4% |
+| java-design-patterns | Java, 1991 files | **91.4%** | 89.5% |
+| immich | NestJS + Svelte monorepo, 1094 files | **91.2%** | 85.2% |
+| vuejs/core | TS pnpm workspace, 527 files | **90.0%** | 78.5% |
+| sinatra | Ruby, 147 files | **88.5%** | 81.3% |
+| typeorm | TS, 3575 files | **88.1%** | 82.5% |
 | rubygems.org | Rails, 1392 files | **88.1%** | 80.4% |
-| mastodon | Rails + TS, 4199 files | **87.4%** | 79.9% |
-| spring-cloud-aws | Java, 816 files | **87.1%** | 85.9% |
-| halo | Java + TS, 2228 files | **87.0%** | 85.0% |
-| nest | TS, 1904 files | **84.8%** | 79.5% |
+| spring-cloud-aws | Java, 816 files | **88.1%** | 86.8% |
+| halo | Java + TS, 2228 files | **87.5%** | 85.5% |
+| mastodon | Rails + TS, 4199 files | **87.4%** | 80.0% |
+| prettier | JS + TS, 5762 files | **87.2%** | 67.5% |
+| fastlane | Ruby, 1340 files | **86.7%** | 77.4% |
+| nest | TS, 1904 files | **86.1%** | 80.7% |
+| jekyll | Ruby, 171 files | **84.5%** | 75.0% |
 | solidus | Rails, 2329 files | **83.5%** | 74.8% |
-| discourse | Rails, 14358 files | **78.3%** | 72.2% |
+| discourse | Rails, 14358 files | **78.6%** | 72.2% |
 | axios | JS, 242 files | **66.8%** | 56.1% |
 
-**Seven of the seventeen clear 90% on both columns**, and which seven is the most useful thing the
+**Ten of the twenty-seven clear 90% on both columns**, and which ten is the most useful thing the
 table says. Several rows moved *down* on the way there and were kept: an import naming a library
 type used to fall through to a same-named class in the repository, and nest lost about 3% of its
 links when that stopped. Those links were inventions.
@@ -379,10 +393,11 @@ declares the receiver's type**:
 
 - Types declared *inside the repository* — Spring with Lombok, MyBatis, plain Java, a small
   self-contained JS package. Every one of these clears 90% on the headline, and all but
-  java-design-patterns clears it on the floor as well — that one lands at 89.4%, just under.
+  java-design-patterns clears it on the floor as well — that one lands at 89.5%, just under.
 - Types declared by a **dependency** — Reactor in halo, the Spring test harness in
   spring-cloud-aws, TypeORM's own generics. These declarations *are* now read, and reading them is
-  most of what these rows are made of: halo went from 77.0% to 87.0%, typeorm from 71.8% to 88.1%.
+  most of what these rows are made of: halo went from 77.0% to 87.5%, typeorm from 71.8% to 88.1%,
+  immich from 68.5% to 91.2%.
   What is left is the part reading cannot fix: a signature like `Flux<T>.map(Function<T,R>)`
   answers with type *variables*, and substituting them properly is a different job from reading
   them.
