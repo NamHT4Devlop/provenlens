@@ -87,6 +87,14 @@ function readModifiers(node, src) {
       if (!nameNode) continue;
       const name = text(nameNode, src);
       annotations.push(name);
+      // @Accessors changes what Lombok writes, so the settings it carries have
+      // to survive alongside the name: chain makes setters return the object,
+      // fluent drops the get/set prefixes entirely.
+      if (name === 'Accessors') {
+        const raw = text(c, src);
+        if (/\bchain\s*=\s*true/.test(raw)) annotations.push('Accessors.chain');
+        if (/\bfluent\s*=\s*true/.test(raw)) annotations.push('Accessors.fluent');
+      }
       const strings = [...text(c, src).matchAll(/"([^"\\]*(?:\\.[^"\\]*)*)"/g)].map((m) => m[1]);
       if (strings.length) {
         annotationArgs.push({ name, strings, line: c.startPosition.row + 1 });
@@ -295,7 +303,7 @@ export function extractJava(tree, src) {
           });
           addSymbol({
             name: p.name,
-            fqn: `${fqn}#${p.name}()`,
+            fqn: `${fqn}#${p.name}`,
             kind: 'method',
             container_fqn: fqn,
             type_name: p.type,
@@ -405,11 +413,17 @@ export function extractJava(tree, src) {
       const typeNode = childByField(node, 'type');
       const declared = typeNode ? normalizeType(text(typeNode, src)) : null;
       // `var` names no type; the resolver fills it in from what the call returns.
-      const typeName = declared === 'var' ? null : declared;
+      let typeName = declared === 'var' ? null : declared;
 
       for (const d of namedChildrenOfType(node, 'variable_declarator')) {
         const nameNode = childByField(d, 'name');
         const value = childByField(d, 'value');
+        // `var metadata = new Metadata()` needs no inference pass: the
+        // constructor names the type outright.
+        if (!typeName && value?.type === 'object_creation_expression') {
+          const ctor = childByField(value, 'type');
+          if (ctor) typeName = normalizeType(text(ctor, src));
+        }
         if (nameNode && scopeId != null) {
           locals.push({
             scopeTmpId: scopeId,
@@ -545,6 +559,9 @@ export function extractJava(tree, src) {
       const typeNode = childByField(node, 'type');
       const args = childByField(node, 'arguments');
       if (typeNode) {
+        // Registered like a call so `new Ticket().setSeat(...)` can chain: the
+        // constructed type is the receiver of whatever follows it.
+        callRefByNode.set(node.id, refs.length);
         refs.push({
           fromTmpId: scopeId,
           name: normalizeType(text(typeNode, src)),
@@ -622,6 +639,7 @@ function addLombokMembers(symbols) {
         kind: 'method',
         container_fqn: container,
         type_name: typeName,
+        type_args: extra.type_args ?? null,
         signature,
         arity: extra.arity ?? 0,
         supertypes: [],
@@ -635,18 +653,28 @@ function addLombokMembers(symbols) {
       });
     };
 
+    // @Accessors(fluent) names them after the field; @Accessors(chain) makes
+    // the setter hand the object back, which is what keeps a builder-style
+    // `new ListOptions().setA(x).setB(y)` from dying at the second call.
+    const fluent = ann.has('Accessors.fluent');
+    const chains = ann.has('Accessors.chain') || fluent;
+
     for (const field of fields) {
       const own = new Set(field.annotations ?? []);
       const cap = field.name.charAt(0).toUpperCase() + field.name.slice(1);
       // `boolean flag` reads as `isFlag()`; the boxed Boolean keeps `getFlag()`.
-      const getter = field.type_name === 'boolean' ? `is${cap}` : `get${cap}`;
+      const getter = fluent ? field.name : field.type_name === 'boolean' ? `is${cap}` : `get${cap}`;
+      const setter = fluent ? field.name : `set${cap}`;
 
-      if (LOMBOK_GETTERS.has([...ann].find((a) => LOMBOK_GETTERS.has(a)) ?? '') || own.has('Getter')) {
-        generated(getter, field.type_name, `${field.type_name ?? '?'} ${getter}()  // lombok`, type.fqn);
+      if ([...ann].some((a) => LOMBOK_GETTERS.has(a)) || own.has('Getter')) {
+        generated(getter, field.type_name, `${field.type_name ?? '?'} ${getter}()  // lombok`, type.fqn, {
+          type_args: field.type_args ?? null,
+        });
       }
       const settable = !(field.modifiers ?? []).includes('final') && !ann.has('Value');
       if (settable && ([...ann].some((a) => LOMBOK_SETTERS.has(a)) || own.has('Setter'))) {
-        generated(`set${cap}`, 'void', `void set${cap}(${field.type_name ?? '?'})  // lombok`, type.fqn, { arity: 1 });
+        const returns = chains ? type.fqn : 'void';
+        generated(setter, returns, `${returns === 'void' ? 'void' : type.name} ${setter}(${field.type_name ?? '?'})  // lombok`, type.fqn, { arity: 1 });
       }
     }
 

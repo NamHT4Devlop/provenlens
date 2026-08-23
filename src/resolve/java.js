@@ -345,6 +345,15 @@ export function resolveJava(db) {
     chainMemo.set(ref.id, null);
 
     const fromSymbol = symbolById.get(ref.from_symbol_id);
+
+    // `new Ticket().setSeat(...)` -- a constructor needs no return type looked
+    // up, it yields the thing it constructs.
+    if (ref.kind === 'new') {
+      const built = { type_name: ref.name, type_args: null };
+      chainMemo.set(ref.id, built);
+      return built;
+    }
+
     const recv = receiverType(ref, fromSymbol, depth + 1);
     const result =
       typeof recv === 'string' && recv
@@ -395,6 +404,17 @@ export function resolveJava(db) {
     if (depth > 6) return null;
     const owner = refById.get(ownerRefId);
     if (!owner) return null;
+
+    // `simpleAttribute(User.class, user -> user.getSpec())` -- the type and
+    // the lambda are arguments to the same call, and the first says what the
+    // second receives. Checked before the receiver, being the nearer evidence.
+    const from = symbolById.get(owner.from_symbol_id);
+    for (const token of JSON.parse(owner.arg_types || '[]')) {
+      const cls = /^([A-Za-z_$][\w$.]*)\.class$/.exec(String(token ?? '').replace(/^!/, ''));
+      if (!cls) continue;
+      const hit = resolveTypeName(cls[1], owner.file_id, from?.container_fqn ?? null);
+      if (hit) return hit;
+    }
 
     if (owner.receiver_ref_id != null) {
       const fromChain = elementTypeOfRef(refById.get(owner.receiver_ref_id), depth + 1);
@@ -506,6 +526,16 @@ export function resolveJava(db) {
 
     return null;
   }
+
+  // Loaded before anything walks a chain: receiverType follows receiver_ref_id
+  // through this map, so an empty one silently turns every chained receiver
+  // into "complex" -- which is exactly what used to happen to the inference
+  // pass below, and with it every `var x = a.b().c()`.
+  const refs = db
+    .prepare(`SELECT r.* FROM refs r JOIN files f ON f.id = r.file_id
+        WHERE f.lang = 'java' AND r.kind != 'annotation'`)
+    .all();
+  for (const r of refs) refById.set(r.id, r);
 
   // Return-type inference: `var builder = Foo.builder()` names no type, but the
   // method it calls declares what it returns. Runs before the main pass so
@@ -640,11 +670,6 @@ export function resolveJava(db) {
     }
   }
 
-  const refs = db
-    .prepare(`SELECT r.* FROM refs r JOIN files f ON f.id = r.file_id
-        WHERE f.lang = 'java' AND r.kind != 'annotation'`)
-    .all();
-  for (const r of refs) refById.set(r.id, r);
 
   for (const ref of refs) {
     if (ref.from_symbol_id == null) {

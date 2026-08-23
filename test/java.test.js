@@ -15,7 +15,7 @@ before(async () => {
 
 describe('extraction', () => {
   test('indexes every fixture file', () => {
-    assert.equal(stats.parsed, 8);
+    assert.equal(stats.parsed, 14);
     assert.ok(stats.symbols > 30, `expected >30 symbols, got ${stats.symbols}`);
   });
 
@@ -105,7 +105,57 @@ describe('resolution', () => {
       '(self).ArrayList',
       'System.out.println',
       'd.getId().equals',
+      'receipts.forEach',
       'store.add',
     ]);
+  });
+});
+
+describe('members the compiler writes and the source does not', () => {
+  test('Lombok @Data gives every field a getter and a setter', () => {
+    const getter = one('Receipt#getNote');
+    assert.match(getter.signature, /lombok/);
+    assert.equal(getter.type_name, 'String');
+    // A boolean field reads as isX(), the way Lombok spells it.
+    assert.ok(one('Receipt#isSettled'), 'boolean getter must be isSettled');
+    assert.ok(one('Receipt#setNote'), 'and a setter exists too');
+  });
+
+  test('@Builder models the builder, so a build chain keeps its type', () => {
+    // Receipt.builder().note("x").build() must end up holding a Receipt.
+    const callees = calleesOf(db, one('Ledger#summarise').id).map((c) => c.fqn);
+    assert.ok(callees.includes('com.acme.lombok.Receipt.ReceiptBuilder#build'), callees.join(' '));
+    assert.ok(callees.includes('com.acme.lombok.Receipt#setSettled'), 'the built value is a Receipt');
+  });
+
+  test('@Accessors(chain) makes a setter return the object it set', () => {
+    const setter = one('Ticket#setSeat');
+    assert.equal(setter.type_name, 'com.acme.lombok.Ticket');
+    const callees = calleesOf(db, one('Ledger#summarise').id).map((c) => c.fqn);
+    assert.ok(callees.includes('com.acme.lombok.Ticket#getSeat'), 'so the next call still resolves');
+  });
+
+  test('a record component compiles to an accessor of the same name', () => {
+    // The field and the accessor share a name, exactly as they do in Java.
+    const members = db
+      .prepare("SELECT name, kind, type_name FROM symbols WHERE container_fqn = 'com.acme.lombok.Stamp'")
+      .all();
+    const accessor = members.find((m) => m.name === 'code' && m.kind === 'method');
+    assert.ok(accessor, `no accessor among ${JSON.stringify(members)}`);
+    assert.equal(accessor.type_name, 'String');
+  });
+});
+
+describe('generics carry the element type into a lambda', () => {
+  test('a declared type argument types the lambda parameter', () => {
+    // receipts is List<Receipt>, so `receipt` in forEach is a Receipt.
+    const callees = calleesOf(db, one('Ledger#summarise').id).map((c) => c.fqn);
+    assert.ok(callees.includes('com.acme.lombok.Receipt#getNote'), callees.join(' '));
+  });
+
+  test('a Foo.class argument types it too, which is how generic APIs say so', () => {
+    // store.load(Receipt.class, ...).map(found -> found.getId())
+    const callees = calleesOf(db, one('Ledger#summarise').id).map((c) => c.fqn);
+    assert.ok(callees.includes('com.acme.lombok.Receipt#getId'), callees.join(' '));
   });
 });
