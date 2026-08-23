@@ -339,24 +339,30 @@ And proof **always runs before** assumption: if it can be proven, it is never gu
 ### Measured on real repositories
 
 Seventeen repositories, none of them chosen for its score. The six added last were named in
-advance — two self-contained Java, two Rails, two TypeScript — and four landed below the median the
-other eleven had, pulling it from 89.2% to 86.2%. That is what picking before measuring costs, and
+advance — two self-contained Java, two Rails, two TypeScript — and five landed below the median the
+other eleven had, pulling it from 91.4% to 88.1%. That is what picking before measuring costs, and
 it is the only way the table means anything.
+
+Every repository here was measured with its dependencies **installed**: `npm`/`pnpm` for the
+JavaScript and TypeScript clones, a JDK plus the jars Maven and Gradle had fetched for the Java
+ones. That is the configuration codelens is meant to run in, and it is also the harder one to
+report — reading real declarations replaces guesses with facts in both directions, so camel fell
+from 97.3% to 95.2% once its types became readable enough to be counted properly.
 
 | Repo | Stack | In-repo resolution | Floor if every assumption were wrong |
 |---|---|---|---|
 | spring-petclinic | Spring Boot + Data, 51 files | **99.7%** | **98.6%** |
 | mall | Spring Boot + MyBatis, 630 files | **99.3%** | **99.2%** |
 | mybatis spring-boot-starter | MyBatis, 154 files | **98.5%** | **98.5%** |
-| camel-spring-boot-examples | ~50 Camel examples, 325 files | **97.3%** | **96.7%** |
+| camel-spring-boot-examples | ~50 Camel examples, 325 files | **95.2%** | **94.1%** |
 | TheAlgorithms/Java | plain Java, 1588 files | **97.1%** | **96.3%** |
 | mybatis jpetstore | MyBatis + Flyway, 43 files | **95.1%** | **95.1%** |
 | express | plain JS, 141 files | **91.4%** | **91.1%** |
-| java-design-patterns | Java, 1991 files | **91.3%** | 89.2% |
+| java-design-patterns | Java, 1991 files | **91.2%** | 89.1% |
 | rubygems.org | Rails, 1392 files | **88.1%** | 80.4% |
 | mastodon | Rails + TS, 4199 files | **87.4%** | 79.8% |
-| halo | Java + TS, 2228 files | **86.1%** | 84.0% |
-| spring-cloud-aws | Java, 816 files | **85.8%** | 84.7% |
+| halo | Java + TS, 2228 files | **86.6%** | 84.5% |
+| spring-cloud-aws | Java, 816 files | **85.9%** | 84.7% |
 | solidus | Rails, 2329 files | **83.4%** | 74.7% |
 | nest | TS, 1904 files | **83.4%** | 78.0% |
 | discourse | Rails, 14358 files | **78.2%** | 72.2% |
@@ -364,19 +370,24 @@ it is the only way the table means anything.
 | axios | JS, 242 files | **64.5%** | 54.0% |
 
 **Seven of the seventeen clear 90% on both columns**, and which seven is the most useful thing the
-table says. Three of those rows moved *down* in the last pass and were kept: an import naming a
-library type used to fall through to a same-named class in the repository, and nest lost about 3%
-of its links when that stopped. Those links were inventions. It does not sort by repository size or by language. It sorts by **who declares the
-receiver's type**:
+table says. Several rows moved *down* on the way there and were kept: an import naming a library
+type used to fall through to a same-named class in the repository, and nest lost about 3% of its
+links when that stopped. Those links were inventions.
+
+The table does not sort by repository size, and it does not sort by language. It sorts by **who
+declares the receiver's type**:
 
 - Types declared *inside the repository* — Spring with Lombok, MyBatis, plain Java, a small
-  self-contained JS package. Every one of these clears 90% on both numbers.
+  self-contained JS package. Every one of these clears 90% on the headline, and all but
+  java-design-patterns clears it on the floor as well — that one lands at 89.1%, just under.
 - Types declared by a **dependency** — Reactor in halo, the Spring test harness in
-  spring-cloud-aws, TypeORM's own generics. The declarations are not on this machine at all: the
-  clones have no `node_modules`, and there is no `~/.m2` or `~/.gradle`.
+  spring-cloud-aws, TypeORM's own generics. These declarations *are* now read, and that is what
+  moved halo from 77.0% to 86.6%. What is left is the part reading cannot fix: a signature like
+  `Flux<T>.map(Function<T,R>)` answers with type *variables*, and substituting them properly is a
+  different job from reading them.
 - Types declared **nowhere** — Ruby, and JavaScript callbacks. `axios` is the clearest case in the
   table: its tests are written as `startHTTPServer((req, res) => res.end(...))`, and nothing in
-  JavaScript ever says what `res` is. 64.7% is the honest reading of that, not a defect.
+  JavaScript ever says what `res` is. 64.5% is the honest reading of that, not a defect.
 
 **Two numbers, and the second is the one that keeps the first honest.** The floor assumes every
 judgement the resolver made without a declaration behind it was wrong — both directions. Calls
@@ -387,9 +398,10 @@ a call flatters the headline exactly as much as one that excuses it, and countin
 made the self-audit a half-audit. `bench` prints the guessed links so the gap is inspectable.
 
 Read the two columns together. spring-petclinic is 99.7% on one guessed link in the whole repo.
-express is 89.2% on a floor of 57.7% — plain JS annotates nothing, so most of its receivers are
-runtime judgements. mastodon and rubygems.org sit near 88% with floors near 78%, which is what
-Rails looks like when half the receivers are named after their model and nothing else says so.
+axios is 64.5% on a floor of 54.0% — plain JS annotates nothing, so a tenth of what it *does* link
+rests on a convention rather than a declaration. mastodon and rubygems.org sit near 88% with floors
+near 80%, which is what Rails looks like when half the receivers are named after their model and
+nothing else says so.
 
 The graph grew far more than the percentages did: halo went from 26,654 edges to 34,784, mastodon
 from 21,748 to 27,612, rubygems.org from 10,253 to 13,050. Several numbers *fell* along the way and
@@ -684,7 +696,7 @@ attributed to the right library. If a resolver later drops an internal call, a t
   and gives up rather than guess elsewhere.
 - **A callback parameter in JavaScript** is the sharpest form of that. `startHTTPServer((req, res)
   => res.end(...))` says nothing about `res` anywhere, and neither does the helper it is passed to.
-  Reported as a miss rather than guessed, which is most of why axios reads 64.7%.
+  Reported as a miss rather than guessed, which is most of why axios reads 64.5%.
 - **Node object-modules** — `var app = module.exports = {}` then `app.set = function(){}` — are not
   modelled, so their members look external. Modelling them is correct in principle: express really
   does define `res.send`. It is left out because without a way to type the `req`/`res` parameters
