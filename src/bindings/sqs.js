@@ -6,6 +6,9 @@
  */
 
 const JAVA_LISTENERS = new Set(['@SqsListener', '@SqsHandler', '@JmsListener', '@RabbitListener']);
+// NestJS (@ssut/nestjs-sqs) spells the same contract as a decorator.
+const TS_LISTENERS = new Set(['@SqsMessageHandler', '@SqsConsumerEventHandler']);
+const TS_SENDERS = new Set(['sendMessage', 'sendMessageBatch']);
 const JAVA_SENDERS = new Set(['send', 'sendMessage', 'convertAndSend', 'sendMessageBatch']);
 const CAMEL_SENDERS = new Set(['to', 'toD', 'wireTap', 'enrich', 'inOnly', 'inOut']);
 
@@ -59,6 +62,44 @@ export default {
           fileId: ref.file_id,
           line: ref.line,
           detail: `${ref.name}("${name}")`,
+        });
+      }
+    }
+
+    // --- TypeScript / NestJS: decorators declare consumers, SDK calls send ---
+    for (const ref of ctx.refs(
+      "f.lang IN ('typescript', 'tsx', 'javascript') AND r.str_args IS NOT NULL",
+    )) {
+      if (ref.from_symbol_id == null) continue;
+
+      if (ref.kind === 'annotation' && TS_LISTENERS.has(ref.name)) {
+        const name = queueName(ref.strArgs.find(Boolean));
+        if (!name) continue;
+        ctx.emit({
+          role: 'provider',
+          key: name,
+          symbolId: ref.from_symbol_id,
+          fileId: ref.file_id,
+          line: ref.line,
+          detail: `${ref.name}("${name}")`,
+        });
+        continue;
+      }
+
+      // `send` alone is the most common method name in JS; only an SQS-ish
+      // receiver keeps it from flooding the graph with false producers.
+      const sends =
+        TS_SENDERS.has(ref.name) || (ref.name === 'send' && /sqs/i.test(ref.receiver ?? ''));
+      if (ref.kind === 'call' && sends) {
+        const name = queueName(ref.strArgs.find(Boolean));
+        if (!name) continue;
+        ctx.emit({
+          role: 'consumer',
+          key: name,
+          symbolId: ref.from_symbol_id,
+          fileId: ref.file_id,
+          line: ref.line,
+          detail: `${ref.receiver ?? ''}.${ref.name}("${name}")`,
         });
       }
     }

@@ -173,3 +173,27 @@ describe('flyway', () => {
     assert.ok(row.confidence < 0.9, 'a naming-convention guess must not look like a real call');
   });
 });
+
+describe('sqs across TypeScript', () => {
+  test('records decorators as annotations, the way Java annotations are', () => {
+    const handler = one('OrderEventsHandler#handle');
+    assert.ok(JSON.parse(handler.annotations).includes('@SqsMessageHandler'));
+  });
+
+
+  test('a NestJS decorator declares a consumer for the same queue', () => {
+    // @SqsMessageHandler('order-events') is the TS spelling of @SqsListener.
+    assert.ok(
+      wiredBy('sqs').includes('com.shop.messaging.OrderPublisher#publish -> src/order_events_handler:OrderEventsHandler#handle'),
+      `saw: ${wiredBy('sqs').join(' | ')}`,
+    );
+  });
+
+  test('an SDK send with a queue name is a producer, cross-language both ways', () => {
+    const wired = wiredBy('sqs');
+    assert.ok(
+      wired.includes('src/order_events_handler:ShipmentPublisher#notifyShipped -> OrderWorker'),
+      `the TS producer must reach the Ruby worker; saw: ${wired.join(' | ')}`,
+    );
+  });
+});

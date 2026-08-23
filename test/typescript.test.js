@@ -153,3 +153,13 @@ describe('resolution', () => {
     assert.deepEqual(missedCalls(), []);
   });
 });
+
+describe('decorators and generics', () => {
+  test('Array<T> types a receiver exactly like T[]', async () => {
+    const { normalizeType } = await import('../src/extract/typescript.js');
+    assert.equal(normalizeType('Array<Donation>'), 'Donation[]');
+    assert.equal(normalizeType('ReadonlyArray<Donation>'), 'Donation[]');
+    // A nested generic argument is not a simple element type; stay honest.
+    assert.equal(normalizeType('Array<Map<string, number>>'), 'Array');
+  });
+});

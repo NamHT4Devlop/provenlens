@@ -47,6 +47,10 @@ function firstOfType(node, type) {
 export function normalizeType(raw) {
   if (!raw) return null;
   let t = raw.trim().replace(/^:\s*/, '');
+  // `Array<Donation>` is the same type `Donation[]` spells; keeping the two
+  // apart would give the receiver different behaviour by syntax alone.
+  const arrayGeneric = /^(?:Array|ReadonlyArray)\s*<\s*([\w$.]+)\s*>$/.exec(t);
+  if (arrayGeneric) t = `${arrayGeneric[1]}[]`;
   const isArray = /\[\s*\]\s*$/.test(t);
   const lt = t.indexOf('<');
   if (lt !== -1) t = t.slice(0, lt);
@@ -61,6 +65,24 @@ export function normalizeType(raw) {
 function bareType(raw) {
   const t = normalizeType(raw);
   return t ? t.replace(/\[\]$/, '') : null;
+}
+
+/**
+ * `@Injectable()` / `@SqsMessageHandler('queue')` -- the TS spelling of what
+ * Java calls an annotation, and it carries the same kind of binding-relevant
+ * strings, so it is recorded the same way: on the symbol, and as an
+ * `annotation` ref the binding plugins can match.
+ */
+function readDecorator(node, src) {
+  const call = firstOfType(node, 'call_expression');
+  const nameNode = call ? childByField(call, 'function') : node.namedChild(0);
+  if (!nameNode) return null;
+  const name = text(nameNode, src).split('.').pop();
+  return {
+    name: `@${name}`,
+    strArgs: call ? (stringArgs(childByField(call, 'arguments'), src) ?? []) : [],
+    line: node.startPosition.row + 1,
+  };
 }
 
 function typeFromAnnotation(node, src) {
@@ -88,6 +110,8 @@ export function extractTypeScript(tree, src, ctx = {}) {
   const modulePath = modulePathOf(ctx.path ?? '');
   const symbols = [];
   const refs = [];
+  // Decorators seen in a class body, waiting for the member they decorate.
+  let pendingDecorators = [];
   const locals = [];
   const imports = [];
 
@@ -285,6 +309,15 @@ export function extractTypeScript(tree, src, ctx = {}) {
       const simpleName = text(nameNode, src);
       const fqn = `${modulePath}:${simpleName}`;
 
+      const decorators = [];
+      for (let i = 0; i < node.namedChildCount; i++) {
+        const c = node.namedChild(i);
+        if (c?.type === 'decorator') {
+          const d = readDecorator(c, src);
+          if (d) decorators.push(d);
+        }
+      }
+
       const id = addSymbol({
         name: simpleName,
         fqn,
@@ -295,15 +328,30 @@ export function extractTypeScript(tree, src, ctx = {}) {
         arity: null,
         supertypes: heritage(node),
         modifiers: exported ? ['export'] : [],
-        annotations: [],
+        annotations: decorators.map((d) => d.name),
         ...pos(node),
       });
+      for (const d of decorators) {
+        refs.push({ fromTmpId: id, name: d.name, receiver: null, arity: null, str_args: d.strArgs, line: d.line, kind: 'annotation' });
+      }
 
       const body = childByField(node, 'body');
       if (body) {
+        // A method's decorators are its preceding siblings in the class body,
+        // so they are gathered here and handed to the next member walked.
+        let pending = [];
         for (let i = 0; i < body.namedChildCount; i++) {
           const c = body.namedChild(i);
-          if (c) walk(c, [...typeStack, fqn], id, false);
+          if (!c) continue;
+          if (c.type === 'decorator') {
+            const d = readDecorator(c, src);
+            if (d) pending.push(d);
+            continue;
+          }
+          pendingDecorators = pending;
+          walk(c, [...typeStack, fqn], id, false);
+          pendingDecorators = [];
+          pending = [];
         }
       }
       return;
@@ -317,6 +365,8 @@ export function extractTypeScript(tree, src, ctx = {}) {
       const isCtor = simpleName === 'constructor';
       const ret = typeFromAnnotation(node, src);
 
+      const decorators = pendingDecorators;
+      pendingDecorators = [];
       const id = addSymbol({
         name: simpleName,
         fqn: `${containerFqn}#${simpleName}`,
@@ -327,9 +377,12 @@ export function extractTypeScript(tree, src, ctx = {}) {
         arity: 0,
         supertypes: [],
         modifiers: [],
-        annotations: [],
+        annotations: decorators.map((d) => d.name),
         ...pos(node),
       });
+      for (const d of decorators) {
+        refs.push({ fromTmpId: id, name: d.name, receiver: null, arity: null, str_args: d.strArgs, line: d.line, kind: 'annotation' });
+      }
 
       const params = readParams(childByField(node, 'parameters'), id, containerFqn);
       symbols[id].arity = params.length;
