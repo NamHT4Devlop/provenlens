@@ -314,17 +314,23 @@ And proof **always runs before** assumption: if it can be proven, it is never gu
 
 | Repo | Stack | In-repo resolution | Floor if every assumption were wrong | Was |
 |---|---|---|---|---|
-| spring-petclinic | Spring Boot + Data, 51 files | **99.7%** | 98.6% | 99.4% |
-| mybatis spring-boot-starter | MyBatis, 154 files | **98.7%** | 98.7% | 81.3% |
-| mall | Spring Boot + MyBatis, 630 files | **97.8%** | 97.7% | 94.5% |
-| camel-spring-boot-examples | ~50 Camel examples, 325 files | **97.8%** | 97.3% | 91.1% |
-| mybatis jpetstore | MyBatis + Flyway, 43 files | **96.7%** | 96.7% | 89.1% |
-| express | plain JS, 141 files | **89.2%** | 57.7% | 77.4% |
-| rubygems.org | Rails, 1392 files | **88.2%** | 78.3% | 79.1% |
-| mastodon | Rails + TS, 4199 files | **87.4%** | 78.2% | 73.9% |
-| nest | TS, 1904 files | **85.5%** | 76.8% | 84.2% |
-| halo | Java + TS, 2228 files | **84.5%** | 80.7% | 77.0% |
+| spring-petclinic | Spring Boot + Data, 51 files | **99.7%** | **98.6%** | 99.4% |
+| mybatis spring-boot-starter | MyBatis, 154 files | **98.7%** | **98.7%** | 81.3% |
+| mall | Spring Boot + MyBatis, 630 files | **97.8%** | **97.7%** | 94.5% |
+| camel-spring-boot-examples | ~50 Camel examples, 325 files | **97.8%** | **97.3%** | 91.1% |
+| mybatis jpetstore | MyBatis + Flyway, 43 files | **96.7%** | **96.7%** | 89.1% |
+| express | plain JS, 141 files | **91.4%** | **91.1%** | 77.4% |
+| rubygems.org | Rails, 1392 files | **88.1%** | 80.4% | 79.1% |
+| mastodon | Rails + TS, 4199 files | **87.4%** | 79.8% | 73.9% |
+| nest | TS, 1904 files | **85.6%** | 80.7% | 84.2% |
+| halo | Java + TS, 2228 files | **84.6%** | 82.4% | 77.0% |
 | spring-cloud-aws | Java, 816 files | **80.2%** | 78.8% | 77.7% |
+
+**Six of the eleven clear 90% on both columns.** Which six is not a coincidence, and the split is
+the most useful thing this table says: every repository whose receivers are typed by declarations
+*inside the repository* clears it, and every repository whose receivers are typed by a dependency
+does not. Two of the five that fall short are Ruby, where nothing declares a receiver's type at
+all.
 
 **Two numbers, and the second is the one that keeps the first honest.** The floor assumes every
 judgement the resolver made without a declaration behind it was wrong — both directions. Calls
@@ -350,16 +356,23 @@ the guessed links as well as the two headline figures.
 
 ### What is still missed, and why
 
-The three lowest rows all fail the same way, and it is worth being plain about it: a receiver whose
-type only a **library** declares. `contextRunner.run(context -> context.getBean(...))` types
-`context` from Spring Boot's signature, `intl.formatMessage(...)` from react-intl's, and neither
-library is indexed. Everything downstream of such a receiver is unresolvable without reading code
-this tool deliberately does not read.
+**A receiver typed only by a dependency.** `contextRunner.run(context -> context.getBean(...))`
+types `context` from Spring Boot's signature; `Mono<T>` types halo's reactive chains from Reactor's;
+`intl.formatMessage(...)` from react-intl's. Everything downstream of such a receiver is
+unresolvable, and not because of a gap in this tool: on the machine these numbers were measured on,
+those declarations **are not present at all** — the clones have no `node_modules`, and there is no
+`~/.m2` or `~/.gradle` cache. No tool can resolve what is not there.
 
-Ruby's remaining misses are a different shape: a receiver nothing declares at all. A method
-parameter in a dynamically typed language names no type anywhere, so `def deliver(recipient)` gives
-the resolver nothing but the name — which is why the naming convention exists, and why it is capped
-at 0.5 and struck out of the floor.
+That is what separates the two halves of the table. spring-cloud-aws is 76% Mockito, AssertJ and
+Spring test harness by call volume; halo is written in Reactor throughout. Reading dependency
+declarations — `.d.ts` from `node_modules`, signatures from JARs — is the one change that would
+move them, and it needs the dependencies installed first.
+
+**A receiver nothing declares at all.** A method parameter in a dynamically typed language names no
+type anywhere, so `def deliver(recipient)` gives the resolver the name and nothing else. That is why
+the naming convention exists, why it is capped at 0.5, and why it is struck out of the floor. It is
+also why mastodon and rubygems.org read ~88% with floors near 80%: roughly 6% of their links rest on
+a convention. No amount of engineering turns that into a declaration, because Ruby never wrote one.
 
 ## Commands
 
@@ -605,6 +618,11 @@ attributed to the right library. If a resolver later drops an internal call, a t
   the moment one is declared in a JAR, a gem or `node_modules`, the chain stops.
 - **Plain JS with no type annotations** gives no receiver type to infer. Reported as a miss rather
   than guessed.
+- **Node object-modules** — `var app = module.exports = {}` then `app.set = function(){}` — are not
+  modelled, so their members look external. Modelling them is correct in principle: express really
+  does define `res.send`. It is left out because without a way to type the `req`/`res` parameters
+  that receive them it turns ~900 express calls from proven-library into unresolvable, taking the
+  repo from 91% to 29%. Half of that change is worse than none.
 - **The Ruby inflector** is simple and does not handle irregulars (`people`/`person`).
 - **Annotation-style MyBatis** (`@Select` on the method) needs no binding — the SQL is already in
   the method.
