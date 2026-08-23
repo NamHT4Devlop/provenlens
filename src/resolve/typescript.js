@@ -94,6 +94,46 @@ export function readTsconfigScopes(root, maxDepth = 2) {
   return scopes;
 }
 
+/**
+ * The packages this repository publishes, by the name it publishes them under.
+ *
+ * A workspace refers to its own packages by name, not by path: zod's tests
+ * `import { z } from 'zod'` and mean `packages/zod/src`, and an enterprise
+ * monorepo does the same with `@myorg/core`. Without this those imports
+ * resolve to nothing, and the repository's own code is booked as a library --
+ * 12,177 calls in zod, attributed to a dependency that is the repository.
+ */
+export function readWorkspacePackages(root, maxDepth = 3) {
+  const found = [];
+  const visit = (dir, depth) => {
+    try {
+      const meta = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'));
+      if (meta.name) {
+        const rel = relative(root, dir).replace(/\\/g, '/');
+        const entry = meta.types ?? meta.typings ?? meta.module ?? meta.main ?? null;
+        found.push({ name: meta.name, dir: rel, entry });
+      }
+    } catch {
+      /* no manifest here, or an unreadable one */
+    }
+    if (depth >= maxDepth) return;
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      if (!e.isDirectory() || e.name.startsWith('.') || e.name === 'node_modules') continue;
+      visit(join(dir, e.name), depth + 1);
+    }
+  };
+  visit(root, 0);
+  // The longest name wins when two could match, so `@scope/a-b` is not read as
+  // `@scope/a` with a stray suffix.
+  return found.sort((a, b) => b.name.length - a.name.length);
+}
+
 /** Reads `compilerOptions.paths` so alias imports resolve like the compiler does. */
 export function readTsconfigPaths(root) {
   for (const name of ['tsconfig.json', 'jsconfig.json']) {
@@ -117,6 +157,7 @@ export function readTsconfigPaths(root) {
 
 export function resolveTypeScript(db, root) {
   const scopes = readTsconfigScopes(root);
+  const workspaces = readWorkspacePackages(root);
 
   const files = db
     .prepare(`SELECT id, path, pkg FROM files WHERE lang IN (${LANG_LIST})`)
@@ -171,6 +212,25 @@ export function resolveTypeScript(db, root) {
           const hit = probe(candidate);
           if (hit) return hit;
         }
+      }
+    }
+
+    // A name this repository publishes is this repository, not a dependency.
+    for (const pkg of workspaces) {
+      if (specifier !== pkg.name && !specifier.startsWith(`${pkg.name}/`)) continue;
+      const rest = specifier.slice(pkg.name.length).replace(/^\//, '');
+      const candidates = rest
+        ? [join(pkg.dir, rest), join(pkg.dir, 'src', rest)]
+        : [
+            pkg.entry ? join(pkg.dir, pkg.entry) : null,
+            join(pkg.dir, 'src', 'index'),
+            join(pkg.dir, 'index'),
+            join(pkg.dir, 'src'),
+          ];
+      for (const candidate of candidates) {
+        if (!candidate) continue;
+        const hit = probe(normalize(candidate).replace(/\\/g, '/'));
+        if (hit) return hit;
       }
     }
 
