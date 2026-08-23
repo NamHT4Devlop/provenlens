@@ -455,7 +455,11 @@ export function resolveTypeScript(db, root) {
     const file = fileById.get(ref.file_id);
     const module = file?.pkg;
     const enclosingType = fromSymbol?.container_fqn ? types.get(fromSymbol.container_fqn) : null;
-    const raw = ref.receiver;
+    // `table!.findColumnByName` and `table?.findColumnByName` are both calls on
+    // `table`. The assertion and the optional-chain say something about null,
+    // nothing about the type, and leaving them in the text meant the receiver
+    // matched no identifier at all: 1,061 calls in typeorm alone.
+    const raw = (ref.receiver ?? '').replace(/!(?=\.|$)/g, '').replace(/\?\./g, '.');
 
     if (!raw || raw === 'this') return enclosingType;
 
@@ -487,6 +491,43 @@ export function resolveTypeScript(db, root) {
       const hit = resolveTypeName(field.type_name, ref.file_id, module);
       if (hit) return hit;
       return { external: externalOwner(field.type_name, ref.file_id, module) };
+    }
+
+    // `dataSource.manager.save(...)` -- a property PATH rather than a call
+    // chain. Every segment is a declared field, so walking it reads types
+    // rather than guessing at them, and each hop is resolved where it was
+    // declared: `DataSource.manager` is an `EntityManager` whether or not the
+    // calling file has ever heard of that name.
+    //
+    // This was by a wide margin the largest bucket left. Anything that was not
+    // a bare identifier or a single `this.x` fell through to "complex" -- in
+    // typeorm, 9,729 calls, headed by 1,434 of `dataSource.manager.save`.
+    if (depth < 8 && /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+$/.test(raw)) {
+      const segments = raw.split('.');
+      let current = receiverType(
+        { ...ref, receiver: segments[0], receiver_ref_id: null },
+        fromSymbol,
+        depth + 1,
+      );
+      for (let i = 1; i < segments.length; i++) {
+        if (!current?.fqn) break;
+        const member = findMember(current, segments[i]);
+        if (!member?.type_name) {
+          current = { complex: true };
+          break;
+        }
+        if (member.isExternal) {
+          current = { external: member.extOwner ?? 'unresolved-module' };
+          break;
+        }
+        current =
+          resolveTypeName(member.type_name, member.file_id, member.module) ??
+          resolveTypeName(member.type_name, ref.file_id, module) ??
+          (externalOwner(member.type_name, member.file_id, member.module)
+            ? { external: externalOwner(member.type_name, member.file_id, member.module) }
+            : { complex: true });
+      }
+      if (current) return current;
     }
 
     if (!/^[A-Za-z_$][\w$]*$/.test(raw)) {

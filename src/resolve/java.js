@@ -558,6 +558,42 @@ export function resolveJava(db) {
       );
     }
 
+    // `context.getBean().config.timeout()` -- a path of declared fields. Each
+    // hop reads a type rather than guessing at one, and is resolved against
+    // the type that DECLARES the field, which need not be a name this file has
+    // ever imported. Everything that was not a bare identifier or a single
+    // `this.x` used to fall straight through to "complex" below.
+    if (depth < 8 && /^(?:this\.)?[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+$/.test(raw)) {
+      const segments = raw.split('.');
+      let current = receiverType(
+        { ...ref, receiver: segments[0], receiver_ref_id: null },
+        fromSymbol,
+        depth + 1,
+      );
+      for (let i = 1; i < segments.length; i++) {
+        if (typeof current !== 'string' || !current) break;
+        let fieldType = null;
+        for (const t of typeChain(current)) {
+          const hit = fieldsByContainer.get(t.fqn)?.get(segments[i]);
+          if (hit) {
+            fieldType = hit;
+            break;
+          }
+        }
+        if (!fieldType) {
+          current = { complex: true };
+          break;
+        }
+        const home = types.get(current)?.file_id ?? ref.file_id;
+        const owner = externalOwner(fieldType, home);
+        current =
+          resolveTypeName(fieldType, home, current) ??
+          resolveTypeName(fieldType, ref.file_id, enclosing) ??
+          (owner ? { external: owner } : { complex: true });
+      }
+      if (current) return current;
+    }
+
     if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(raw)) {
       // A chain such as `view().name(...)` or `Foo.bar().baz()`. If the token
       // it starts from is itself a library call or type, so is the whole chain.
