@@ -218,6 +218,100 @@ program
   });
 
 program
+  .command('dead')
+  .argument('[path]', 'project directory')
+  .option('-n, --limit <n>', 'how many to list', '30')
+  .option('--tests', 'include test files, which are normally excluded')
+  .option('--public', 'also list exported and public names, which a caller outside this repo may use')
+  .description('methods and functions nothing in this repository reaches')
+  .action(async (path, opts) => {
+    const { root, db } = useProject(path);
+    const { deadCode } = await import('../src/insight.js');
+    const report = deadCode(db, root, {
+      limit: Number(opts.limit) || 30,
+      includeTests: !!opts.tests,
+      onlyCertain: !opts.public,
+    });
+
+    if (!report.candidates.length) {
+      if (report.publicHeldBack) {
+        console.log(
+          `nothing certain. ${report.publicHeldBack} public or exported name(s) have no caller ` +
+            `inside this repository, which in a library is what an API looks like — ` +
+            `run with --public to read them.`,
+        );
+      } else {
+        console.log('nothing unreached — every method and function has a caller, a binding or an entry-point marker');
+      }
+      return;
+    }
+    console.log(`${report.total} unreached, showing ${report.candidates.length}:\n`);
+    for (const c of report.candidates) {
+      console.log(`${c.confidence === 'high' ? '  ' : '? '}${c.file_path}:${c.start_line}  ${c.fqn}`);
+    }
+    // The list is exactly as good as the graph behind it, so say how good that is.
+    const pct = report.refs ? ((report.unresolved / report.refs) * 100).toFixed(1) : '0.0';
+    console.log(
+      `\nRead these, do not delete them. ${report.unresolved} call site(s) in this repository ` +
+        `(${pct}%) went unresolved, and an unresolved call looks exactly like no call at all. ` +
+        `Reflection, a template naming a helper, and dispatch by string do too.`,
+    );
+    console.log('Lines marked ? are public or exported — something outside this repository may call them.');
+    if (report.publicHeldBack) {
+      console.log(
+        `${report.publicHeldBack} public or exported name(s) not shown — in a library those are the API. ` +
+          `Use --public to see them.`,
+      );
+    }
+    if (report.namedInTemplate) {
+      console.log(
+        `${report.namedInTemplate} more were left off because a template or config file names them.`,
+      );
+    }
+  });
+
+program
+  .command('cycles')
+  .argument('[path]', 'project directory')
+  .option('-n, --limit <n>', 'how many to list', '20')
+  .description('files that depend on each other, directly or the long way round')
+  .action(async (path, opts) => {
+    const { db } = useProject(path);
+    const { cycles } = await import('../src/insight.js');
+    const rings = cycles(db, { limit: Number(opts.limit) || 20 });
+    if (!rings.length) {
+      console.log('no cycles between files');
+      return;
+    }
+    console.log(`${rings.length} cycle(s):\n`);
+    for (const ring of rings) {
+      console.log(`  ${ring.join('\n    -> ')}\n    -> ${ring[0]}\n`);
+    }
+  });
+
+program
+  .command('hotspots')
+  .argument('[path]', 'project directory')
+  .option('-n, --limit <n>', 'how many to list', '20')
+  .description('what the most other code depends on — read before changing it')
+  .action(async (path, opts) => {
+    const { db } = useProject(path);
+    const { hotspots } = await import('../src/insight.js');
+    const rows = hotspots(db, { limit: Number(opts.limit) || 20 });
+    if (!rows.length) {
+      console.log('no symbol has a caller yet — run `codelens index` first');
+      return;
+    }
+    console.log(`${'callers'.padStart(8)}  ${'files'.padStart(6)}  symbol`);
+    for (const r of rows) {
+      console.log(
+        `${String(r.callers).padStart(8)}  ${String(r.caller_files).padStart(6)}  ${r.fqn}` +
+          `\n${' '.repeat(18)}${r.file_path}:${r.start_line}`,
+      );
+    }
+  });
+
+program
   .command('doctor')
   .argument('[path]', 'project directory')
   .description('why this repository resolves as it does, and what would change it')
