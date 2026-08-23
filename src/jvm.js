@@ -21,6 +21,8 @@ import { homedir } from 'node:os';
 /** javap is fast per class but not free; batching keeps the total sane. */
 const BATCH = 40;
 const MAX_TYPES = 4000;
+/** A shared cache can hold a great many jars that this project never asked for. */
+const MAX_JARS = 4000;
 
 /**
  * `public static <T> java.util.Optional<T> of(T)` ->
@@ -140,7 +142,14 @@ export function unresolvedImports(db) {
   return [...new Set(wanted)].slice(0, MAX_TYPES);
 }
 
-/** Every jar a build tool has already downloaded for this project. */
+/**
+ * Every jar a build tool has already downloaded.
+ *
+ * The caches are shared between projects, so this necessarily includes jars
+ * another project asked for. javap ignores what it does not need, but it does
+ * pay to open each one, so the total is capped -- 285 unrelated Maven jars
+ * added ten seconds to indexing halo before this was noticed.
+ */
 export function classpathFor(root) {
   const jars = [];
   const roots = [
@@ -151,7 +160,7 @@ export function classpathFor(root) {
   ].filter((d) => existsSync(d));
 
   const walk = (dir, depth) => {
-    if (depth > 8 || jars.length > 20000) return;
+    if (depth > 8 || jars.length >= MAX_JARS) return;
     let entries;
     try {
       entries = readdirSync(dir, { withFileTypes: true });
@@ -159,9 +168,14 @@ export function classpathFor(root) {
       return;
     }
     for (const e of entries) {
+      if (jars.length >= MAX_JARS) return;
       const full = join(dir, e.name);
       if (e.isDirectory()) walk(full, depth + 1);
-      else if (e.name.endsWith('.jar') && !e.name.endsWith('-sources.jar')) {
+      else if (
+        e.name.endsWith('.jar') &&
+        !e.name.endsWith('-sources.jar') &&
+        !e.name.endsWith('-javadoc.jar')
+      ) {
         try {
           if (statSync(full).size > 0) jars.push(full);
         } catch {
