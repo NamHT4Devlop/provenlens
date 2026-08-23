@@ -51,23 +51,23 @@
   .sg:hover, .sg[aria-selected="true"] { background: color-mix(in srgb, var(--accent) 22%, transparent); }
   .sg b { font-family: var(--mono); font-weight: 600; font-size: 13px; color: var(--ink-strong); }
   .sg i { display: block; color: var(--muted); font-style: normal; font-size: 11.5px; font-family: var(--mono); }
-  .filters, #repos { display: flex; gap: 6px; flex-wrap: wrap; }
-  .chip, .repo {
+  .filters { display: flex; gap: 6px; flex-wrap: wrap; }
+  .chip {
     display: inline-flex; align-items: center; gap: 5px; padding: 4px 9px; cursor: pointer;
     background: var(--panel); border: 1px solid var(--line); border-radius: 999px;
     font-size: 11.5px; color: var(--muted); user-select: none; white-space: nowrap;
   }
   .chip[aria-pressed="true"] { color: var(--ink-strong); border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); }
-  .repo[aria-pressed="true"] { color: var(--ink-strong); border-color: currentColor; }
   .chip .dot { width: 9px; height: 9px; border-radius: 50%; }
-  .repo .swatch { width: 8px; height: 8px; border-radius: 2px; }
-  .repo .n { opacity: .6; font-size: 10.5px; }
   .spacer { flex: 1; }
   .hint { color: var(--muted); font-size: 11.5px; white-space: nowrap; }
-  #theme {
+  #theme, #repos {
     padding: 5px 8px; font: inherit; font-size: 11.5px; color: var(--muted);
     background: var(--panel); border: 1px solid var(--line); border-radius: 7px; cursor: pointer;
   }
+  /* Scoped to one repository, the picker wears that repository's hue, which is
+     the same hue its nodes are ringed with on the canvas. */
+  #repos[data-scoped="true"] { color: var(--ink-strong); border-color: currentColor; }
   #stage { position: absolute; inset: 0; }
   canvas { display: block; width: 100%; height: 100%; cursor: grab; }
   canvas.dragging { cursor: grabbing; }
@@ -148,7 +148,7 @@
     <input id="q" placeholder="Search for nodes in the graph" autocomplete="off" spellcheck="false">
     <div id="suggest"></div>
   </div>
-  <div id="repos"></div>
+  <select id="repos" title="Repository to show"></select>
   <div class="filters" id="filters"></div>
   <div class="spacer"></div>
   <select id="theme" title="Colour scheme"></select>
@@ -819,21 +819,25 @@ $('filters').addEventListener('click', (e) => {
 });
 
 function renderRepos() {
-  if (repos.length < 2) { $('repos').innerHTML = ''; return; }
-  const chip = (id, label, count) =>
-    '<span class="repo" data-r="' + id + '" aria-pressed="' + (activeRepo === id || (id === 'all' && activeRepo === null)) + '"' +
-    (id === 'all' ? '' : ' style="color:' + repoColor(id) + '"') + '>' +
-    (id === 'all' ? '' : '<span class="swatch" style="background:' + repoColor(id) + '"></span>') +
-    esc(label) + (count ? ' <span class="n">' + count.toLocaleString() + '</span>' : '') + '</span>';
+  const el = $('repos');
+  // One repository needs no picker -- there is nothing to pick between.
+  el.style.display = repos.length < 2 ? 'none' : '';
+  if (repos.length < 2) return;
 
-  $('repos').innerHTML =
-    chip('all', 'All repos') + repos.map((r) => chip(r.id, r.name, r.symbols)).join('');
+  el.innerHTML =
+    '<option value="all">All repos (' + repos.length + ')</option>' +
+    repos.map((r) => '<option value="' + r.id + '">' +
+      esc(r.name) + ' — ' + r.symbols.toLocaleString() + ' symbols' + '</option>').join('');
+
+  // Rebuilding the options drops the selection, and the canvas can change the
+  // scope too (clicking a repository hub), so the value is set from the state.
+  el.value = activeRepo === null ? 'all' : String(activeRepo);
+  el.dataset.scoped = activeRepo !== null;
+  el.style.color = activeRepo === null ? '' : repoColor(activeRepo);
 }
 
-$('repos').addEventListener('click', (e) => {
-  const chip = e.target.closest('.repo');
-  if (!chip) return;
-  activeRepo = chip.dataset.r === 'all' ? null : Number(chip.dataset.r);
+$('repos').addEventListener('change', (e) => {
+  activeRepo = e.target.value === 'all' ? null : Number(e.target.value);
   renderRepos();
   // Scoping changes what a search means, so the canvas starts fresh.
   const q = $('q').value.trim();

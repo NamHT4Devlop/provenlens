@@ -366,9 +366,11 @@ codelens serve ~/work/services --open
 
 Or list them explicitly: `codelens serve ./order-service ./notify-service`.
 
-The toolbar has one chip per repository — **select nothing and you see them all**, select one and
-the view narrows to it. Each repo gets its own hue, drawn as a **ring around the node** so it never
-fights the symbol-kind colour.
+The toolbar has a repository dropdown — **"All repos" shows every one of them**, picking one
+narrows the view to it. Clicking a repository's hub on the canvas moves the dropdown too, so the
+two never disagree about what you are looking at. Each repo gets its own hue, drawn as a **ring
+around the node** so it never fights the symbol-kind colour; while the view is scoped, the dropdown
+wears that same hue.
 
 **Cross-repo edges.** This is the actual reason to open several repos at once: an SQS producer in
 one service and its listener in another are connected only by **the queue name**, with no call
