@@ -1,5 +1,5 @@
 import { test, before, after, describe } from 'node:test';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
@@ -821,4 +821,43 @@ describe('a chained call links to the inner call, not its arguments', () => {
       );
     });
   }
+});
+
+describe('JVM signatures read with javap', () => {
+  // The JDK is what makes this testable without downloading anything, but a
+  // machine without one is a legitimate setup, so the check is conditional.
+  const haveJavap = (() => {
+    try {
+      spawnSync('javap', ['-help']);
+      return spawnSync('javap', ['java.lang.String']).status === 0;
+    } catch {
+      return false;
+    }
+  })();
+
+  test('reads return types and generic arguments off a JDK class', { skip: !haveJavap }, async () => {
+    const { readSignatures } = await import('../src/jvm.js');
+    const [optional] = readSignatures(['java.util.Optional'], '');
+    assert.ok(optional, 'javap should describe java.util.Optional');
+    assert.equal(optional.fqn, 'java.util.Optional');
+
+    const of = optional.members.find((m) => m.name === 'of');
+    assert.ok(of, `expected of(), saw ${optional.members.map((m) => m.name).slice(0, 8)}`);
+    assert.match(of.returns, /^java\.util\.Optional</, 'the generic argument must survive');
+    assert.equal(of.arity, 1);
+
+    // A constructor returns nothing and would poison a chain if kept.
+    assert.ok(
+      !optional.members.some((m) => m.name === 'Optional'),
+      'constructors are not members that carry a return type',
+    );
+  });
+
+  test('a name the classpath does not have is simply absent', { skip: !haveJavap }, async () => {
+    const { readSignatures } = await import('../src/jvm.js');
+    const found = readSignatures(['java.util.List', 'com.example.NotAThing'], '');
+    const names = found.map((c) => c.fqn);
+    assert.ok(names.includes('java.util.List'), 'the real one is still read');
+    assert.ok(!names.includes('com.example.NotAThing'), 'the imaginary one yields nothing');
+  });
 });
