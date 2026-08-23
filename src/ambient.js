@@ -21,6 +21,48 @@ import { join, relative, dirname } from 'node:path';
 const MAX_FILES_PER_PACKAGE = 120;
 const MAX_BYTES = 1_500_000;
 
+/** How deep a workspace package may sit before it stops being worth finding. */
+const MAX_WORKSPACE_DEPTH = 3;
+
+/**
+ * Every `node_modules` this project installs into, nearest first.
+ *
+ * A single root directory is the exception in anything larger than a demo. A
+ * pnpm or yarn workspace installs each package's dependencies beside that
+ * package -- agenta keeps `zod` in `oss/node_modules`, not at the top -- so
+ * looking only at the root found 8 packages out of several hundred, and every
+ * chain through the other several hundred stopped dead.
+ *
+ * pnpm's own flat store is included last: it holds every version of everything
+ * the workspace resolved, which is the right answer when nothing nearer has it.
+ */
+export function nodeModulesRoots(root) {
+  const found = [];
+  const walk = (dir, depth) => {
+    if (depth > MAX_WORKSPACE_DEPTH) return;
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      if (!e.isDirectory() && !e.isSymbolicLink()) continue;
+      // A dotfile directory is tooling, not source, and descending into one
+      // node_modules to find another is somebody else's dependency tree.
+      if (e.name === 'node_modules') {
+        found.push(join(dir, e.name));
+      } else if (!e.name.startsWith('.')) {
+        walk(join(dir, e.name), depth + 1);
+      }
+    }
+  };
+  walk(root, 0);
+  const store = join(root, 'node_modules', '.pnpm', 'node_modules');
+  if (existsSync(store)) found.push(store);
+  return found;
+}
+
 /** `@scope/name/sub/path` -> `@scope/name`; `pkg/sub` -> `pkg`. */
 export function packageOf(specifier) {
   if (!specifier || specifier.startsWith('.')) return null;
@@ -34,10 +76,18 @@ export function packageOf(specifier) {
  * in the whole standard library for one `Promise`, so the neighbourhood is
  * where this stops.
  */
-function declarationsFor(root, pkg) {
-  const base = join(root, 'node_modules', pkg);
-  const typesBase = join(root, 'node_modules', '@types', pkg.replace('@', '').replace('/', '__'));
-  const home = existsSync(base) ? base : existsSync(typesBase) ? typesBase : null;
+function declarationsFor(roots, pkg) {
+  const typesName = join('@types', pkg.replace('@', '').replace('/', '__'));
+  let home = null;
+  for (const nm of roots) {
+    const base = join(nm, pkg);
+    const typesBase = join(nm, typesName);
+    if (existsSync(base)) {
+      home = base;
+      break;
+    }
+    if (!home && existsSync(typesBase)) home = typesBase;
+  }
   if (!home) return [];
 
   let entry = null;
@@ -104,7 +154,8 @@ export function importedPackages(db) {
  * Returns what was read, for the caller to report.
  */
 export function indexAmbient(db, root, { parsers, extractorFor, langForPath }) {
-  if (!existsSync(join(root, 'node_modules'))) return { packages: 0, files: 0, symbols: 0 };
+  const roots = nodeModulesRoots(root);
+  if (!roots.length) return { packages: 0, files: 0, symbols: 0 };
 
   const insertFile = db.prepare(
     `INSERT INTO files (path, lang, hash, pkg, lines, indexed_at, external, owner)
@@ -129,7 +180,7 @@ export function indexAmbient(db, root, { parsers, extractorFor, langForPath }) {
   const stats = { packages: 0, files: 0, symbols: 0 };
 
   for (const pkg of importedPackages(db)) {
-    const files = declarationsFor(root, pkg);
+    const files = declarationsFor(roots, pkg);
     if (!files.length) continue;
     stats.packages++;
 
