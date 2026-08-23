@@ -247,8 +247,8 @@ codelens itself.
 | | Extractor | Resolver | What it does well |
 |---|---|---|---|
 | Java | ✅ | ✅ | Spring DI across interfaces, overload selection **by parameter type**, `this.field`, lambda parameters |
-| Ruby | ✅ | ✅ | **Rails conventions**: `belongs_to`/`has_many`/`attr_*`/`scope` produce typed virtual methods; `include` mixins; **RSpec** `let`/`subject`/`described_class` are typed, so a spec connects to the code it tests |
-| TypeScript / TSX | ✅ | ✅ | **Real module resolution**: tsconfig `paths`, barrel files, `export *`; parameter properties; return-type inference |
+| Ruby | ✅ | ✅ | **Rails conventions**: `belongs_to`/`has_many`/`attr_*`/`scope`/`delegate` produce typed virtual methods; `include` mixins and concern `included do` blocks; `method_missing` as a labelled last resort; **RSpec** `let`/`subject`/`described_class` are typed, so a spec connects to the code it tests |
+| TypeScript / TSX | ✅ | ✅ | **Real module resolution**: tsconfig `paths`, barrel files, `export *`; parameter properties; return-type inference; **decorators recorded like Java annotations** (so `@SqsMessageHandler` binds queues); `Array<T>` read as `T[]` |
 | JavaScript | ✅ | ✅ | Shares the module graph with TypeScript |
 | XML, SQL | — | — | No grammar, but **read by the binding plugins** (MyBatis mappers, Flyway migrations) |
 | `db/schema.rb` | — | — | Database columns become ActiveRecord attributes. `account.uri` works because a column exists, and the schema file is the **only** place in the source that records it |
@@ -262,7 +262,7 @@ that. A plugin declares both ends, and one shared pass matches them:
 |---|---|---|
 | `mybatis` | `@Mapper` interface method ↔ `<select id="...">` in XML | `implemented-by` (0.95) |
 | `camel` | `from("direct:x")` ↔ `.to("direct:x")` | `routes-to` (0.9) |
-| `sqs` | Producer ↔ `@SqsListener` / Shoryuken worker, **across languages** | `sends-to` (0.85) |
+| `sqs` | Producer ↔ `@SqsListener` / NestJS `@SqsMessageHandler` / Shoryuken worker, **across languages** | `sends-to` (0.85) |
 | `flyway` | `V*__*.sql` ↔ the entity or mapper touching that table | `touches-table` (0.6) |
 
 SQL statements in XML and each migration file **become real symbols** — `codelens explore
@@ -318,18 +318,24 @@ And proof **always runs before** assumption: if it can be proven, it is never gu
 | mall | Spring Boot + MyBatis, 524 files | **94.5%** | 94.5% |
 | camel-spring-boot-examples | ~50 Camel examples | **91.1%** | 90.1% |
 | mybatis jpetstore | MyBatis + Flyway | **89.1%** | 89.1% |
-| agenta | TS/JS, 3891 files | **85.0%** | 52.3% |
-| nest | TS, 1817 files | **84.2%** | 75.1% |
+| nest | TS, 1904 files | **85.5%** | 77.0% |
+| agenta | TS/JS, 3891 files | **85.0%** † | 52.3% |
 | mybatis spring-boot-starter | MyBatis | **81.3%** | 81.3% |
-| rubygems.org | Rails, 1338 files | **79.7%** | 77.2% |
+| rubygems.org | Rails, 1392 files | **79.1%** | 76.7% |
 | spring-cloud-aws | Java, 803 files | **77.7%** | 76.8% |
-| human-essentials | Rails, 994 files | **77.7%** | 76.4% |
+| human-essentials | Rails, 994 files | **77.7%** † | 76.4% |
 | express | plain JS, 141 files | **77.4%** | 52.4% |
 | halo | Java 1349 + TS 862 | **77.0%** | 73.3% |
-| mastodon | Rails 3258 + TS 734 | **74.5%** | 72.3% |
+| mastodon | Rails + TS, 4199 files | **73.9%** | 71.7% |
 
 The last column is the self-audit: assume **every** runtime judgement is wrong, and see what
-survives.
+survives. († measured before the 2026-08-23 resolver changes; the clone is no longer on disk.)
+
+Two of the Rails numbers *fell* when `delegate` support landed, for the same reason the
+`db/schema.rb` change lowered them once before: every forwarding method the macro writes joins the
+denominator, and the ones delegating into gem-typed targets are honest new misses. The graph gained
+the forwards and their edges; the percentage paid for it. nest moved the other way — decorators
+used to be miscounted as unresolvable calls, and recording them as annotations removed that noise.
 
 **A note on the two Rails repos:** the numbers for human-essentials and rubygems.org *dropped* when
 `db/schema.rb` reading was switched on, and that is the correct outcome. Before it, `created_at`
@@ -353,14 +359,33 @@ Re-measure any time with `./scripts/bench.js <repo> --detail`.
 | `codelens node <name>` | One symbol in full, with callers and callees |
 | `codelens callers <name>` / `callees <name>` | One direction of the relationship |
 | `codelens impact <name>` | Blast radius |
-| `codelens affected [files...]` | What changed files reach, and **which tests already cover it** |
+| `codelens path <from> <to>` | **Shortest directed chain** between two symbols, hop by hop — across repositories when a binding bridges them |
+| `codelens affected [files...] [--fail-if-untested]` | What changed files reach, and **which tests already cover it**; the flag exits 2 when nothing does — a CI gate |
+| `codelens export [name] [-f json\|mermaid]` | The graph around a symbol as JSON or a **Mermaid diagram** ready for a README or PR |
 | `codelens install [target]` | Register the MCP server with an agent (`--dry-run` to preview) |
 | `codelens uninit [path]` | Remove the index from a project |
 | `codelens serve [paths...] [-p 7777] [-o] [--new-token]` | **Web UI** — search and browse the graph, one repo or **many at once** |
 | `codelens mcp [path]` | MCP server over stdio |
 
-`query`, `callers`, `callees`, `impact` and `affected` all accept `--json` for piping into other
-tools.
+`query`, `callers`, `callees`, `impact`, `path`, `export` and `affected` all accept `--json` for
+piping into other tools.
+
+**Workspaces.** Every read command accepts a folder of service checkouts, not just one repository:
+run from such a folder, `query`/`explore`/`status` answer per repository under its own heading, the
+symbol commands resolve the name to whichever repo holds it (and say so when several match), and
+`path` bridges repositories through framework bindings:
+
+```
+# Path: com.shop.OrderPublisher#publishOrder → OrderAuditWorker#record  (order-service → audit-service)
+
+com.shop.OrderPublisher#publishOrder — src/OrderPublisher.java:6
+  ══╡ sqs: order-events ╞══  crosses into audit-service
+OrderAuditWorker — app/workers/order_audit_worker.rb:1
+  └─ declares [structure]
+OrderAuditWorker#record — app/workers/order_audit_worker.rb:7
+
+2 hop(s) across two repositories.
+```
 
 ### Web UI
 
@@ -402,7 +427,8 @@ source with line numbers, then **click any link to keep walking the graph** — 
 type relationships, framework bindings, blast radius. Derived symbols (a `belongs_to` reader, a
 database column, a SQL statement in XML) are labelled `derived`; test files are labelled `test`.
 `/` returns to the search box, arrow keys move through results, and the detail panel can be dragged
-wider by its left edge.
+wider by its left edge. Typing **`A -> B`** in the search box traces the shortest chain between two
+symbols and draws just that chain — the same walk `codelens path` does, bindings and all.
 
 **Themes.** Seven editor palettes, remembered across sessions: Solarized Dark (default), Solarized
 Light, Gruvbox Dark, Monokai, Nord, One Dark, and **Matrix** — black background, green monospace,
@@ -440,6 +466,13 @@ That returns which symbols changed, what reaches them, and **which existing test
 other words, the list of tests to re-run. On spring-petclinic, touching `Owner.java` produces 18
 relevant tests.
 
+As a pre-push gate, `--fail-if-untested` exits 2 when the diff touches production code that no
+existing test reaches:
+
+```bash
+git diff --name-only | codelens affected --fail-if-untested
+```
+
 ## Using it from Claude Code
 
 ```bash
@@ -454,8 +487,9 @@ claude mcp add codelens -- node ~/AI-TOOL/codelens/bin/codelens.js mcp
 ```
 
 Four tools: `codelens_explore`, `codelens_impact`, `codelens_affected`, `codelens_status`. Each
-takes a `projectPath`, so **one server serves every repository**. Indexes stay current through the
-file watcher.
+takes a `projectPath`, so **one server serves every repository** — and a `projectPath` naming a
+folder of checkouts serves them **all at once**, each answer labelled with the repository it came
+from. Indexes stay current through the file watcher.
 
 `codelens install` only auto-detects agents that already have a config file. The project-scoped
 variant (`.mcp.json` in the current directory) is **never** automatic — you have to name it
@@ -550,18 +584,20 @@ attributed to the right library. If a resolver later drops an internal call, a t
 ## Known limits
 
 - **Fluent chains** remain the largest miss bucket. Types propagate along a chain while every link
-  is in the repo; the moment it touches a library type, it stops.
+  is in the repo (`X.new.method` now included); the moment it touches a library type, it stops.
 - **Plain JS with no type annotations** gives no receiver type to infer. Reported as a miss rather
   than guessed.
-- **Cross-repo SQS**: supported — `codelens serve <workspace>` matches endpoints across indexes.
-  The CLI still works on one repo at a time.
 - **The Ruby inflector** is simple and does not handle irregulars (`people`/`person`).
 - **Annotation-style MyBatis** (`@Select` on the method) needs no binding — the SQL is already in
   the method.
+- **NestJS token DI** (`{ provide: 'X', useClass: Y }` matched to `@Inject('X')`) needs
+  object-literal extraction the TS extractor does not do yet; decorators themselves are recorded.
 
 ## Roadmap
 
-- [ ] Bring multi-repo down to the CLI and MCP (currently web UI only)
-- [ ] Ruby: `delegate`, `method_missing`, concern `included do`
-- [ ] TS: generics, decorators (NestJS/Angular DI)
-- [ ] Read `.d.ts` from `node_modules` to resolve library APIs
+- [ ] NestJS custom-provider tokens as a binding plugin (needs object-literal extraction)
+- [ ] Read `.d.ts` from `node_modules` to type fluent chains through library calls — deliberately
+      deferred: the evidence model already **proves** those calls are library calls, and indexing
+      code you do not own would add thousands of nodes for little graph value. It becomes worth it
+      only to keep a chain alive past a library hop, which is the one thing the current model
+      cannot do.
