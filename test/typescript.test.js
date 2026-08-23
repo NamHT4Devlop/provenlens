@@ -163,3 +163,23 @@ describe('decorators and generics', () => {
     assert.equal(normalizeType('Array<Map<string, number>>'), 'Array');
   });
 });
+
+describe('CommonJS, which no export keyword announces', () => {
+  test('a function declaration is a constructor, across a require()', () => {
+    // `var Ledger = require('./legacy')` where legacy does `module.exports =
+    // Ledger` and Ledger is a plain function. Every hop of that was invisible.
+    const built = callersOf(db, one('Ledger').id).map((c) => c.fqn);
+    assert.ok(
+      built.some((f) => f.includes('build')),
+      `expected the require()d constructor to be reached, saw ${built}`,
+    );
+  });
+
+  test('require() resolves a named member the same way an import does', () => {
+    const callers = callersOf(db, one('formatDonor').id).map((c) => c.fqn);
+    assert.ok(
+      callers.some((f) => f.includes('build')),
+      `expected the require()d function to be reached, saw ${callers}`,
+    );
+  });
+});

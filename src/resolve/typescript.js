@@ -235,7 +235,10 @@ export function resolveTypeScript(db, root) {
       if (imp.kind !== 'import' || imp.simple !== name) continue;
       const target = resolveModule(module, imp.fqn);
       const hit = target && resolveExport(target, imp.orig ?? name);
-      if (hit) return types.get(hit.fqn) ?? null;
+      if (!hit) continue;
+      // A CommonJS module often exports a plain function used as a
+      // constructor, which is not in the type table but is one all the same.
+      return types.get(hit.fqn) ?? (hit.kind === 'function' ? asConstructible(name, fileId, module) : null);
     }
 
     const matches = [...types.values()].filter((t) => t.name === name);
@@ -717,6 +720,24 @@ export function resolveTypeScript(db, root) {
         continue;
       }
       // Otherwise it may be a method on `this` reached without the prefix.
+    }
+
+    // `import * as fmt from './format'` / `var fmt = require('./format')`
+    // binds the module itself, so a call on it names one of its exports.
+    if (ref.receiver && /^[A-Za-z_$][\w$]*$/.test(ref.receiver)) {
+      const module = file?.pkg;
+      let viaNamespace = null;
+      for (const imp of importsByFile.get(ref.file_id) ?? []) {
+        if (imp.kind !== 'import' || !imp.is_wildcard || imp.simple !== ref.receiver) continue;
+        const mod = resolveModule(module, imp.fqn);
+        viaNamespace = mod ? resolveExport(mod, ref.name) : null;
+        if (viaNamespace) break;
+      }
+      if (viaNamespace) {
+        insertEdge.run(ref.from_symbol_id, viaNamespace.id, 'calls', 1.0, 'direct', ref.line);
+        stats.direct++;
+        continue;
+      }
     }
 
     const type = receiverType(ref, fromSymbol, 0);
