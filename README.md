@@ -313,9 +313,9 @@ And proof **always runs before** assumption: if it can be proven, it is never gu
 ### Measured on real repositories
 
 Seventeen repositories, none of them chosen for its score. The six added last were named in
-advance — two self-contained Java, two Rails, two TypeScript — and four of them landed below the
-median the other eleven had, which pulled it from 89.2% down to 88.1%. That is what picking before
-measuring costs, and it is the only way the table means anything.
+advance — two self-contained Java, two Rails, two TypeScript — and four landed below the median the
+other eleven had, pulling it from 89.2% to 86.2%. That is what picking before measuring costs, and
+it is the only way the table means anything.
 
 | Repo | Stack | In-repo resolution | Floor if every assumption were wrong |
 |---|---|---|---|
@@ -324,21 +324,23 @@ measuring costs, and it is the only way the table means anything.
 | mybatis spring-boot-starter | MyBatis, 154 files | **98.7%** | **98.7%** |
 | camel-spring-boot-examples | ~50 Camel examples, 325 files | **97.8%** | **97.3%** |
 | mybatis jpetstore | MyBatis + Flyway, 43 files | **97.8%** | **97.8%** |
-| TheAlgorithms/Java | plain Java, 1588 files | **94.7%** | **94.0%** |
+| TheAlgorithms/Java | plain Java, 1588 files | **97.1%** | **96.4%** |
 | express | plain JS, 141 files | **91.4%** | **91.1%** |
-| java-design-patterns | Java, 1991 files | **89.1%** | 86.8% |
+| java-design-patterns | Java, 1991 files | **90.2%** | 87.8% |
 | rubygems.org | Rails, 1392 files | **88.1%** | 80.4% |
 | mastodon | Rails + TS, 4199 files | **87.4%** | 79.8% |
 | spring-cloud-aws | Java, 816 files | **86.2%** | 84.7% |
-| nest | TS, 1904 files | **85.7%** | 80.8% |
-| halo | Java + TS, 2228 files | **85.4%** | 83.2% |
+| halo | Java + TS, 2228 files | **85.5%** | 83.3% |
 | solidus | Rails, 2329 files | **83.4%** | 74.7% |
-| discourse | Rails, 14358 files | **78.3%** | 72.2% |
-| typeorm | TS, 3575 files | **72.1%** | 65.6% |
-| axios | JS, 217 files | **64.7%** | 54.2% |
+| nest | TS, 1904 files | **82.9%** | 77.3% |
+| discourse | Rails, 14358 files | **78.2%** | 72.2% |
+| typeorm | TS, 3575 files | **71.8%** | 65.3% |
+| axios | JS, 217 files | **64.3%** | 53.9% |
 
 **Seven of the seventeen clear 90% on both columns**, and which seven is the most useful thing the
-table says. It does not sort by repository size or by language. It sorts by **who declares the
+table says. Three of those rows moved *down* in the last pass and were kept: an import naming a
+library type used to fall through to a same-named class in the repository, and nest lost about 3%
+of its links when that stopped. Those links were inventions. It does not sort by repository size or by language. It sorts by **who declares the
 receiver's type**:
 
 - Types declared *inside the repository* — Spring with Lombok, MyBatis, plain Java, a small
