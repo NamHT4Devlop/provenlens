@@ -412,7 +412,28 @@ export function resolveJava(db) {
     if (typeof recv !== 'string' || !recv) return null;
     const target = findMethod(recv, ref.name, ref.arity, ref, fromSymbol?.container_fqn);
     if (!target?.type_args) return null;
-    return resolveTypeName(target.type_args, ref.file_id, fromSymbol?.container_fqn ?? null);
+
+    const named = resolveTypeName(target.type_args, ref.file_id, fromSymbol?.container_fqn ?? null);
+    if (named) return named;
+
+    // `List<E>.stream()` is declared to return `Stream<E>` -- a type variable,
+    // not a type. Substituting it properly means tracking type parameters
+    // through the whole signature; what a container method does in practice is
+    // pass its element along, so the receiver's element type is the answer.
+    // Only for a name that looks like a variable: a real type that simply is
+    // not indexed must stay unknown rather than borrow one.
+    if (!/^[A-Z][0-9]?$/.test(target.type_args)) return null;
+    if (ref.receiver_ref_id != null) {
+      const inner = elementTypeOfRef(refById.get(ref.receiver_ref_id), depth + 1);
+      if (inner) return inner;
+    }
+    const holder =
+      localsByScope.get(ref.from_symbol_id)?.get(ref.receiver) ??
+      fieldElementOf(fromSymbol?.container_fqn, ref.receiver);
+    if (holder?.args) {
+      return resolveTypeName(holder.args, ref.file_id, fromSymbol?.container_fqn ?? null);
+    }
+    return null;
   }
 
   /**
