@@ -218,6 +218,49 @@ program
   });
 
 program
+  .command('doctor')
+  .argument('[path]', 'project directory')
+  .description('why this repository resolves as it does, and what would change it')
+  .action(async (path) => {
+    const { root, db } = useProject(path);
+    const { diagnose } = await import('../src/doctor.js');
+    const { langs, findings, misses } = diagnose(db, root);
+
+    const s = projectStats(db);
+    const external = db.prepare('SELECT COUNT(*) AS n FROM unresolved WHERE external = 1').get().n;
+    const linked = s.refs - s.unresolved;
+    const inRepo = s.refs - external;
+    console.log(`root:    ${root}`);
+    console.log(
+      `stack:   ${[...langs].map(([l, n]) => `${l} ${n}`).join(', ') || 'nothing indexed'}`,
+    );
+    console.log(
+      `reading: ${inRepo ? ((linked / inRepo) * 100).toFixed(1) : '0.0'}% of the calls that could be in this repo`,
+    );
+
+    const blocking = findings.filter((f) => f.level === 'blocking');
+    const rest = findings.filter((f) => f.level !== 'blocking');
+
+    if (!blocking.length) {
+      console.log('\nNothing is missing that this machine could supply.');
+    }
+    for (const group of [blocking, rest]) {
+      for (const f of group) {
+        const tag = f.level === 'blocking' ? 'MISSING' : f.level === 'inherent' ? 'INHERENT' : 'minor';
+        console.log(`\n[${tag}] ${f.what}`);
+        console.log(`  why: ${f.why}`);
+        console.log(`  fix: ${f.fix}`);
+      }
+    }
+
+    if (misses.total) {
+      console.log(`\nWhat the ${misses.total} remaining miss(es) are:`);
+      for (const r of misses.rows) console.log(`  ${String(r.n).padStart(7)}  ${r.reason}`);
+    }
+    console.log('\nRe-run after any fix above — the number is measured, never predicted.');
+  });
+
+program
   .command('status')
   .argument('[path]', 'project directory')
   .description('show index size, language coverage and resolution quality')
