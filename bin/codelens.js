@@ -254,6 +254,23 @@ function printStatus(root, db) {
         );
       }
     }
+
+    // Declarations read from dependencies: not this project's code, but what
+    // lets a chain be typed through a library instead of stopping at one.
+    const ambient = db
+      .prepare(
+        `SELECT COUNT(DISTINCT owner) AS packages, COUNT(*) AS files,
+                SUM(CASE WHEN path LIKE 'jvm:%' THEN 1 ELSE 0 END) AS jvm
+           FROM files WHERE external = 1`,
+      )
+      .get();
+    if (ambient?.files) {
+      const dts = ambient.files - (ambient.jvm ?? 0);
+      const parts = [];
+      if (dts > 0) parts.push(`${dts} declaration file(s)`);
+      if (ambient.jvm > 0) parts.push(`${ambient.jvm} jvm type(s)`);
+      console.log(`dependencies read: ${ambient.packages} package(s); ${parts.join(', ')}`);
+    }
     console.log('by language:');
     for (const l of s.byLang) {
       // xml and sql have no grammar but are read by the binding plugins, so

@@ -144,6 +144,32 @@ src/Formatter.java:3
 - demo.Greeter#greet — src/Greeter.java:5 [direct]
 ```
 
+### 5b. Optional — install the project's dependencies
+
+codelens reads type declarations from a project's dependencies, so a call chain
+can be typed *through* a library instead of stopping at one. Nothing is required
+for this; it simply uses what is already on disk.
+
+| Language | What is read | How to have it |
+|---|---|---|
+| TypeScript / JavaScript | `.d.ts` of the packages the code imports | `npm install` / `yarn` / `pnpm install` |
+| Java | signatures via `javap` — the JDK's own classes, plus any jar a build tool has fetched | a JDK on `PATH`; `./mvnw` or `./gradlew` for third-party jars |
+
+The JDK half needs no download at all, which is most of what it is worth: `Optional`, `List` and
+`CompletableFuture` stop being assumptions and become proofs, and the floor figure rises with them.
+
+Whatever is read this way is marked external. It never appears in a search, never counts towards
+coverage, and is never the target of an edge — a call landing there is a **library call, proven by
+the declaration** rather than assumed from a name.
+
+```bash
+codelens status
+```
+
+```
+dependencies read: 15 package(s); 285 declaration file(s), 312 jvm type(s)
+```
+
 ### 6. Keep the index fresh
 
 The index does not update itself unless you ask it to. Three options, cheapest first:
