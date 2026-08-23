@@ -36,6 +36,61 @@ export function singularize(word) {
 
 const ASSOCIATION_MACROS = new Set(['belongs_to', 'has_one', 'has_many', 'has_and_belongs_to_many']);
 
+/**
+ * Finders that hand back an instance of the model they are called on. These
+ * are ActiveRecord's, and the constant on the left names the class -- the
+ * resolver still checks that class really is a record before trusting it.
+ */
+const AR_FINDERS = new Set([
+  'new', 'create', 'create!', 'find', 'find!', 'find_by', 'find_by!', 'first', 'last', 'take',
+  'find_or_create_by', 'find_or_create_by!', 'find_or_initialize_by', 'build',
+]);
+
+/** Factory helpers whose symbol argument names the model they build. */
+const FACTORY_BARE = new Set(['create', 'build', 'build_stubbed', 'create_list', 'build_list']);
+const FACTORY_CONST = new Set(['Fabricate', 'FactoryBot', 'FactoryGirl']);
+
+/**
+ * The class an expression yields, when the source says so plainly:
+ *
+ *   User.new / User.find(id) / User.find_by(...)   -> User
+ *   Fabricate(:user) / create(:user)               -> User
+ *
+ * A factory's symbol argument names its model by construction -- that is the
+ * whole contract of `Fabricate(:user)` -- and in a spec suite it is the only
+ * thing that ever says what `let(:user)` holds.
+ *
+ * Returns { name, via } so the caller can keep the two apart: a finder still
+ * has to be checked against the class's ancestry, a factory does not.
+ */
+function modelTypeOf(node, src, childByField, argNodes, text) {
+  if (!node || node.type !== 'call') return null;
+  const method = childByField(node, 'method');
+  const recv = childByField(node, 'receiver');
+  const args = argNodes(node);
+  const symbolArg = args.find((a) => a?.type === 'simple_symbol');
+  const asModel = (sym) => classify(text(sym, src).replace(/^:/, ''));
+
+  // `Fabricate(:user)` -- the constant IS the callee, so there is no receiver.
+  if (!recv && method?.type === 'constant' && FACTORY_CONST.has(text(method, src))) {
+    return symbolArg ? { name: asModel(symbolArg), via: 'factory' } : null;
+  }
+  // `Fabricate.build(:user)`, `FactoryBot.create(:user)`
+  if (recv?.type === 'constant' && FACTORY_CONST.has(text(recv, src))) {
+    return symbolArg ? { name: asModel(symbolArg), via: 'factory' } : null;
+  }
+  // Bare `create(:user)` -- the symbol argument is what marks it as a factory
+  // rather than some other create.
+  if (!recv && method?.type === 'identifier' && FACTORY_BARE.has(text(method, src)) && symbolArg) {
+    return { name: asModel(symbolArg), via: 'factory' };
+  }
+  // `User.find(id)` and friends.
+  if (recv?.type === 'constant' && method && AR_FINDERS.has(text(method, src))) {
+    return { name: text(recv, src), via: text(method, src) === 'new' ? 'construct' : 'finder' };
+  }
+  return null;
+}
+
 /** The value of a `key:` argument in a macro call, as plain text. */
 function keywordArg(args, key) {
   for (const arg of args) {
@@ -250,10 +305,9 @@ export function extractRuby(tree, src, ctx = {}) {
     const scan = (n, depth) => {
       if (found || depth > 6) return;
       if (n.type === 'call') {
-        const m = childByField(n, 'method');
-        const r = childByField(n, 'receiver');
-        if (m && r && text(m, src) === 'new' && r.type === 'constant') {
-          found = text(r, src);
+        const model = modelTypeOf(n, src, childByField, argNodes, text);
+        if (model) {
+          found = model.name;
           return;
         }
       }
@@ -320,7 +374,8 @@ export function extractRuby(tree, src, ctx = {}) {
       if (paramsNode) {
         for (let i = 0; i < paramsNode.namedChildCount; i++) {
           const p = paramsNode.namedChild(i);
-          if (p) params.push(text(p, src).split(/[:=]/)[0].trim());
+          if (!p) continue;
+          params.push(text(p, src).split(/[:=]/)[0].trim());
         }
       }
 
@@ -337,6 +392,13 @@ export function extractRuby(tree, src, ctx = {}) {
         annotations: [],
         ...pos(node),
       });
+
+      // Recorded so the resolver can tell "a name we simply cannot type" from
+      // "a name this repository never declares". Only the second is proof that
+      // the value came from outside.
+      for (const name of params) {
+        if (/^[a-z_][\w]*$/.test(name)) locals.push({ scopeTmpId: id, name, type_name: null, init_kind: 'param' });
+      }
 
       const body = childByField(node, 'body');
       if (body) walk(body, nest, id, false, classScopeId);
@@ -385,10 +447,12 @@ export function extractRuby(tree, src, ctx = {}) {
           methodName === 'subject' ? (symbolArgName(args[0], src) ?? 'subject') : symbolArgName(args[0], src);
         const block = childByField(node, 'block');
         const built = constructedTypeIn(block) ?? describedClass;
-        if (bound && built) {
-          locals.push({ scopeTmpId: fileScopeId, name: bound, type_name: built });
+        // Recorded even untyped: `let(:thing)` still declares the name, and a
+        // name this file declares must not be mistaken for one from a gem.
+        if (bound) {
+          locals.push({ scopeTmpId: fileScopeId, name: bound, type_name: built ?? null, init_kind: 'let' });
           if (methodName === 'subject' && bound !== 'subject') {
-            locals.push({ scopeTmpId: fileScopeId, name: 'subject', type_name: built });
+            locals.push({ scopeTmpId: fileScopeId, name: 'subject', type_name: built ?? null, init_kind: 'let' });
           }
         }
       }
@@ -443,19 +507,43 @@ export function extractRuby(tree, src, ctx = {}) {
       return;
     }
 
+    // `each do |item|` binds a name this scope did not declare; recording it
+    // keeps the "declared nowhere" proof from firing on a block variable.
+    if ((node.type === 'block' || node.type === 'do_block') && scopeId != null) {
+      let bp = childByField(node, 'parameters');
+      if (!bp) {
+        for (let i = 0; i < node.namedChildCount; i++) {
+          if (node.namedChild(i)?.type === 'block_parameters') {
+            bp = node.namedChild(i);
+            break;
+          }
+        }
+      }
+      if (bp) {
+        for (let i = 0; i < bp.namedChildCount; i++) {
+          const name = text(bp.namedChild(i), src).split(/[:=]/)[0].trim();
+          if (/^[a-z_][\w]*$/.test(name)) {
+            locals.push({ scopeTmpId: scopeId, name, type_name: null, init_kind: 'block-param' });
+          }
+        }
+      }
+    }
+
     if (node.type === 'assignment') {
       const left = childByField(node, 'left');
       const right = childByField(node, 'right');
-      // `x = Foo.new` is the one assignment that types a variable with certainty.
-      if (left && right && right.type === 'call') {
-        const rmethod = childByField(right, 'method');
-        const rrecv = childByField(right, 'receiver');
-        if (rmethod && rrecv && text(rmethod, src) === 'new' && rrecv.type === 'constant') {
+      // `@rubygem = Rubygem.find(id)` is how a Rails controller says what the
+      // ivar holds, and nothing else in the file ever will.
+      if (left && right) {
+        const model = modelTypeOf(right, src, childByField, argNodes, text);
+        const name = text(left, src);
+        if (/^@?[a-z_][\w]*$/.test(name)) {
           locals.push({
             // An ivar outlives the method, so it belongs to the class scope.
             scopeTmpId: left.type === 'instance_variable' ? classScopeId : scopeId,
-            name: text(left, src),
-            type_name: text(rrecv, src),
+            name,
+            type_name: model?.name ?? null,
+            init_kind: model?.via ?? 'assigned',
           });
         }
       }

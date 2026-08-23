@@ -76,10 +76,13 @@ export function resolveRuby(db) {
   }
 
   const localsByScope = new Map();
-  for (const row of db.prepare('SELECT scope_symbol_id, name, type_name FROM locals').all()) {
+  for (const row of db.prepare('SELECT scope_symbol_id, name, type_name, init_kind FROM locals').all()) {
     if (row.scope_symbol_id == null) continue;
     if (!localsByScope.has(row.scope_symbol_id)) localsByScope.set(row.scope_symbol_id, new Map());
-    localsByScope.get(row.scope_symbol_id).set(row.name, row.type_name);
+    localsByScope.get(row.scope_symbol_id).set(row.name, {
+      type: row.type_name,
+      init: row.init_kind,
+    });
   }
 
   const symbolById = new Map();
@@ -178,6 +181,38 @@ export function resolveRuby(db) {
   }
 
   /**
+   * What a recorded local is worth as a receiver type.
+   *
+   * `X.new` and a factory both say outright what they build. A finder --
+   * `Rubygem.find(id)` -- only holds if Rubygem really is a record, which the
+   * ancestry says: a plain PORO with a `find` of its own would return anything
+   * at all, and assuming otherwise would invent edges.
+   */
+  function localType(local) {
+    const fqn = resolveTypeName(local.type);
+    if (!fqn) return null;
+    if (local.init === 'finder' && !isRecord(fqn)) return null;
+    const via = local.init === 'factory' || local.init === 'finder' ? 'rails-association' : 'direct';
+    return { type: fqn, via };
+  }
+
+  /** Does this class descend from ActiveRecord, as the source declares it? */
+  const recordMemo = new Map();
+  function isRecord(fqn) {
+    if (recordMemo.has(fqn)) return recordMemo.get(fqn);
+    recordMemo.set(fqn, false);
+    const chain = typeChain(fqn);
+    const named = chain.some((t) =>
+      (t.supertypes ?? []).some((sup) => /ApplicationRecord|ActiveRecord::Base|ActiveModel/.test(sup)),
+    );
+    // An unindexed ancestor is the usual case: ApplicationRecord itself lives
+    // in the app, but its parent does not.
+    const answer = named || chain.some((t) => t.fqn === 'ApplicationRecord');
+    recordMemo.set(fqn, answer);
+    return answer;
+  }
+
+  /**
    * Returns { type, via } or null (unknown) / undefined (external, stop trying).
    */
   function receiverInfo(ref, fromSymbol, enclosingClassId, depth = 0) {
@@ -215,11 +250,13 @@ export function resolveRuby(db) {
       return undefined; // genuinely chained or complex
     }
 
-    const local = localsByScope.get(ref.from_symbol_id)?.get(raw);
-    if (local) return { type: resolveTypeName(local), via: 'direct' };
-
-    const ivar = enclosingClassId != null ? localsByScope.get(enclosingClassId)?.get(raw) : null;
-    if (ivar) return { type: resolveTypeName(ivar), via: 'direct' };
+    const local =
+      localsByScope.get(ref.from_symbol_id)?.get(raw) ??
+      (enclosingClassId != null ? localsByScope.get(enclosingClassId)?.get(raw) : null);
+    if (local) {
+      const typed = localType(local);
+      if (typed) return typed;
+    }
 
     // The Rails payoff: `donor.name` where `donor` is a belongs_to reader.
     const reader = findMember(enclosing, raw, false);
@@ -227,6 +264,20 @@ export function resolveRuby(db) {
       const isGenerated = JSON.parse(reader.modifiers || '[]').includes('generated');
       const t = resolveTypeName(reader.type_name);
       if (t) return { type: t, via: isGenerated ? 'rails-association' : 'direct' };
+    }
+
+    // The receiver itself is declared nowhere in this repository -- not a
+    // local, not a parameter, not a block variable, not a method on anything
+    // indexed. Then whatever it holds was not made here, so the call on it
+    // cannot land here either. `response.body` in a request spec is the shape:
+    // `response` comes from ActionDispatch, so `body` does too.
+    //
+    // This is the same proof the resolver already applies to a called name,
+    // moved one step left to the receiver. It needs every binding form to be
+    // recorded, which is why parameters and plain assignments are locals now:
+    // without them this would fire on `def deliver(donor)` and be wrong.
+    if (!local && !reader && !methodsByName.has(raw)) {
+      return { external: null };
     }
 
     return null;

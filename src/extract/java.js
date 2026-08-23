@@ -251,7 +251,9 @@ export function extractJava(tree, src) {
         ...pos(node),
       });
 
-      // A record's header params are also fields.
+      // A record's header params are also fields -- and each one compiles to
+      // an accessor of the same name. `Request(String name)` gives you
+      // `request.name()`, which is not written anywhere in the source.
       if (node.type === 'record_declaration') {
         for (const p of paramList(childByField(node, 'parameters'), src)) {
           if (!p.name) continue;
@@ -266,6 +268,20 @@ export function extractJava(tree, src) {
             supertypes: [],
             modifiers: ['private', 'final'],
             annotations: [],
+            ...pos(node),
+          });
+          addSymbol({
+            name: p.name,
+            fqn: `${fqn}#${p.name}()`,
+            kind: 'method',
+            container_fqn: fqn,
+            type_name: p.type,
+            signature: `${p.type ?? '?'} ${p.name}()  // record accessor`,
+            arity: 0,
+            supertypes: [],
+            modifiers: ['generated', 'public'],
+            annotations: ['record'],
+            generated: true,
             ...pos(node),
           });
         }
