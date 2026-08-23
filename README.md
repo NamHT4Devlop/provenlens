@@ -312,25 +312,43 @@ And proof **always runs before** assumption: if it can be proven, it is never gu
 
 ### Measured on real repositories
 
-| Repo | Stack | In-repo resolution | Floor if every assumption were wrong | Was |
-|---|---|---|---|---|
-| spring-petclinic | Spring Boot + Data, 51 files | **99.7%** | **98.6%** | 99.4% |
-| mybatis spring-boot-starter | MyBatis, 154 files | **98.7%** | **98.7%** | 81.3% |
-| mall | Spring Boot + MyBatis, 630 files | **97.8%** | **97.7%** | 94.5% |
-| camel-spring-boot-examples | ~50 Camel examples, 325 files | **97.8%** | **97.3%** | 91.1% |
-| mybatis jpetstore | MyBatis + Flyway, 43 files | **96.7%** | **96.7%** | 89.1% |
-| express | plain JS, 141 files | **91.4%** | **91.1%** | 77.4% |
-| rubygems.org | Rails, 1392 files | **88.1%** | 80.4% | 79.1% |
-| mastodon | Rails + TS, 4199 files | **87.4%** | 79.8% | 73.9% |
-| nest | TS, 1904 files | **85.6%** | 80.7% | 84.2% |
-| halo | Java + TS, 2228 files | **84.6%** | 82.4% | 77.0% |
-| spring-cloud-aws | Java, 816 files | **80.2%** | 78.8% | 77.7% |
+Seventeen repositories, none of them chosen for its score. The six added last were named in
+advance — two self-contained Java, two Rails, two TypeScript — and four of them landed below the
+median the other eleven had, which pulled it from 89.2% down to 88.1%. That is what picking before
+measuring costs, and it is the only way the table means anything.
 
-**Six of the eleven clear 90% on both columns.** Which six is not a coincidence, and the split is
-the most useful thing this table says: every repository whose receivers are typed by declarations
-*inside the repository* clears it, and every repository whose receivers are typed by a dependency
-does not. Two of the five that fall short are Ruby, where nothing declares a receiver's type at
-all.
+| Repo | Stack | In-repo resolution | Floor if every assumption were wrong |
+|---|---|---|---|
+| spring-petclinic | Spring Boot + Data, 51 files | **99.7%** | **98.6%** |
+| mall | Spring Boot + MyBatis, 630 files | **98.9%** | **98.9%** |
+| mybatis spring-boot-starter | MyBatis, 154 files | **98.7%** | **98.7%** |
+| camel-spring-boot-examples | ~50 Camel examples, 325 files | **97.8%** | **97.3%** |
+| mybatis jpetstore | MyBatis + Flyway, 43 files | **97.8%** | **97.8%** |
+| TheAlgorithms/Java | plain Java, 1588 files | **94.7%** | **94.0%** |
+| express | plain JS, 141 files | **91.4%** | **91.1%** |
+| java-design-patterns | Java, 1991 files | **89.1%** | 86.8% |
+| rubygems.org | Rails, 1392 files | **88.1%** | 80.4% |
+| mastodon | Rails + TS, 4199 files | **87.4%** | 79.8% |
+| spring-cloud-aws | Java, 816 files | **86.2%** | 84.7% |
+| nest | TS, 1904 files | **85.7%** | 80.8% |
+| halo | Java + TS, 2228 files | **85.4%** | 83.2% |
+| solidus | Rails, 2329 files | **83.4%** | 74.7% |
+| discourse | Rails, 14358 files | **78.3%** | 72.2% |
+| typeorm | TS, 3575 files | **72.1%** | 65.6% |
+| axios | JS, 217 files | **64.7%** | 54.2% |
+
+**Seven of the seventeen clear 90% on both columns**, and which seven is the most useful thing the
+table says. It does not sort by repository size or by language. It sorts by **who declares the
+receiver's type**:
+
+- Types declared *inside the repository* — Spring with Lombok, MyBatis, plain Java, a small
+  self-contained JS package. Every one of these clears 90% on both numbers.
+- Types declared by a **dependency** — Reactor in halo, the Spring test harness in
+  spring-cloud-aws, TypeORM's own generics. The declarations are not on this machine at all: the
+  clones have no `node_modules`, and there is no `~/.m2` or `~/.gradle`.
+- Types declared **nowhere** — Ruby, and JavaScript callbacks. `axios` is the clearest case in the
+  table: its tests are written as `startHTTPServer((req, res) => res.end(...))`, and nothing in
+  JavaScript ever says what `res` is. 64.7% is the honest reading of that, not a defect.
 
 **Two numbers, and the second is the one that keeps the first honest.** The floor assumes every
 judgement the resolver made without a declaration behind it was wrong — both directions. Calls
@@ -594,7 +612,7 @@ it automatically.
 yarn test
 ```
 
-131 tests across five fixture suites plus regression, security and multi-repo coverage:
+179 tests across five fixture suites plus regression, security and multi-repo coverage:
 
 | Fixture | Simulates | The chain grep cannot follow |
 |---|---|---|
@@ -616,8 +634,9 @@ attributed to the right library. If a resolver later drops an internal call, a t
 - **A receiver typed only by a library** is the largest miss bucket, and the reason the reactive
   and test-harness rows sit lowest. Types propagate along a chain while every link is in the repo;
   the moment one is declared in a JAR, a gem or `node_modules`, the chain stops.
-- **Plain JS with no type annotations** gives no receiver type to infer. Reported as a miss rather
-  than guessed.
+- **A callback parameter in JavaScript** is the sharpest form of that. `startHTTPServer((req, res)
+  => res.end(...))` says nothing about `res` anywhere, and neither does the helper it is passed to.
+  Reported as a miss rather than guessed, which is most of why axios reads 64.7%.
 - **Node object-modules** — `var app = module.exports = {}` then `app.set = function(){}` — are not
   modelled, so their members look external. Modelling them is correct in principle: express really
   does define `res.send`. It is left out because without a way to type the `req`/`res` parameters
@@ -632,8 +651,9 @@ attributed to the right library. If a resolver later drops an internal call, a t
 ## Roadmap
 
 - [ ] NestJS custom-provider tokens as a binding plugin (needs object-literal extraction)
-- [ ] Read `.d.ts` from `node_modules` to type fluent chains through library calls — deliberately
-      deferred: the evidence model already **proves** those calls are library calls, and indexing
-      code you do not own would add thousands of nodes for little graph value. It becomes worth it
-      only to keep a chain alive past a library hop, which is the one thing the current model
-      cannot do.
+- [ ] Read `.d.ts` from `node_modules` and signatures from JARs, to keep a chain alive past a
+      library hop. This is now the single change that would move halo, spring-cloud-aws, nest and
+      typeorm, and the benchmark says so plainly: every repository that misses 90% on the floor
+      misses it because a dependency, not the repository, declares the receiver's type. It needs
+      the dependencies installed first — the measurement above was taken on bare clones, with no
+      `node_modules` and no `~/.m2`.
