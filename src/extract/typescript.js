@@ -44,6 +44,21 @@ function firstOfType(node, type) {
  * Array, not a Donation, and dropping the brackets makes `store.push(...)`
  * resolve to a member of the element type, which is wrong.
  */
+/**
+ * `Table | undefined` -> `Table`. An optional is still that type wherever a
+ * member is read from it, which is precisely why TypeScript makes the author
+ * write `table!` or guard it first before doing so. A union of two *real*
+ * types still says too little to pick one, and returns null.
+ */
+function narrowNullable(raw) {
+  if (!raw.includes('|')) return raw;
+  const kept = raw
+    .split('|')
+    .map((part) => part.trim())
+    .filter((part) => part && part !== 'undefined' && part !== 'null');
+  return kept.length === 1 ? kept[0] : null;
+}
+
 export function normalizeType(raw) {
   if (!raw) return null;
   let t = raw.trim().replace(/^:\s*/, '');
@@ -55,7 +70,8 @@ export function normalizeType(raw) {
   const lt = t.indexOf('<');
   if (lt !== -1) t = t.slice(0, lt);
   t = t.replace(/\[\s*\]/g, '').trim();
-  // A union or intersection tells us too little to pick one type from.
+  t = narrowNullable(t) ?? t;
+  // A union of real types, or an intersection, tells us too little to pick one.
   if (/[|&]/.test(t)) return null;
   if (!t) return null;
   return isArray ? `${t}[]` : t;
@@ -73,8 +89,12 @@ export function elementOf(raw) {
   const lt = t.indexOf('<');
   if (lt === -1) return null;
   const inner = t.slice(lt + 1, t.lastIndexOf('>')).trim();
-  if (!inner || inner.includes(',') || inner.includes('<') || inner.includes('|')) return null;
-  return normalizeType(inner);
+  if (!inner || inner.includes(',') || inner.includes('<')) return null;
+  // `Promise<Table | undefined>` awaited is a Table: 1,061 calls in typeorm
+  // are written `table!.findColumnByName(...)`, and the `!` is the author
+  // saying so.
+  const narrowed = narrowNullable(inner);
+  return narrowed ? normalizeType(narrowed) : null;
 }
 
 /** Strips the array suffix for places that can never hold one (heritage, `new`). */

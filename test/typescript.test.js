@@ -1,7 +1,7 @@
 import { test, before, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildIndex } from './helpers.js';
-import { normalizeType, modulePathOf } from '../src/extract/typescript.js';
+import { normalizeType, elementOf, modulePathOf } from '../src/extract/typescript.js';
 import { readTsconfigPaths } from '../src/resolve/typescript.js';
 import { callersOf, calleesOf, impactOf, searchSymbols } from '../src/query.js';
 
@@ -30,8 +30,18 @@ describe('type normalisation', () => {
     assert.equal(normalizeType(': string'), 'string');
   });
 
-  test('refuses to guess at a union', () => {
-    assert.equal(normalizeType('Donation | null'), null);
+  test('refuses to guess at a union of two real types', () => {
+    assert.equal(normalizeType('Donation | Invoice'), null);
+    assert.equal(normalizeType('Donation & Serializable'), null);
+  });
+
+  test('reads an optional as the type it is optional of', () => {
+    // Not a guess: null and undefined have no members, so a call written on
+    // such a receiver can only be targeting the other side of the union --
+    // which is why TypeScript makes the author narrow or assert it first.
+    assert.equal(normalizeType('Donation | null'), 'Donation');
+    assert.equal(normalizeType('Donation | undefined'), 'Donation');
+    assert.equal(elementOf('Promise<Donation | undefined>'), 'Donation');
   });
 
   test('derives a module path from a file path', () => {
