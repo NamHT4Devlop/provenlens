@@ -638,6 +638,27 @@ export function extractTypeScript(tree, src, ctx = {}) {
           return;
         }
 
+        // `export const initTRPC = new TRPCBuilder()` -- a value another module
+        // imports by name. Only arrow functions were being recorded as
+        // symbols, so a singleton like this existed nowhere the importer could
+        // see it, and every `initTRPC.create()` in another file died at the
+        // first hop: 600-odd calls in trpc from this one declaration.
+        if (exported && scopeId === fileScope) {
+          addSymbol({
+            name: varName,
+            fqn: `${modulePath}:${varName}`,
+            kind: 'field',
+            container_fqn: modulePath,
+            type_name: typeName,
+            signature: `${varName}${typeName ? `: ${typeName}` : ''}`,
+            arity: null,
+            supertypes: [],
+            modifiers: ['export'],
+            annotations: [],
+            ...pos(node),
+          });
+        }
+
         // The initialiser is walked first so the local can name the exact ref
         // its value came from. Matching by line instead lost every multi-line
         // chain: `const m = await Test.createTestingModule({...}).compile();`
@@ -780,7 +801,13 @@ export function extractTypeScript(tree, src, ctx = {}) {
 
     for (let i = 0; i < node.namedChildCount; i++) {
       const c = node.namedChild(i);
-      if (c) walk(c, typeStack, scopeId, false);
+      // `export const x = ...` is three nodes deep: the export statement, the
+      // declaration, then the declarator that carries the name. Dropping the
+      // flag at the first hop meant nothing below an export ever knew it was
+      // one, which is why `export const initTRPC = new TRPCBuilder()` existed
+      // nowhere another module could import it from.
+      const stillExported = exported && node.type === 'lexical_declaration';
+      if (c) walk(c, typeStack, scopeId, stillExported);
     }
   }
 

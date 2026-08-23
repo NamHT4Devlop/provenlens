@@ -214,7 +214,13 @@ export function resolveTypeScript(db, root) {
     .all();
 
   for (const row of allSymbols) {
-    if (['class', 'interface', 'function'].includes(row.kind) && row.container_fqn === row.module) {
+    // `field` belongs here too: `export const initTRPC = new TRPCBuilder()` is
+    // a value another module imports by name, and leaving it out meant the
+    // importer found nothing and every chain through it stopped at one hop.
+    if (
+      ['class', 'interface', 'function', 'field'].includes(row.kind) &&
+      row.container_fqn === row.module
+    ) {
       if (!symbolsByModule.has(row.module)) symbolsByModule.set(row.module, []);
       symbolsByModule.get(row.module).push(row);
     }
@@ -614,6 +620,21 @@ export function resolveTypeScript(db, root) {
     if (/^[A-Z]/.test(raw)) {
       const asType = resolveTypeName(raw, ref.file_id, module);
       if (asType?.fqn) return asType;
+    }
+
+    // `import { initTRPC } from '...'` then `initTRPC.create()`. The import
+    // resolves to a value this project exports, and that value's declaration
+    // says what it is -- `export const initTRPC = new TRPCBuilder()`. Without
+    // this the name was known to be ours and still had no type, so the chain
+    // ended at the first hop.
+    for (const imp of importsByFile.get(ref.file_id) ?? []) {
+      if (imp.kind !== 'import' || imp.simple !== raw) continue;
+      const mod = resolveModule(module, imp.fqn);
+      const exported = mod ? resolveExport(mod, imp.orig ?? raw) : null;
+      if (!exported?.type_name) break;
+      const hit = resolveTypeName(exported.type_name, exported.file_id, exported.module);
+      if (hit) return hit;
+      break;
     }
 
     // A bare receiver that was imported comes from wherever it was imported.
