@@ -628,17 +628,27 @@ export function extractTypeScript(tree, src, ctx = {}) {
           const awaited = value?.type === 'await_expression';
           const call = awaited ? (value.namedChild(0) ?? value) : value;
           const initRefTmp = call ? (callRefByNode.get(call.id) ?? null) : null;
+          // `const res = new PassThrough()` needs no inference: the
+          // constructor names the type. Without this every such variable was
+          // untypeable, and axios -- which builds its fakes this way -- lost
+          // 300 calls to it.
+          let constructed = null;
+          if (!typeName && value?.type === 'new_expression') {
+            const ctor = childByField(value, 'constructor');
+            constructed = ctor ? bareType(text(ctor, src)) : null;
+          }
           locals.push({
             scopeTmpId: scopeId,
             name: varName,
-            type_name: typeName,
+            type_name: typeName ?? constructed,
             type_args: elementFromAnnotation(node, src),
             line: node.startPosition.row + 1,
             // Flags `const x = svc.doThing()` for return-type inference later.
             // `await` is not incidental: the callee returns Promise<T> and the
             // variable holds the T.
-            ownerRefTmp: typeName ? null : initRefTmp,
-            init_kind: typeName ? null : initRefTmp == null ? null : awaited ? 'await' : 'call',
+            ownerRefTmp: typeName || constructed ? null : initRefTmp,
+            init_kind:
+              typeName || constructed ? null : initRefTmp == null ? null : awaited ? 'await' : 'call',
           });
         }
       }
