@@ -246,9 +246,9 @@ codelens itself.
 
 | | Extractor | Resolver | What it does well |
 |---|---|---|---|
-| Java | ✅ | ✅ | Spring DI across interfaces, overload selection **by parameter type**, `this.field`, lambda parameters |
+| Java | ✅ | ✅ | Spring DI across interfaces, overload selection **by parameter type**, nested types resolved through the enclosing scope; **Lombok** (`@Data`/`@Getter`/`@Setter`/`@Value`/`@Builder`/`@Accessors`) and **record accessors** generated the way the compiler writes them; **generics carried into lambdas** — from a declared `Mono<User>`, a `User.class` argument, or a `Consumer<X>` parameter |
 | Ruby | ✅ | ✅ | **Rails conventions**: `belongs_to`/`has_many`/`attr_*`/`scope`/`delegate` produce typed virtual methods; `include` mixins and concern `included do` blocks; `method_missing` as a labelled last resort; **RSpec** `let`/`subject`/`described_class` are typed, so a spec connects to the code it tests |
-| TypeScript / TSX | ✅ | ✅ | **Real module resolution**: tsconfig `paths`, barrel files, `export *`; parameter properties; return-type inference; **decorators recorded like Java annotations** (so `@SqsMessageHandler` binds queues); `Array<T>` read as `T[]` |
+| TypeScript / TSX | ✅ | ✅ | **Real module resolution**: tsconfig `paths`, barrel files, `export *`, and **CommonJS `require()`**; parameter properties; return types inferred from `return new X()` when unannotated; `await` unwraps `Promise<T>`; **decorators recorded like Java annotations** (so `@SqsMessageHandler` binds queues); `Array<T>` read as `T[]` and carried into callbacks |
 | JavaScript | ✅ | ✅ | Shares the module graph with TypeScript |
 | XML, SQL | — | — | No grammar, but **read by the binding plugins** (MyBatis mappers, Flyway migrations) |
 | `db/schema.rb` | — | — | Database columns become ActiveRecord attributes. `account.uri` works because a column exists, and the schema file is the **only** place in the source that records it |
@@ -312,39 +312,54 @@ And proof **always runs before** assumption: if it can be proven, it is never gu
 
 ### Measured on real repositories
 
-| Repo | Stack | In-repo resolution | Floor if every assumption were wrong |
-|---|---|---|---|
-| spring-petclinic | Spring Boot + Data | **99.4%** | 98.6% |
-| mall | Spring Boot + MyBatis, 524 files | **94.5%** | 94.5% |
-| camel-spring-boot-examples | ~50 Camel examples | **91.1%** | 90.1% |
-| mybatis jpetstore | MyBatis + Flyway | **89.1%** | 89.1% |
-| nest | TS, 1904 files | **85.5%** | 77.0% |
-| agenta | TS/JS, 3891 files | **85.0%** † | 52.3% |
-| mybatis spring-boot-starter | MyBatis | **81.3%** | 81.3% |
-| rubygems.org | Rails, 1392 files | **79.1%** | 76.7% |
-| spring-cloud-aws | Java, 803 files | **77.7%** | 76.8% |
-| human-essentials | Rails, 994 files | **77.7%** † | 76.4% |
-| express | plain JS, 141 files | **77.4%** | 52.4% |
-| halo | Java 1349 + TS 862 | **77.0%** | 73.3% |
-| mastodon | Rails + TS, 4199 files | **73.9%** | 71.7% |
+| Repo | Stack | In-repo resolution | Floor if every assumption were wrong | Was |
+|---|---|---|---|---|
+| spring-petclinic | Spring Boot + Data, 51 files | **99.7%** | 98.6% | 99.4% |
+| mybatis spring-boot-starter | MyBatis, 154 files | **98.7%** | 98.7% | 81.3% |
+| mall | Spring Boot + MyBatis, 630 files | **97.8%** | 97.7% | 94.5% |
+| camel-spring-boot-examples | ~50 Camel examples, 325 files | **97.8%** | 97.3% | 91.1% |
+| mybatis jpetstore | MyBatis + Flyway, 43 files | **96.7%** | 96.7% | 89.1% |
+| express | plain JS, 141 files | **89.2%** | 57.7% | 77.4% |
+| rubygems.org | Rails, 1392 files | **88.2%** | 78.3% | 79.1% |
+| mastodon | Rails + TS, 4199 files | **87.4%** | 78.2% | 73.9% |
+| nest | TS, 1904 files | **85.5%** | 76.8% | 84.2% |
+| halo | Java + TS, 2228 files | **84.5%** | 80.7% | 77.0% |
+| spring-cloud-aws | Java, 816 files | **80.2%** | 78.8% | 77.7% |
 
-The last column is the self-audit: assume **every** runtime judgement is wrong, and see what
-survives. († measured before the 2026-08-23 resolver changes; the clone is no longer on disk.)
+**Two numbers, and the second is the one that keeps the first honest.** The floor assumes every
+judgement the resolver made without a declaration behind it was wrong — both directions. Calls
+excused as runtime built-ins come back into the denominator, *and* every link resting on a
+convention rather than a declaration is struck off the top: `name-convention`, `unique-name`,
+`method-missing`. That second half was added in 2026-08-23, because an assumption that **resolves**
+a call flatters the headline exactly as much as one that excuses it, and counting only the latter
+made the self-audit a half-audit. `bench` prints the guessed links so the gap is inspectable.
 
-Two of the Rails numbers *fell* when `delegate` support landed, for the same reason the
-`db/schema.rb` change lowered them once before: every forwarding method the macro writes joins the
-denominator, and the ones delegating into gem-typed targets are honest new misses. The graph gained
-the forwards and their edges; the percentage paid for it. nest moved the other way — decorators
-used to be miscounted as unresolvable calls, and recording them as annotations removed that noise.
+Read the two columns together. spring-petclinic is 99.7% on one guessed link in the whole repo.
+express is 89.2% on a floor of 57.7% — plain JS annotates nothing, so most of its receivers are
+runtime judgements. mastodon and rubygems.org sit near 88% with floors near 78%, which is what
+Rails looks like when half the receivers are named after their model and nothing else says so.
 
-**A note on the two Rails repos:** the numbers for human-essentials and rubygems.org *dropped* when
-`db/schema.rb` reading was switched on, and that is the correct outcome. Before it, `created_at`
-and `name` had no declaration anywhere in the source, so they were **proven external** — a false
-proof, because they genuinely exist as ActiveRecord attributes. Now they are in the index, the
-denominator is bigger, and the graph is ~10% more complete (human-essentials alone gained 676 edges
-landing on database columns). Lower number, more honest graph.
+The graph grew far more than the percentages did: halo went from 26,654 edges to 34,784, mastodon
+from 21,748 to 27,612, rubygems.org from 10,253 to 13,050. Several numbers *fell* along the way and
+were kept — when Lombok members and `delegate` forwards entered the index, names that had been
+**proven** to live outside the repo no longer were, so the denominator grew and honest new misses
+appeared with it. Lower number, more complete graph, every time.
 
-Re-measure any time with `./scripts/bench.js <repo> --detail`.
+Re-measure any time with `./scripts/bench.js <repo> --detail`, which prints the miss buckets and
+the guessed links as well as the two headline figures.
+
+### What is still missed, and why
+
+The three lowest rows all fail the same way, and it is worth being plain about it: a receiver whose
+type only a **library** declares. `contextRunner.run(context -> context.getBean(...))` types
+`context` from Spring Boot's signature, `intl.formatMessage(...)` from react-intl's, and neither
+library is indexed. Everything downstream of such a receiver is unresolvable without reading code
+this tool deliberately does not read.
+
+Ruby's remaining misses are a different shape: a receiver nothing declares at all. A method
+parameter in a dynamically typed language names no type anywhere, so `def deliver(recipient)` gives
+the resolver nothing but the name — which is why the naming convention exists, and why it is capped
+at 0.5 and struck out of the floor.
 
 ## Commands
 
@@ -531,7 +546,9 @@ can be traced back:
 | 0.8 | `rails-association` | Type inferred from a reader generated by `belongs_to`/`has_many` |
 | 0.7 | `self-chain`, `module->includer` | Through the ancestor chain or a mixin |
 | 0.6 | `binding:flyway` | Table ↔ entity matched **by naming convention** |
+| 0.5 | `name-convention` | Ruby only: a variable named after its model, **and** that model declares the member being called |
 | 0.5 / 0.4 | `unique-name` | No type information, exactly one method with that name (lower for Ruby) |
+| 0.4 | `method-missing` | Ruby only: the whole ancestor chain failed and the class declares `method_missing` |
 
 The `unique-name` fallback is **suppressed** when the name is a runtime built-in: linking `xs.map()`
 to some arbitrary `map` method in the repo is inventing an edge, not inferring one.
@@ -583,8 +600,9 @@ attributed to the right library. If a resolver later drops an internal call, a t
 
 ## Known limits
 
-- **Fluent chains** remain the largest miss bucket. Types propagate along a chain while every link
-  is in the repo (`X.new.method` now included); the moment it touches a library type, it stops.
+- **A receiver typed only by a library** is the largest miss bucket, and the reason the reactive
+  and test-harness rows sit lowest. Types propagate along a chain while every link is in the repo;
+  the moment one is declared in a JAR, a gem or `node_modules`, the chain stops.
 - **Plain JS with no type annotations** gives no receiver type to infer. Reported as a miss rather
   than guessed.
 - **The Ruby inflector** is simple and does not handle irregulars (`people`/`person`).
