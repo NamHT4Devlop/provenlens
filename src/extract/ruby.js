@@ -320,6 +320,34 @@ export function extractRuby(tree, src, ctx = {}) {
     return found;
   }
 
+  /**
+   * What a method hands back, when it says so outright.
+   *
+   * Ruby returns its last expression, so that expression -- and only that one
+   * -- is read. `def logger; @logger ||= LogAdapter.new(...); end` is the
+   * memoised accessor every Ruby codebase has, and `LogAdapter.new` is a
+   * declaration, not a name to guess from. Without it `Jekyll.logger.info`
+   * had nothing to walk: 150-odd calls in jekyll on one untyped method.
+   *
+   * Anything less explicit is left alone. Scanning a method for the first
+   * `X.new` anywhere inside it would type `def busy; Other.new; y; end` as an
+   * Other, which is simply wrong, and a wrong type is worse than none.
+   */
+  function returnedTypeOf(bodyNode) {
+    if (!bodyNode || bodyNode.type !== 'body_statement' || !bodyNode.namedChildCount) return null;
+    let last = bodyNode.namedChild(bodyNode.namedChildCount - 1);
+    if (!last) return null;
+    // `@logger ||= X.new(...)` returns what it assigns.
+    if (last.type === 'operator_assignment' || last.type === 'assignment') {
+      last = childByField(last, 'right');
+    }
+    if (last?.type !== 'call') return null;
+    const recv = childByField(last, 'receiver');
+    const method = childByField(last, 'method');
+    if (recv?.type !== 'constant' || !method || text(method, src) !== 'new') return null;
+    return text(recv, src);
+  }
+
   function walk(node, nest, scopeId, inClassBody, classScopeId) {
     if (node.type === 'class' || node.type === 'module') {
       const nameNode = childByField(node, 'name');
@@ -384,7 +412,7 @@ export function extractRuby(tree, src, ctx = {}) {
         fqn: `${containerFqn}${isSingleton ? '.' : '#'}${simpleName}`,
         kind: isSingleton ? 'class_method' : 'method',
         container_fqn: containerFqn,
-        type_name: null,
+        type_name: returnedTypeOf(childByField(node, 'body')),
         signature: `${isSingleton ? 'self.' : ''}${simpleName}(${params.join(', ')})`,
         arity: params.length,
         supertypes: [],
