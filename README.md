@@ -379,12 +379,13 @@ declares the receiver's type**:
 
 - Types declared *inside the repository* — Spring with Lombok, MyBatis, plain Java, a small
   self-contained JS package. Every one of these clears 90% on the headline, and all but
-  java-design-patterns clears it on the floor as well — that one lands at 89.1%, just under.
+  java-design-patterns clears it on the floor as well — that one lands at 89.4%, just under.
 - Types declared by a **dependency** — Reactor in halo, the Spring test harness in
-  spring-cloud-aws, TypeORM's own generics. These declarations *are* now read, and that is what
-  moved halo from 77.0% to 86.6%. What is left is the part reading cannot fix: a signature like
-  `Flux<T>.map(Function<T,R>)` answers with type *variables*, and substituting them properly is a
-  different job from reading them.
+  spring-cloud-aws, TypeORM's own generics. These declarations *are* now read, and reading them is
+  most of what these rows are made of: halo went from 77.0% to 87.0%, typeorm from 71.8% to 88.1%.
+  What is left is the part reading cannot fix: a signature like `Flux<T>.map(Function<T,R>)`
+  answers with type *variables*, and substituting them properly is a different job from reading
+  them.
 - Types declared **nowhere** — Ruby, and JavaScript callbacks. `axios` is the clearest case in the
   table: its tests are written as `startHTTPServer((req, res) => res.end(...))`, and nothing in
   JavaScript ever says what `res` is. 66.8% is the honest reading of that, not a defect.
@@ -403,8 +404,8 @@ rests on a convention rather than a declaration. mastodon and rubygems.org sit n
 near 80%, which is what Rails looks like when half the receivers are named after their model and
 nothing else says so.
 
-The graph grew far more than the percentages did: halo went from 26,654 edges to 34,784, mastodon
-from 21,748 to 27,612, rubygems.org from 10,253 to 13,050. Several numbers *fell* along the way and
+The graph grew far more than the percentages did: halo went from 26,654 edges to 36,154, mastodon
+from 21,748 to 27,634, rubygems.org from 10,253 to 13,052. Several numbers *fell* along the way and
 were kept — when Lombok members and `delegate` forwards entered the index, names that had been
 **proven** to live outside the repo no longer were, so the denominator grew and honest new misses
 appeared with it. Lower number, more complete graph, every time.
@@ -424,11 +425,20 @@ files are marked external — never a resolution target, never in a search or a 
 landing on one is booked as a library call named after its package, proven by the declaration
 rather than assumed from a name.
 
-Measured honestly, with the dependencies installed and again with them moved out of the tree, the
-effect on these clones is modest: axios 64.3% → 64.5%, nest 82.9% → 83.4%, express holds 91.4%
-while gaining 55 links. That is because their remaining misses are not library-typed receivers but
-untyped callback parameters. It matters far more on a working checkout, where `node_modules` is
-simply there.
+Measured both ways — with the dependencies installed, and again with `node_modules` moved out of
+the tree — this turns out to decide most of the number:
+
+| | without `node_modules` | with |
+|---|---|---|
+| express | 72.4% / floor 49.0% | **91.4% / 91.1%** |
+| nest | 56.1% / floor 40.3% | **84.8% / 79.5%** |
+| axios | 60.5% / floor 45.6% | **66.8% / 56.1%** |
+
+An earlier pass put this effect at a point or two. That was true of the resolver as it stood then,
+which could do little with a declaration once it had it: reading `EntityManager` off a field is
+worth nothing until something can walk `dataSource.manager.save`. The two arrived together, and the
+floors moved further than the headlines did — which is the shape of a guess being replaced by a
+fact rather than a number going up.
 
 **Java no longer stops at the JAR either.** Signatures are read with `javap`, which ships with
 every JDK and prints return types, parameter types and generic arguments as text — decoding class
@@ -442,6 +452,14 @@ variable, not a type. Substituting type parameters properly means tracking them 
 signature; what a container method does in practice is hand its element along, so the receiver's
 element type is used instead. It is guarded to names that actually look like a variable, so a real
 type that simply is not indexed stays unknown rather than borrowing one.
+
+**A receiver built by an expression, not named by one.** A path of fields is walked —
+`dataSource.manager.save(...)` types `manager` from `DataSource`'s declaration of it, and a
+variable assigned such a path is typed the same way. What is not walked is everything else an
+expression can be: an index into an array, a destructuring pattern, a ternary, a value returned
+through a callback. This is now the largest remaining bucket by a wide margin — 3,930 of typeorm's
+misses, against 62 for the next reason down — and it is a long tail rather than one missing rule,
+which is why the fixes above bought whole points and the next ones will not.
 
 **A receiver nothing declares at all.** A method parameter in a dynamically typed language names no
 type anywhere, so `def deliver(recipient)` gives the resolver the name and nothing else. That is why
