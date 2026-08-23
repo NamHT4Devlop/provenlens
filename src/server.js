@@ -6,13 +6,18 @@
  * repository keeps its own index, so a symbol is addressed as `repo:id`; the
  * two halves of a queue binding are matched across indexes at query time.
  *
- * Read-only, bound to loopback, and gated by a token printed at startup.
+ * Read-only, bound to loopback, and gated by a token.
+ *
+ * The token persists across restarts, so the URL can be bookmarked. A token
+ * regenerated per start makes every saved URL dead on the next run, which
+ * trains you to work around the gate rather than with it.
  */
 import { createServer } from 'node:http';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, chmodSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, basename } from 'node:path';
+import { homedir } from 'node:os';
 import { openProject } from './db.js';
 import { discoverProjects, dbPathFor } from './project.js';
 import { indexProject } from './indexer.js';
@@ -48,6 +53,41 @@ function hostAllowed(req) {
     .replace(/:\d+$/, '')
     .replace(/^\[|\]$/g, '');
   return host === '127.0.0.1' || host === 'localhost' || host === '::1';
+}
+
+/**
+ * Where the UI token lives between runs. Per user rather than per repository:
+ * one `serve` can span several checkouts, so the token belongs to the person,
+ * not to any one of them. Read at call time so a test can redirect it.
+ */
+export function tokenFile() {
+  return join(
+    process.env.XDG_STATE_HOME || join(homedir(), '.local', 'state'),
+    'codelens',
+    'ui-token',
+  );
+}
+
+/**
+ * Reads the stored token, or mints and stores one. 0600, though that is a
+ * courtesy rather than the real boundary: a process running as you could read
+ * the index files straight off disk without asking this server at all.
+ */
+function persistentToken({ fresh = false } = {}) {
+  const file = tokenFile();
+  if (!fresh) {
+    try {
+      const saved = readFileSync(file, 'utf8').trim();
+      if (/^[0-9a-f]{32}$/.test(saved)) return saved;
+    } catch { /* absent or unreadable: mint a new one below */ }
+  }
+  const minted = randomBytes(16).toString('hex');
+  try {
+    mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+    writeFileSync(file, minted + '\n', { mode: 0o600 });
+    chmodSync(file, 0o600);
+  } catch { /* read-only home: the token still works for this run */ }
+  return minted;
 }
 
 /** Constant-time compare, so a wrong token leaks nothing by how long it took. */
@@ -220,7 +260,10 @@ function repoSummary(project) {
   };
 }
 
-export async function startServer(pathArgs, { port = 7777, open: openBrowser = false } = {}) {
+export async function startServer(
+  pathArgs,
+  { port = 7777, open: openBrowser = false, newToken = false } = {},
+) {
   const requested = (Array.isArray(pathArgs) ? pathArgs : [pathArgs]).filter(Boolean);
   const roots = [...new Set((requested.length ? requested : [process.cwd()]).flatMap(discoverProjects))];
 
@@ -243,8 +286,9 @@ export async function startServer(pathArgs, { port = 7777, open: openBrowser = f
   const byRepoId = new Map(projects.map((p) => [p.id, p]));
   const page = readFileSync(join(HERE, 'ui', 'app.html'), 'utf8');
   // Loopback keeps other machines out; the token keeps other processes on this
-  // machine out. Printed with the URL, the way Jupyter does it.
-  const token = randomBytes(16).toString('hex');
+  // machine out. Printed with the URL, the way Jupyter does it -- but stored,
+  // so the URL you bookmark today still opens tomorrow.
+  const token = persistentToken({ fresh: newToken });
 
   /** Repositories a request is scoped to: one named repo, or all of them. */
   function scope(url) {
@@ -272,21 +316,20 @@ export async function startServer(pathArgs, { port = 7777, open: openBrowser = f
       return send(403, { error: 'this server answers only to localhost' });
     }
 
+    // The shell is a static page holding no repository data, so serving it
+    // ungated gives away nothing and buys back the thing that was missing: a
+    // URL you can bookmark. It loads, reads the token it kept from an earlier
+    // visit, and asks for data with it. Every route below still demands it.
+    if (url.pathname === '/') {
+      return send(200, page, 'text/html; charset=utf-8');
+    }
+
     const presented = url.searchParams.get('token') ?? req.headers['x-codelens-token'];
     if (!sameToken(presented, token)) {
-      const hint = `codelens: this URL needs the token printed when the server started.`;
-      return url.pathname === '/'
-        ? send(403, `<!doctype html><meta charset="utf-8"><body style="font:14px system-ui;padding:40px">
-             <p>${hint}</p><p>Look for <code>?token=…</code> in the terminal.</p>`, 'text/html; charset=utf-8')
-        : send(403, { error: hint });
+      return send(403, { error: 'codelens: this request needs the token printed at startup.' });
     }
 
     try {
-      if (url.pathname === '/') {
-        // The page carries the token so its own fetches can present it.
-        return send(200, page.replace('__CODELENS_TOKEN__', token), 'text/html; charset=utf-8');
-      }
-
       if (url.pathname === '/api/repos') {
         return send(200, projects.map(repoSummary));
       }
@@ -499,8 +542,12 @@ export async function startServer(pathArgs, { port = 7777, open: openBrowser = f
   });
 
   const actual = server.address().port;
-  const address = `http://127.0.0.1:${actual}/?token=${token}`;
+  const home = `http://127.0.0.1:${actual}/`;
+  const address = `${home}?token=${token}`;
   console.log(`codelens UI on ${address}`);
+  // The first visit hands the page its token; after that the bare address is
+  // enough, which is the one worth bookmarking.
+  console.log(`bookmark:   ${home}`);
   console.log(
     projects.length === 1
       ? `project: ${projects[0].root}`

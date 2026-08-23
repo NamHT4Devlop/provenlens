@@ -191,6 +191,17 @@ by language:
 codelens serve --open
 ```
 
+It prints two URLs:
+
+```
+codelens UI on http://127.0.0.1:7777/?token=ecf03d237e77307bc12f255bea265623
+bookmark:   http://127.0.0.1:7777/
+```
+
+Open the first one once. The page keeps the token, so from then on the short one is enough —
+bookmark that. The token is stored under your state directory and reused on every restart, so the
+bookmark keeps working tomorrow. `codelens serve --new-token` retires it if you ever want it gone.
+
 ### 9. Optional — wire it into Claude Code
 
 ```bash
@@ -227,7 +238,7 @@ codelens itself.
 | `no index — run: codelens init` | That repository has never been indexed. `cd` into it and run `codelens init .`. |
 | A `Language.load` / ABI error on first run | Something upgraded `web-tree-sitter` past 0.25.10. Run `yarn install --frozen-lockfile` to restore the pinned versions — see [Pinned versions](#pinned-versions). |
 | `EADDRINUSE` from `codelens serve` | Port 7777 is already taken, most likely by an earlier `serve`. Use `codelens serve -p 7800`, or stop the old one. |
-| The web UI answers `403 Forbidden` | You opened `127.0.0.1:7777` without the token. Copy the whole URL that `serve` printed, token and all — `--open` does it for you. |
+| The web UI says it needs a token | This browser has not been given the token yet, or `--new-token` retired the one it had. Open the `?token=…` URL `serve` printed once; the bare address works from then on. |
 
 ---
 
@@ -345,7 +356,7 @@ Re-measure any time with `./scripts/bench.js <repo> --detail`.
 | `codelens affected [files...]` | What changed files reach, and **which tests already cover it** |
 | `codelens install [target]` | Register the MCP server with an agent (`--dry-run` to preview) |
 | `codelens uninit [path]` | Remove the index from a project |
-| `codelens serve [paths...] [-p 7777] [-o]` | **Web UI** — search and browse the graph, one repo or **many at once** |
+| `codelens serve [paths...] [-p 7777] [-o] [--new-token]` | **Web UI** — search and browse the graph, one repo or **many at once** |
 | `codelens mcp [path]` | MCP server over stdio |
 
 `query`, `callers`, `callees`, `impact` and `affected` all accept `--json` for piping into other
@@ -406,9 +417,15 @@ watcher.
 
 Three layers of protection, each with a regression test in `test/server.test.js`:
 
-- **A startup token** (Jupyter style) — printed with the URL, compared with `timingSafeEqual`.
-  Stops another process on the same machine from reading your index. `--open` handles it for you,
-  and the page strips the token from the address bar after load so it never reaches history.
+- **A token on every data route** (Jupyter style), compared with `timingSafeEqual`. Stops another
+  process on this machine from reading your index through the API. It is stored at
+  `$XDG_STATE_HOME/codelens/ui-token` (mode 0600) and reused across restarts, so the URL stays
+  bookmarkable; `serve --new-token` rotates it. The page keeps it in `localStorage` rather than a
+  cookie, because cookies ignore the port — a cookie set for `127.0.0.1` would be handed to every
+  other dev server you run. The token is stripped from the address bar on arrival, so it never
+  reaches history. The empty shell at `/` is served without it: it holds no repository data, and
+  gating it is what made bookmarks impossible. Worth knowing what this is and is not worth — a
+  process running as you can read the index files straight off disk without asking the server.
 - **A `Host` check** — blocks DNS rebinding, where a malicious page points its own DNS at
   `127.0.0.1` to read your API. Binding to loopback alone does not stop that.
 - **No CORS headers** — a cross-origin page can send a request but cannot read the response.

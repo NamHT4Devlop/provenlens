@@ -2,9 +2,10 @@ import { test, before, after, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { rmSync } from 'node:fs';
+import { rmSync, statSync, readFileSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { request } from 'node:http';
-import { startServer } from '../src/server.js';
+import { startServer, tokenFile } from '../src/server.js';
 import { openDb } from '../src/db.js';
 import { dbPathFor } from '../src/project.js';
 import { indexProject } from '../src/indexer.js';
@@ -13,8 +14,14 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const FIXTURE = join(HERE, '..', '__fixtures__', 'java');
 
 let handle;
+let stateDir;
 
 before(async () => {
+  // The token now persists to disk, so the tests get their own state directory
+  // rather than reading -- or worse, replacing -- the one the real UI uses.
+  stateDir = mkdtempSync(join(tmpdir(), 'codelens-state-'));
+  process.env.XDG_STATE_HOME = stateDir;
+
   // Self-contained: the server needs an index, so build one rather than
   // depending on whatever happens to be on disk.
   const db = openDb(dbPathFor(FIXTURE), { create: true });
@@ -26,6 +33,8 @@ before(async () => {
 
 after(() => {
   handle?.close();
+  rmSync(stateDir, { recursive: true, force: true });
+  delete process.env.XDG_STATE_HOME;
   for (const s of ['', '-wal', '-shm']) {
     rmSync(join(FIXTURE, '.codelens', `index.db${s}`), { force: true });
   }
@@ -105,19 +114,70 @@ describe('the API is gated by the startup token', () => {
     }
   });
 
-  test('serves an explanation rather than a broken page at the root', async () => {
+  test('serves the shell without a token, so the address can be bookmarked', async () => {
     const res = await ask('/', { token: null });
-    assert.equal(res.status, 403);
+    assert.equal(res.status, 200);
     assert.match(res.headers['content-type'], /text\/html/);
-    assert.match(await res.text(), /token/);
+  });
+
+  test('the shell it serves carries no token and no data', async () => {
+    const html = await (await ask('/', { token: null })).text();
+    assert.ok(!html.includes(handle.token), 'the page must not embed the token');
+    assert.ok(!html.includes('__CODELENS_TOKEN__'), 'no placeholder should survive');
+    // A fixture symbol name would be the giveaway that data leaked into it.
+    assert.ok(!html.includes('OrderService'), 'the shell must hold no repository data');
+  });
+});
+
+describe('the token survives a restart', () => {
+  test('is stored under the state directory, readable only by its owner', () => {
+    const file = tokenFile();
+    assert.ok(file.startsWith(stateDir), 'the test must not touch the real token file');
+    assert.equal(readFileSync(file, 'utf8').trim(), handle.token);
+    assert.equal(statSync(file).mode & 0o777, 0o600);
+  });
+
+  test('a second server reuses it, so a bookmarked URL keeps working', async () => {
+    const second = await startServer(FIXTURE, { port: 0 });
+    try {
+      assert.equal(second.token, handle.token);
+    } finally {
+      second.close();
+    }
+  });
+
+  test('--new-token retires the old one, which then stops being accepted', async () => {
+    const previous = handle.token;
+    const rotated = await startServer(FIXTURE, { port: 0, newToken: true });
+    try {
+      assert.notEqual(rotated.token, previous);
+      assert.equal(readFileSync(tokenFile(), 'utf8').trim(), rotated.token);
+
+      const refused = await new Promise((done, fail) => {
+        const req = request(
+          {
+            host: '127.0.0.1',
+            port: rotated.server.address().port,
+            path: '/api/overview',
+            headers: { 'x-codelens-token': previous },
+          },
+          (res) => done(res.statusCode),
+        );
+        req.on('error', fail);
+        req.end();
+      });
+      assert.equal(refused, 403);
+    } finally {
+      rotated.close();
+    }
   });
 });
 
 describe('responses are hardened', () => {
-  test('the page carries the token so its own fetches work', async () => {
+  test('the page asks for its token by header, not from an injected constant', async () => {
     const html = await (await ask('/')).text();
-    assert.ok(html.includes(handle.token), 'the served page must carry the real token');
-    assert.ok(!html.includes('__CODELENS_TOKEN__'), 'the placeholder must be substituted');
+    assert.match(html, /x-codelens-token/, 'fetches must present the token as a header');
+    assert.match(html, /localStorage/, 'the token must be kept for the next visit');
   });
 
   test('sets the headers that stop framing and sniffing', async () => {

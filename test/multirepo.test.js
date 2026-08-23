@@ -48,7 +48,10 @@ let workspace;
 let handle;
 
 before(async () => {
+  // The server persists its UI token, so keep that inside the workspace rather
+  // than writing into the state directory the real UI reads.
   workspace = mkdtempSync(join(tmpdir(), 'codelens-ws-'));
+  process.env.XDG_STATE_HOME = join(workspace, '.state');
   for (const [path, content] of Object.entries(SERVICES)) {
     const full = join(workspace, path);
     mkdirSync(join(full, '..'), { recursive: true });
@@ -66,6 +69,7 @@ before(async () => {
 after(() => {
   handle?.close();
   rmSync(workspace, { recursive: true, force: true });
+  delete process.env.XDG_STATE_HOME;
 });
 
 const get = (path) =>

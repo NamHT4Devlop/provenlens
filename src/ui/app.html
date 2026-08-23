@@ -332,13 +332,25 @@ function resize() {
 new ResizeObserver(resize).observe(cv);
 resize();
 
-// Injected by the server when it served this page. Sent as a header rather
-// than a query parameter so it stays out of anything that logs URLs.
-const TOKEN = '__CODELENS_TOKEN__';
+/*
+ * The token arrives once, in the URL the server printed, and is kept here so
+ * the bare address works from then on -- a bookmark, a reload, a link out of
+ * history. localStorage rather than a cookie on purpose: cookies ignore the
+ * port, so one set for 127.0.0.1 would be handed to every other dev server
+ * running on this machine. Storage is scoped to the port as well as the host.
+ *
+ * It travels as a header, so it stays out of anything that logs URLs.
+ */
+const TOKEN_KEY = 'codelens.token';
+let TOKEN = '';
+try { TOKEN = localStorage.getItem(TOKEN_KEY) ?? ''; } catch { /* private mode */ }
 
-// The address bar has done its job once the page is loaded; leaving the token
-// there only invites it into history and screenshots.
-if (location.search.includes('token=')) {
+const tokenInUrl = new URLSearchParams(location.search).get('token');
+if (tokenInUrl) {
+  TOKEN = tokenInUrl;
+  try { localStorage.setItem(TOKEN_KEY, tokenInUrl); } catch { /* private mode */ }
+  // The address bar has done its job once the page holds the token; leaving it
+  // there only invites it into history and screenshots.
   history.replaceState(null, '', location.pathname);
 }
 
@@ -346,8 +358,27 @@ async function api(path, params) {
   const url = new URL(path, location.origin);
   for (const [k, v] of Object.entries(params ?? {})) url.searchParams.set(k, v);
   const res = await fetch(url, { headers: { 'x-codelens-token': TOKEN } });
+  if (res.status === 403) { needsToken(); throw new Error('needs token'); }
   if (!res.ok) throw new Error((await res.json()).error ?? res.statusText);
   return res.json();
+}
+
+/**
+ * Two ways to arrive without a usable token: a first visit to the bare address,
+ * or a stored one that a `serve --new-token` has since retired. Both land here.
+ * Saying so beats an empty canvas, which reads as a workspace with no code in
+ * it rather than as a page that was refused.
+ */
+let tokenAsked = false;
+function needsToken() {
+  if (tokenAsked) return;
+  tokenAsked = true;
+  try { localStorage.removeItem(TOKEN_KEY); } catch { /* private mode */ }
+  $('empty').innerHTML =
+    '<div><b>codelens needs the token it printed at startup.</b><br>' +
+    'Open the <code>?token=…</code> URL from your terminal once — it is saved for ' +
+    esc(location.origin) + ', so after that this address alone is enough.</div>';
+  $('empty').style.display = 'grid';
 }
 
 // ---- layout: a small force simulation, enough for a few hundred nodes -------
