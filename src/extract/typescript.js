@@ -110,6 +110,8 @@ export function extractTypeScript(tree, src, ctx = {}) {
   const modulePath = modulePathOf(ctx.path ?? '');
   const symbols = [];
   const refs = [];
+  /** node id -> index of the ref that node's own call produced. */
+  const callRefByNode = new Map();
   // Decorators seen in a class body, waiting for the member they decorate.
   let pendingDecorators = [];
   const locals = [];
@@ -514,14 +516,13 @@ export function extractTypeScript(tree, src, ctx = {}) {
           // Receiver first, so a.b().c() can link c() back to b().
           let receiverRefTmp = null;
           if (obj) {
-            const before = refs.length;
             walk(obj, typeStack, scopeId, false);
-            if (obj.type === 'call_expression' && refs.length > before) {
-              receiverRefTmp = refs.length - 1;
-            }
+            // The receiver's own ref, not whatever its arguments pushed last.
+            receiverRefTmp = callRefByNode.get(obj.id) ?? null;
           }
 
           if (prop) {
+            callRefByNode.set(node.id, refs.length);
             refs.push({
               fromTmpId: scopeId,
               name: text(prop, src),
@@ -537,6 +538,7 @@ export function extractTypeScript(tree, src, ctx = {}) {
           return;
         }
         if (fn.type === 'identifier') {
+          callRefByNode.set(node.id, refs.length);
           refs.push({
             fromTmpId: scopeId,
             name: text(fn, src),

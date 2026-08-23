@@ -182,6 +182,8 @@ function stringArgs(argsNode, src) {
 export function extractJava(tree, src) {
   const symbols = [];
   const refs = [];
+  /** node id -> index of the ref that node's own call produced. */
+  const callRefByNode = new Map();
   const locals = [];
   const imports = [];
   let pkg = null;
@@ -458,14 +460,16 @@ export function extractJava(tree, src) {
       // carry a return type along the chain.
       let receiverRefTmp = null;
       if (objNode) {
-        const before = refs.length;
         walk(objNode, typeStack, scopeId);
-        if (objNode.type === 'method_invocation' && refs.length > before) {
-          receiverRefTmp = refs.length - 1;
-        }
+        // The receiver's own ref, looked up by node. `refs.length - 1` was
+        // whatever the receiver's ARGUMENTS pushed last, since a call walks
+        // its arguments after itself -- so any chain whose inner call took an
+        // argument linked to the wrong ref and lost its type.
+        receiverRefTmp = callRefByNode.get(objNode.id) ?? null;
       }
 
       if (nameNode) {
+        callRefByNode.set(node.id, refs.length);
         refs.push({
           fromTmpId: scopeId,
           name: text(nameNode, src),
@@ -504,6 +508,139 @@ export function extractJava(tree, src) {
   }
 
   walk(tree.rootNode, [], null);
+  addLombokMembers(symbols);
 
   return { package: pkg, imports, symbols, refs, locals };
+}
+
+/** Class-level Lombok annotations and what each of them writes. */
+const LOMBOK_GETTERS = new Set(['Data', 'Getter', 'Value']);
+const LOMBOK_SETTERS = new Set(['Data', 'Setter']);
+const LOMBOK_BUILDERS = new Set(['Builder', 'SuperBuilder']);
+
+/**
+ * Lombok members, written the way the annotation processor writes them.
+ *
+ * `@Data class OrderParam { private Long couponId; }` compiles to a class with
+ * `getCouponId()` on it. Nothing in the source says so, which is why every
+ * `orderParam.getCouponId()` in a Spring codebase looked like a call into
+ * thin air -- 16 misses on one class in mall alone, and the same shape all
+ * through halo. These are as real as the fields they read, so they become
+ * symbols, marked `generated` like every other derived member.
+ */
+function addLombokMembers(symbols) {
+  const types = symbols.filter((s) => ['class', 'record'].includes(s.kind) && s.fqn);
+  if (!types.length) return;
+
+  const fieldsOf = new Map();
+  const declared = new Map();
+  for (const s of symbols) {
+    if (!s.container_fqn) continue;
+    if (s.kind === 'field') {
+      if (!fieldsOf.has(s.container_fqn)) fieldsOf.set(s.container_fqn, []);
+      fieldsOf.get(s.container_fqn).push(s);
+    } else if (['method', 'constructor'].includes(s.kind)) {
+      if (!declared.has(s.container_fqn)) declared.set(s.container_fqn, new Set());
+      declared.get(s.container_fqn).add(s.name);
+    }
+  }
+
+  const add = (spec) => {
+    spec.tmpId = symbols.length;
+    symbols.push(spec);
+    return spec.tmpId;
+  };
+
+  for (const type of types) {
+    const ann = new Set(type.annotations ?? []);
+    const fields = (fieldsOf.get(type.fqn) ?? []).filter(
+      (f) => !(f.modifiers ?? []).includes('static'),
+    );
+    if (!fields.length) continue;
+    const already = declared.get(type.fqn) ?? new Set();
+
+    const generated = (name, typeName, signature, container, extra = {}) => {
+      if ((declared.get(container) ?? new Set()).has(name)) return;
+      add({
+        name,
+        fqn: `${container}#${name}`,
+        kind: 'method',
+        container_fqn: container,
+        type_name: typeName,
+        signature,
+        arity: extra.arity ?? 0,
+        supertypes: [],
+        modifiers: ['generated', 'public'],
+        annotations: ['lombok'],
+        generated: true,
+        start_line: type.start_line,
+        end_line: type.start_line,
+        start_byte: type.start_byte,
+        end_byte: type.start_byte,
+      });
+    };
+
+    for (const field of fields) {
+      const own = new Set(field.annotations ?? []);
+      const cap = field.name.charAt(0).toUpperCase() + field.name.slice(1);
+      // `boolean flag` reads as `isFlag()`; the boxed Boolean keeps `getFlag()`.
+      const getter = field.type_name === 'boolean' ? `is${cap}` : `get${cap}`;
+
+      if (LOMBOK_GETTERS.has([...ann].find((a) => LOMBOK_GETTERS.has(a)) ?? '') || own.has('Getter')) {
+        generated(getter, field.type_name, `${field.type_name ?? '?'} ${getter}()  // lombok`, type.fqn);
+      }
+      const settable = !(field.modifiers ?? []).includes('final') && !ann.has('Value');
+      if (settable && ([...ann].some((a) => LOMBOK_SETTERS.has(a)) || own.has('Setter'))) {
+        generated(`set${cap}`, 'void', `void set${cap}(${field.type_name ?? '?'})  // lombok`, type.fqn, { arity: 1 });
+      }
+    }
+
+    if (![...ann].some((a) => LOMBOK_BUILDERS.has(a))) continue;
+
+    // @Builder writes a nested builder class: one method per field returning
+    // the builder, and build() returning the type. Modelling it is what keeps
+    // `Condition.builder().type(x).build()` from dying at the first hop.
+    const builderName = `${type.name}Builder`;
+    const builderFqn = `${type.fqn}.${builderName}`;
+    if (!already.has('builder')) {
+      add({
+        name: 'builder',
+        fqn: `${type.fqn}#builder`,
+        kind: 'method',
+        container_fqn: type.fqn,
+        type_name: builderFqn,
+        signature: `static ${builderName} builder()  // lombok`,
+        arity: 0,
+        supertypes: [],
+        modifiers: ['generated', 'public', 'static'],
+        annotations: ['lombok'],
+        generated: true,
+        start_line: type.start_line,
+        end_line: type.start_line,
+        start_byte: type.start_byte,
+        end_byte: type.start_byte,
+      });
+    }
+    add({
+      name: builderName,
+      fqn: builderFqn,
+      kind: 'class',
+      container_fqn: type.fqn,
+      type_name: null,
+      signature: `class ${builderName}  // lombok`,
+      arity: null,
+      supertypes: [],
+      modifiers: ['generated', 'public', 'static'],
+      annotations: ['lombok'],
+      generated: true,
+      start_line: type.start_line,
+      end_line: type.start_line,
+      start_byte: type.start_byte,
+      end_byte: type.start_byte,
+    });
+    for (const field of fields) {
+      generated(field.name, builderFqn, `${builderName} ${field.name}(${field.type_name ?? '?'})  // lombok`, builderFqn, { arity: 1 });
+    }
+    generated('build', type.fqn, `${type.name} build()  // lombok`, builderFqn);
+  }
 }

@@ -106,6 +106,8 @@ const RSPEC_DESCRIBERS = new Set(['describe', 'context', 'RSpec.describe', 'feat
 export function extractRuby(tree, src, ctx = {}) {
   const symbols = [];
   const refs = [];
+  /** node id -> index of the ref that node's own call produced. */
+  const callRefByNode = new Map();
   const locals = [];
   const imports = [];
 
@@ -404,12 +406,16 @@ export function extractRuby(tree, src, ctx = {}) {
       // Receiver first, so foo.bar.baz can link baz back to bar.
       let receiverRefTmp = null;
       if (receiverNode) {
-        const before = refs.length;
         walk(receiverNode, nest, scopeId, false, classScopeId);
-        if (receiverNode.type === 'call' && refs.length > before) receiverRefTmp = refs.length - 1;
+        // The receiver's OWN ref, looked up by node -- not the last ref the
+        // subtree produced. Arguments are walked after the call they belong
+        // to, so `expect(response).to` used to link `.to` back to `response`
+        // and lose the chain entirely.
+        receiverRefTmp = callRefByNode.get(receiverNode.id) ?? null;
       }
 
       if (methodName) {
+        callRefByNode.set(node.id, refs.length);
         refs.push({
           fromTmpId: scopeId,
           name: methodName,

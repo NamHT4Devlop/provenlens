@@ -792,3 +792,33 @@ describe('pathBetween', () => {
     assert.deepEqual(pathBetween(db, id, id), { hops: [], length: 0 });
   });
 });
+
+describe('a chained call links to the inner call, not its arguments', () => {
+  // `expect(response).to` used to link `.to` back to `response`, because the
+  // receiver's ref was taken as "the last ref the subtree pushed" and a call
+  // walks its arguments after itself. Every chain whose inner call took an
+  // argument lost its type that way -- the single largest miss bucket.
+  const cases = [
+    ['ruby', 'expect(response).to be_ok', 'expect', 'to'],
+    ['java', 'class A { void m() { build(cfg).run(); } }', 'build', 'run'],
+    ['typescript', 'wrap(input).then();', 'wrap', 'then'],
+  ];
+
+  for (const [lang, code, inner, outer] of cases) {
+    test(`${lang}: the outer call points at the inner call`, async () => {
+      const { getParser } = await import('../src/lang.js');
+      const { extractorFor } = await import('../src/extract/index.js');
+      const parser = await getParser(lang);
+      const { refs } = extractorFor(lang)(parser.parse(code), code, { path: `x.${lang}` });
+
+      const outerRef = refs.find((r) => r.name === outer);
+      assert.ok(outerRef, `no ref for ${outer} in ${refs.map((r) => r.name)}`);
+      assert.notEqual(outerRef.receiverRefTmp, null, 'the chain link must exist');
+      assert.equal(
+        refs[outerRef.receiverRefTmp].name,
+        inner,
+        `expected the link to reach ${inner}, not ${refs[outerRef.receiverRefTmp]?.name}`,
+      );
+    });
+  }
+});

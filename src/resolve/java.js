@@ -114,12 +114,31 @@ export function resolveJava(db) {
 
   // ---- name resolution -----------------------------------------------------
 
-  /** Simple or scoped type name -> FQN of a type we actually indexed. */
-  function resolveTypeName(name, fileId) {
+  /**
+   * Simple or scoped type name -> FQN of a type we actually indexed.
+   *
+   * `enclosing` is the type the name was written inside, which Java consults
+   * before anything else: `Criteria` inside `OrderExample` means
+   * `OrderExample.Criteria`. Without it the simple name is ambiguous across
+   * every generated Example class in the repo, so it resolved to nothing --
+   * 304 unknown-type misses in mall from that one omission.
+   */
+  function resolveTypeName(name, fileId, enclosing = null) {
     if (!name) return null;
     if (types.has(name)) return name;
 
     const simple = name.includes('.') ? name.split('.').pop() : name;
+
+    // Nested types, innermost scope first, exactly as javac searches.
+    if (enclosing) {
+      for (const scope of lexicalScope(enclosing)) {
+        if (types.has(`${scope}.${simple}`)) return `${scope}.${simple}`;
+        // An inner class can also name one inherited from the outer's parent.
+        for (const t of typeChain(scope)) {
+          if (types.has(`${t.fqn}.${simple}`)) return `${t.fqn}.${simple}`;
+        }
+      }
+    }
 
     for (const imp of importsByFile.get(fileId) ?? []) {
       if (!imp.is_wildcard && imp.simple === simple && types.has(imp.fqn)) return imp.fqn;
@@ -335,7 +354,7 @@ export function resolveJava(db) {
     if (ref.receiver_ref_id != null) {
       const target = chainTarget(refById.get(ref.receiver_ref_id), depth);
       if (target?.type_name) {
-        const hit = resolveTypeName(target.type_name, ref.file_id);
+        const hit = resolveTypeName(target.type_name, ref.file_id, enclosing);
         if (hit) return hit;
         const owner = externalOwner(target.type_name, ref.file_id);
         if (owner) return { external: owner };
@@ -362,7 +381,7 @@ export function resolveJava(db) {
       const head =
         /^new\s+([A-Za-z_$][\w$.]*)/.exec(raw)?.[1] ?? /^([A-Za-z_$][\w$]*)/.exec(raw)?.[1];
       if (head) {
-        const inRepo = resolveTypeName(head, ref.file_id);
+        const inRepo = resolveTypeName(head, ref.file_id, enclosing);
         if (!inRepo) {
           const owner = externalOwner(head, ref.file_id) ?? staticImportOwner(head, ref.file_id);
           if (owner) return { external: owner };
@@ -377,7 +396,7 @@ export function resolveJava(db) {
       // A declared name with no type -- a lambda parameter. Guessing from the
       // bare method name here would invent edges, so stop instead.
       if (!local) return { complex: true };
-      const hit = resolveTypeName(local, ref.file_id);
+      const hit = resolveTypeName(local, ref.file_id, enclosing);
       if (hit) return hit;
       const owner = externalOwner(local, ref.file_id);
       return owner ? { external: owner } : null;
@@ -387,7 +406,7 @@ export function resolveJava(db) {
       for (const t of typeChain(scope)) {
         const fieldType = fieldsByContainer.get(t.fqn)?.get(raw);
         if (!fieldType) continue;
-        const hit = resolveTypeName(fieldType, ref.file_id);
+        const hit = resolveTypeName(fieldType, ref.file_id, enclosing);
         if (hit) return hit;
         const owner = externalOwner(fieldType, ref.file_id);
         return owner ? { external: owner } : null;
@@ -395,7 +414,7 @@ export function resolveJava(db) {
     }
 
     if (/^[A-Z]/.test(raw)) {
-      const hit = resolveTypeName(raw, ref.file_id);
+      const hit = resolveTypeName(raw, ref.file_id, enclosing);
       if (hit) return hit;
       const owner = externalOwner(raw, ref.file_id);
       return owner ? { external: owner } : { external: null };
@@ -546,7 +565,7 @@ export function resolveJava(db) {
     const fromSymbol = symbolById.get(ref.from_symbol_id);
 
     if (ref.kind === 'new') {
-      const typeFqn = resolveTypeName(ref.name, ref.file_id);
+      const typeFqn = resolveTypeName(ref.name, ref.file_id, fromSymbol?.container_fqn ?? null);
       const target = typeFqn && types.get(typeFqn);
       if (!target) {
         const owner = externalOwner(ref.name, ref.file_id);
