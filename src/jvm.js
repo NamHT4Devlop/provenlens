@@ -1,0 +1,211 @@
+/**
+ * Type signatures from compiled Java, read with `javap`.
+ *
+ * The Java half of what `.d.ts` does for TypeScript: a receiver typed by
+ * `Mono<User>` or `Optional<Post>` has its type declared in a JAR, so without
+ * reading one the chain stops there and everything downstream is a miss.
+ *
+ * `javap` is part of every JDK and prints exactly what is needed -- return
+ * types, parameter types and generic arguments -- as text the same parser can
+ * read. Parsing class files directly would be a great deal of work to learn
+ * the same facts.
+ *
+ * As with `.d.ts`, what is read is not the project's code: the entries are
+ * marked external, are never resolution targets, and never enter a count.
+ */
+import { execFileSync } from 'node:child_process';
+import { existsSync, readdirSync, statSync } from 'node:fs';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
+
+/** javap is fast per class but not free; batching keeps the total sane. */
+const BATCH = 40;
+const MAX_TYPES = 4000;
+
+/**
+ * `public static <T> java.util.Optional<T> of(T)` ->
+ * { name: 'of', returns: 'java.util.Optional', args: 'T', arity: 1 }
+ *
+ * Constructors and fields are skipped: a chain is carried by return types.
+ */
+function readMember(line) {
+  const text = line.trim().replace(/;$/, '');
+  if (!text || text.startsWith('static {') || text.includes(' class ') || text.includes(' interface ')) {
+    return null;
+  }
+  const call = /([A-Za-z_$][\w$.]*)\(([^)]*)\)$/.exec(text);
+  if (!call) return null;
+
+  const name = call[1].split('.').pop();
+  const before = text.slice(0, call.index).trim();
+  // Everything before the name is modifiers, then optionally a type parameter
+  // list, then the return type. The last token of that is what it returns.
+  const returns = before.replace(/^.*>\s+/, '').split(/\s+/).pop() ?? '';
+  if (!returns || returns === name) return null; // a constructor
+
+  const arity = call[2].trim() ? call[2].split(',').length : 0;
+  return { name, returns, arity };
+}
+
+/** `java.util.Optional<T>` -> { erased, arg } */
+function splitGeneric(raw) {
+  const lt = raw.indexOf('<');
+  if (lt === -1) return { erased: raw.replace(/\[\]$/, ''), arg: null };
+  const erased = raw.slice(0, lt);
+  const inner = raw.slice(lt + 1, raw.lastIndexOf('>')).trim();
+  const arg = !inner || inner.includes(',') || inner.includes('<') ? null : inner;
+  return { erased, arg };
+}
+
+/**
+ * Runs javap over a batch of fully qualified names and returns one entry per
+ * class it could read. A name javap does not know is simply absent -- that is
+ * the answer for a dependency the project never downloaded.
+ */
+export function readSignatures(fqns, classpath) {
+  if (!fqns.length) return [];
+  const args = classpath ? ['-cp', classpath, ...fqns] : [...fqns];
+  let out;
+  try {
+    out = execFileSync('javap', args, {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      maxBuffer: 64 * 1024 * 1024,
+    });
+  } catch (err) {
+    // javap exits non-zero when any name is unknown, but still prints the
+    // ones it did find, so its output is worth keeping.
+    out = err.stdout ?? '';
+  }
+
+  const classes = [];
+  let current = null;
+  for (const line of out.split('\n')) {
+    const header = /^(?:[\w\s]*\s)?(?:class|interface|enum|@interface)\s+([\w$.]+)/.exec(line);
+    if (header && !line.startsWith(' ')) {
+      current = { fqn: header[1], members: [] };
+      classes.push(current);
+      continue;
+    }
+    if (!current || !line.startsWith(' ')) continue;
+    const member = readMember(line);
+    if (member) current.members.push(member);
+  }
+  return classes;
+}
+
+/**
+ * Type names the project refers to but does not declare: the imports that
+ * resolved to nothing. These are exactly the types whose members a chain
+ * needs and cannot see.
+ */
+export function unresolvedImports(db) {
+  const declared = new Set(
+    db.prepare("SELECT fqn FROM types").all().map((r) => r.fqn),
+  );
+  const wanted = db
+    .prepare(
+      `SELECT DISTINCT i.fqn FROM imports i JOIN files f ON f.id = i.file_id
+        WHERE f.lang = 'java' AND f.external = 0 AND i.is_wildcard = 0`,
+    )
+    .all()
+    .map((r) => r.fqn)
+    .filter((fqn) => fqn && !declared.has(fqn));
+  return [...new Set(wanted)].slice(0, MAX_TYPES);
+}
+
+/** Every jar a build tool has already downloaded for this project. */
+export function classpathFor(root) {
+  const jars = [];
+  const roots = [
+    join(root, 'build', 'libs'),
+    join(root, 'target'),
+    join(homedir(), '.m2', 'repository'),
+    join(homedir(), '.gradle', 'caches', 'modules-2', 'files-2.1'),
+  ].filter((d) => existsSync(d));
+
+  const walk = (dir, depth) => {
+    if (depth > 8 || jars.length > 20000) return;
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      const full = join(dir, e.name);
+      if (e.isDirectory()) walk(full, depth + 1);
+      else if (e.name.endsWith('.jar') && !e.name.endsWith('-sources.jar')) {
+        try {
+          if (statSync(full).size > 0) jars.push(full);
+        } catch {
+          /* vanished between listing and stat */
+        }
+      }
+    }
+  };
+  for (const d of roots) walk(d, 0);
+  return jars.join(':');
+}
+
+/**
+ * Reads the signatures of every type this project imports but does not
+ * declare, and writes them as external symbols.
+ */
+export function indexJvm(db, root) {
+  const wanted = unresolvedImports(db);
+  if (!wanted.length) return { types: 0, members: 0 };
+
+  const classpath = classpathFor(root);
+  const insertFile = db.prepare(
+    `INSERT INTO files (path, lang, hash, pkg, lines, indexed_at, external, owner)
+     VALUES (?, 'java', '', ?, 0, ?, 1, ?)`,
+  );
+  const insertSymbol = db.prepare(
+    `INSERT INTO symbols
+       (file_id, name, fqn, kind, container_fqn, type_name, type_args, signature, arity, params,
+        start_line, end_line, start_byte, end_byte, modifiers, annotations)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, 0, 0, 0, '["external"]', '[]')`,
+  );
+  const insertType = db.prepare(
+    'INSERT OR REPLACE INTO types (fqn, symbol_id, kind, supertypes) VALUES (?, ?, ?, ?)',
+  );
+
+  const stats = { types: 0, members: 0 };
+  for (let i = 0; i < wanted.length; i += BATCH) {
+    const batch = wanted.slice(i, i + BATCH);
+    let classes;
+    try {
+      classes = readSignatures(batch, classpath);
+    } catch {
+      continue;
+    }
+
+    for (const cls of classes) {
+      // The owning artefact is not knowable from javap, so the package root
+      // stands in: it is what an unresolved call would have been blamed on.
+      const owner = cls.fqn.split('.').slice(0, 3).join('.');
+      const fileId = Number(
+        insertFile.run(`jvm:${cls.fqn}`, cls.fqn, Date.now(), owner).lastInsertRowid,
+      );
+      const typeId = Number(
+        insertSymbol.run(
+          fileId, cls.fqn.split('.').pop(), cls.fqn, 'class', null, null, null,
+          `class ${cls.fqn}  // from the classpath`, null,
+        ).lastInsertRowid,
+      );
+      insertType.run(cls.fqn, typeId, 'class', '[]');
+      stats.types++;
+
+      for (const m of cls.members) {
+        const { erased, arg } = splitGeneric(m.returns);
+        insertSymbol.run(
+          fileId, m.name, `${cls.fqn}#${m.name}`, 'method', cls.fqn, erased, arg,
+          `${m.returns} ${m.name}()  // from the classpath`, m.arity,
+        );
+        stats.members++;
+      }
+    }
+  }
+  return stats;
+}

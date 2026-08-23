@@ -54,7 +54,8 @@ export function resolveJava(db) {
   const types = new Map(); // fqn -> { fqn, symbol_id, kind, supertypes, file_id }
   for (const row of db
     .prepare(
-      `SELECT t.fqn, t.symbol_id, t.kind, t.supertypes, s.file_id
+      `SELECT t.fqn, t.symbol_id, t.kind, t.supertypes, s.file_id,
+              f.external AS isExternal, f.owner AS extOwner
          FROM types t
          JOIN symbols s ON s.id = t.symbol_id
          JOIN files f   ON f.id = s.file_id
@@ -66,6 +67,7 @@ export function resolveJava(db) {
 
   const bySimpleName = new Map(); // "DonationService" -> [fqn, ...]
   for (const fqn of types.keys()) {
+    if (types.get(fqn)?.isExternal) continue;
     const simple = fqn.split('.').pop();
     if (!bySimpleName.has(simple)) bySimpleName.set(simple, []);
     bySimpleName.get(simple).push(fqn);
@@ -77,7 +79,7 @@ export function resolveJava(db) {
   for (const row of db
     .prepare(
       `SELECT s.id, s.name, s.kind, s.arity, s.container_fqn, s.type_name, s.type_args, s.params,
-              s.file_id
+              s.file_id, f.external AS isExternal, f.owner AS extOwner
          FROM symbols s JOIN files f ON f.id = s.file_id
         WHERE f.lang = 'java' AND s.kind IN ('method','constructor','field')`,
     )
@@ -96,6 +98,7 @@ export function resolveJava(db) {
   const methodsByName = new Map(); // "findAll" -> [symbol rows]
   for (const list of methodsByContainer.values()) {
     for (const m of list) {
+      if (m.isExternal) continue;
       if (!methodsByName.has(m.name)) methodsByName.set(m.name, []);
       methodsByName.get(m.name).push(m);
     }
@@ -119,7 +122,11 @@ export function resolveJava(db) {
 
   const symbolById = new Map();
   for (const row of db
-    .prepare('SELECT id, name, kind, container_fqn, fqn, file_id, type_args FROM symbols')
+    .prepare(
+      `SELECT s.id, s.name, s.kind, s.container_fqn, s.fqn, s.file_id, s.type_args,
+              f.external AS isExternal
+         FROM symbols s JOIN files f ON f.id = s.file_id`,
+    )
     .all()) {
     symbolById.set(row.id, row);
   }
@@ -168,6 +175,11 @@ export function resolveJava(db) {
       if (imp.is_wildcard && types.has(`${imp.fqn}.${simple}`)) return `${imp.fqn}.${simple}`;
     }
 
+    // This project's own types answer first: a classpath signature exists to
+    // prove a call leaves the project, never to outvote a type it declares.
+    const mine = (bySimpleName.get(simple) ?? []).filter((fqn) => !types.get(fqn)?.isExternal);
+    if (mine.length === 1) return mine[0];
+    if (mine.length > 1) return null;
     const candidates = bySimpleName.get(simple);
     if (candidates?.length === 1) return candidates[0];
 
@@ -586,7 +598,7 @@ export function resolveJava(db) {
   // pass below, and with it every `var x = a.b().c()`.
   const refs = db
     .prepare(`SELECT r.* FROM refs r JOIN files f ON f.id = r.file_id
-        WHERE f.lang = 'java' AND r.kind != 'annotation'`)
+        WHERE f.lang = 'java' AND f.external = 0 AND r.kind != 'annotation'`)
     .all();
   for (const r of refs) refById.set(r.id, r);
 
@@ -693,8 +705,11 @@ export function resolveJava(db) {
    * Every name the indexed Java declares, of any kind. A call to a name absent
    * from it provably cannot land here -- the proof that outranks a JDK guess.
    */
+  // "Does THIS project declare that name?" -- the proof a call cannot land
+  // here. A classpath signature must stay out of it: reading java.util.List
+  // must not make `size` look like something this repository defines.
   const declaredNames = new Set();
-  for (const row of symbolById.values()) declaredNames.add(row.name);
+  for (const row of symbolById.values()) if (!row.isExternal) declaredNames.add(row.name);
 
   const insertNotInProject = (refId) => {
     insertRow.run(refId, 'external:not-in-project', 1, null);
@@ -751,6 +766,12 @@ export function resolveJava(db) {
     if (ref.kind === 'new') {
       const typeFqn = resolveTypeName(ref.name, ref.file_id, fromSymbol?.container_fqn ?? null);
       const target = typeFqn && types.get(typeFqn);
+      if (target?.isExternal) {
+        // Constructing a classpath type: the signature proves where it lives,
+        // and nothing on the classpath is ever an edge target.
+        insertExternal(ref.id, target.extOwner ?? externalOwner(ref.name, ref.file_id));
+        continue;
+      }
       if (!target) {
         const owner = externalOwner(ref.name, ref.file_id);
         if (owner) insertExternal(ref.id, owner);
@@ -786,6 +807,13 @@ export function resolveJava(db) {
     }
 
     const recvType = recv;
+    // A receiver whose type is declared on the classpath cannot be calling
+    // into this project, whatever the member turns out to be. The signature
+    // proves it, where before the name only suggested it.
+    if (typeof recvType === 'string' && types.get(recvType)?.isExternal) {
+      insertExternal(ref.id, types.get(recvType).extOwner ?? null);
+      continue;
+    }
     if (recvType) {
       let target = findMethod(recvType, ref.name, ref.arity, ref, fromSymbol?.container_fqn);
       // Implicit `this` inside a nested class can also mean the outer class.

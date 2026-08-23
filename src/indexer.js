@@ -11,6 +11,7 @@ import { runBindings, BINDING_LANGS } from './bindings/index.js';
 import { railsAttributes } from './schema/rails.js';
 import { setMeta } from './db.js';
 import { indexAmbient } from './ambient.js';
+import { indexJvm } from './jvm.js';
 
 function sha1(text) {
   return createHash('sha1').update(text).digest('hex');
@@ -257,6 +258,23 @@ export async function indexProject(db, root, { full = false, onProgress } = {}) 
       }
     }
     ambientStats = indexAmbient(db, root, { parsers, extractorFor, langForPath });
+  }
+
+  // The same idea for Java, read with javap: a receiver typed by Mono<User> or
+  // Optional<Post> has its type declared in a jar, and a chain stops there
+  // without it. The JDK's own classes need no download at all, which turns a
+  // pile of "assumed runtime" into proof.
+  const hasJava = db
+    .prepare("SELECT COUNT(*) AS n FROM files WHERE external = 0 AND lang = 'java'")
+    .get().n;
+  if (hasJava > 0) {
+    try {
+      const jvm = indexJvm(db, root);
+      ambientStats = { ...ambientStats, jvmTypes: jvm.types, jvmMembers: jvm.members };
+    } catch {
+      // No javap on this machine simply means no signatures; everything else
+      // about the index is unaffected.
+    }
   }
 
   const resolveStats = {};
