@@ -132,6 +132,63 @@ export function extractTypeScript(tree, src, ctx = {}) {
 
   const unquote = (node) => text(node, src).replace(/^['"`]|['"`]$/g, '');
 
+  /**
+   * `const utils = require('./support/utils')` is the same statement as an
+   * import, written the older way. Half of a plain-JS repository binds its
+   * modules like this, and without it every `utils.foo()` looked like a call
+   * on a name that came from nowhere.
+   *
+   * Handles the namespace form, destructuring, and `require('m').thing`.
+   */
+  function readRequire(node) {
+    const declarator = node.type === 'variable_declarator' ? node : null;
+    if (!declarator) return false;
+    const value = childByField(declarator, 'value');
+    const nameNode = childByField(declarator, 'name');
+    if (!value || !nameNode) return false;
+
+    // `require('m')` itself, or `require('m').member`
+    let call = value;
+    let member = null;
+    if (value.type === 'member_expression') {
+      call = childByField(value, 'object');
+      member = childByField(value, 'property');
+    }
+    if (call?.type !== 'call_expression') return false;
+    const fn = childByField(call, 'function');
+    if (!fn || text(fn, src) !== 'require') return false;
+    const args = childByField(call, 'arguments');
+    const first = args?.namedChild(0);
+    if (!first || !['string', 'template_string'].includes(first.type)) return false;
+    const spec = unquote(first);
+
+    if (member) {
+      imports.push({
+        fqn: spec, simple: text(nameNode, src), orig: text(member, src),
+        is_wildcard: 0, is_static: 0, kind: 'import',
+      });
+      return true;
+    }
+    if (nameNode.type === 'object_pattern') {
+      for (let i = 0; i < nameNode.namedChildCount; i++) {
+        const el = nameNode.namedChild(i);
+        if (!el) continue;
+        const key = childByField(el, 'key') ?? el;
+        const alias = childByField(el, 'value') ?? key;
+        imports.push({
+          fqn: spec, simple: text(alias, src), orig: text(key, src),
+          is_wildcard: 0, is_static: 0, kind: 'import',
+        });
+      }
+      return true;
+    }
+    imports.push({
+      fqn: spec, simple: text(nameNode, src), orig: '*',
+      is_wildcard: 1, is_static: 0, kind: 'import',
+    });
+    return true;
+  }
+
   function readImport(node) {
     const source = childByField(node, 'source');
     if (!source) return;
@@ -293,6 +350,10 @@ export function extractTypeScript(tree, src, ctx = {}) {
       case 'import_statement':
         readImport(node);
         return;
+
+      case 'variable_declarator':
+        if (readRequire(node)) return;
+        break;
 
       case 'export_statement': {
         if (readReexport(node)) return;

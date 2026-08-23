@@ -32,6 +32,24 @@ export function normalizeType(text) {
   return t || null;
 }
 
+/**
+ * The single type argument of a generic type: `Mono<User>` -> `User`,
+ * `List<Post>` -> `Post`. Null when there is none, when there are several
+ * (`Map<K,V>` names no element), or when the argument is itself generic --
+ * the point is to know what one element is, not to model the whole type.
+ *
+ * This is what a lambda over the value receives, and erasing it is what made
+ * `client.fetch(User.class, name).map(user -> user.getSpec())` untypable.
+ */
+export function genericArgOf(text) {
+  if (!text) return null;
+  const lt = text.indexOf('<');
+  if (lt === -1) return null;
+  const inner = text.slice(lt + 1, text.lastIndexOf('>')).trim();
+  if (!inner || inner.includes(',') || inner.includes('<') || inner === '?') return null;
+  return normalizeType(inner.replace(/^\?\s+extends\s+/, ''));
+}
+
 function childByField(node, field) {
   return node.childForFieldName(field) ?? null;
 }
@@ -157,8 +175,13 @@ function argumentTokens(argsNode, src) {
       case 'identifier':
         out.push(text(arg, src));
         break;
-      default:
-        out.push(null);
+      default: {
+        // `User.class` is how a generic Java API is told which type to hand
+        // back, so the token is worth keeping even though it is not a plain
+        // identifier: it is often the only place the element type is written.
+        const raw = text(arg, src);
+        out.push(/^[A-Za-z_$][\w$.]*\.class$/.test(raw) ? raw : null);
+      }
     }
   }
   return out;
@@ -311,6 +334,7 @@ export function extractJava(tree, src) {
         kind: isCtor ? 'constructor' : 'method',
         container_fqn: containerFqn,
         type_name: ret,
+        type_args: retNode ? genericArgOf(text(retNode, src)) : null,
         signature: `${isCtor ? '' : `${ret ?? 'void'} `}${simpleName}(${params
           .map((p) => p.type ?? '?')
           .join(', ')})`,
@@ -362,6 +386,7 @@ export function extractJava(tree, src) {
           kind: 'field',
           container_fqn: containerFqn,
           type_name: typeName,
+          type_args: typeNode ? genericArgOf(text(typeNode, src)) : null,
           signature: `${typeName ?? '?'} ${fieldName}`,
           arity: null,
           supertypes: [],
@@ -390,6 +415,7 @@ export function extractJava(tree, src) {
             scopeTmpId: scopeId,
             name: text(nameNode, src),
             type_name: typeName,
+            type_args: typeNode ? genericArgOf(text(typeNode, src)) : null,
             line: node.startPosition.row + 1,
             init_kind: !typeName && value?.type === 'method_invocation' ? 'call' : null,
           });
@@ -414,8 +440,21 @@ export function extractJava(tree, src) {
                   (p) => childByField(p, 'name') ?? p,
                 ),
               ];
+        // Which call this lambda was passed to. Its parameter holds one
+        // element of whatever that call's receiver produces, and only the
+        // resolver can say what that is.
+        let owner = node.parent;
+        while (owner && owner.type !== 'method_invocation') owner = owner.parent;
+        const ownerRefTmp = owner ? (callRefByNode.get(owner.id) ?? null) : null;
+
         for (const n of names) {
-          locals.push({ scopeTmpId: scopeId, name: text(n, src), type_name: null });
+          locals.push({
+            scopeTmpId: scopeId,
+            name: text(n, src),
+            type_name: null,
+            ownerRefTmp,
+            init_kind: ownerRefTmp == null ? null : 'lambda',
+          });
         }
       }
     }

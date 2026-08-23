@@ -3,7 +3,7 @@ import { mkdirSync, rmSync, existsSync, chmodSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 /** Bump whenever the schema changes: the index is a cache, so it is rebuilt. */
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 
 const SCHEMA = `
 PRAGMA journal_mode = WAL;
@@ -33,6 +33,10 @@ CREATE TABLE IF NOT EXISTS symbols (
   kind          TEXT NOT NULL,
   container_fqn TEXT,
   type_name     TEXT,
+  -- The single generic argument of the declared type: Mono<User> -> User.
+  -- A lambda over the value receives one of these, so erasing it here is what
+  -- made every reactive chain untypable.
+  type_args     TEXT,
   signature     TEXT,
   arity         INTEGER,
   -- JSON array of declared parameter type names, used to pick between overloads.
@@ -80,6 +84,13 @@ CREATE TABLE IF NOT EXISTS locals (
   scope_symbol_id INTEGER,
   name            TEXT,
   type_name       TEXT,
+  -- The single generic argument of the declared type: List<Post> -> Post. It
+  -- is what a lambda over the value receives, so it cannot be thrown away.
+  type_args       TEXT,
+  -- For a lambda parameter, the call the lambda was passed to. The parameter's
+  -- type is the element type of that call's receiver, known only at resolve
+  -- time, so the link has to survive into the index.
+  owner_ref_id    INTEGER,
   -- Set when the declaration was x = someCall(), so a resolver can come back
   -- and fill type_name in from the callee's declared return type.
   line            INTEGER,

@@ -64,9 +64,9 @@ export async function indexProject(db, root, { full = false, onProgress } = {}) 
   const deleteFileRows = db.prepare('DELETE FROM files WHERE path = ?');
   const insertSymbol = db.prepare(
     `INSERT INTO symbols
-       (file_id, name, fqn, kind, container_fqn, type_name, signature, arity, params,
+       (file_id, name, fqn, kind, container_fqn, type_name, type_args, signature, arity, params,
         start_line, end_line, start_byte, end_byte, modifiers, annotations)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const insertType = db.prepare(
     'INSERT OR REPLACE INTO types (fqn, symbol_id, kind, supertypes) VALUES (?, ?, ?, ?)',
@@ -76,8 +76,8 @@ export async function indexProject(db, root, { full = false, onProgress } = {}) 
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
   );
   const insertLocal = db.prepare(
-    `INSERT INTO locals (file_id, scope_symbol_id, name, type_name, line, init_kind)
-     VALUES (?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO locals (file_id, scope_symbol_id, name, type_name, type_args, owner_ref_id, line, init_kind)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const insertRef = db.prepare(
     `INSERT INTO refs (file_id, from_symbol_id, name, receiver, arity, arg_types, str_args,
@@ -151,6 +151,7 @@ export async function indexProject(db, root, { full = false, onProgress } = {}) 
             s.kind,
             s.container_fqn,
             s.type_name,
+            s.type_args ?? null,
             s.signature,
             s.arity,
             s.params ? JSON.stringify(s.params) : null,
@@ -170,16 +171,6 @@ export async function indexProject(db, root, { full = false, onProgress } = {}) 
         stats.symbols++;
       }
 
-      for (const l of result.locals) {
-        insertLocal.run(
-          fileId,
-          tmpToReal.get(l.scopeTmpId) ?? null,
-          l.name,
-          l.type_name,
-          l.line ?? null,
-          l.init_kind ?? null,
-        );
-      }
       // Refs are inserted in extraction order, and a chain link always points
       // at an earlier ref, so ids are known by the time they are needed.
       const refIds = new Array(result.refs.length).fill(null);
@@ -201,6 +192,20 @@ export async function indexProject(db, root, { full = false, onProgress } = {}) 
           ).lastInsertRowid,
         );
       });
+
+      // After the refs, so a lambda parameter can name the call it belongs to.
+      for (const l of result.locals) {
+        insertLocal.run(
+          fileId,
+          tmpToReal.get(l.scopeTmpId) ?? null,
+          l.name,
+          l.type_name,
+          l.type_args ?? null,
+          l.ownerRefTmp == null ? null : refIds[l.ownerRefTmp],
+          l.line ?? null,
+          l.init_kind ?? null,
+        );
+      }
 
       stats.parsed++;
       onProgress?.(rel, stats);

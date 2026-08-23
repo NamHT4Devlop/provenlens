@@ -73,9 +73,10 @@ export function resolveJava(db) {
 
   const methodsByContainer = new Map(); // fqn -> [{id, name, arity, kind}]
   const fieldsByContainer = new Map(); // fqn -> Map(name -> type_name)
+  const fieldElements = new Map(); // "fqn#field" -> its single generic argument
   for (const row of db
     .prepare(
-      `SELECT s.id, s.name, s.kind, s.arity, s.container_fqn, s.type_name, s.params
+      `SELECT s.id, s.name, s.kind, s.arity, s.container_fqn, s.type_name, s.type_args, s.params
          FROM symbols s JOIN files f ON f.id = s.file_id
         WHERE f.lang = 'java' AND s.kind IN ('method','constructor','field')`,
     )
@@ -84,6 +85,7 @@ export function resolveJava(db) {
     if (row.kind === 'field') {
       if (!fieldsByContainer.has(row.container_fqn)) fieldsByContainer.set(row.container_fqn, new Map());
       fieldsByContainer.get(row.container_fqn).set(row.name, row.type_name);
+      fieldElements.set(`${row.container_fqn}#${row.name}`, row.type_args ?? null);
     } else {
       if (!methodsByContainer.has(row.container_fqn)) methodsByContainer.set(row.container_fqn, []);
       methodsByContainer.get(row.container_fqn).push(row);
@@ -99,15 +101,24 @@ export function resolveJava(db) {
   }
 
   const localsByScope = new Map(); // symbol_id -> Map(name -> type_name)
-  for (const row of db.prepare('SELECT scope_symbol_id, name, type_name FROM locals').all()) {
+  for (const row of db
+    .prepare('SELECT scope_symbol_id, name, type_name, type_args, owner_ref_id, init_kind FROM locals')
+    .all()) {
     if (row.scope_symbol_id == null) continue;
     if (!localsByScope.has(row.scope_symbol_id)) localsByScope.set(row.scope_symbol_id, new Map());
-    localsByScope.get(row.scope_symbol_id).set(row.name, row.type_name);
+    // A lambda parameter has no declared type; it carries the call it belongs
+    // to instead, and receiverType works the rest out.
+    localsByScope.get(row.scope_symbol_id).set(row.name, {
+      type: row.type_name,
+      args: row.type_args,
+      ownerRef: row.owner_ref_id,
+      init: row.init_kind,
+    });
   }
 
   const symbolById = new Map();
   for (const row of db
-    .prepare('SELECT id, name, kind, container_fqn, fqn, file_id FROM symbols')
+    .prepare('SELECT id, name, kind, container_fqn, fqn, file_id, type_args FROM symbols')
     .all()) {
     symbolById.set(row.id, row);
   }
@@ -211,7 +222,7 @@ export function resolveJava(db) {
     if (token.startsWith('!')) return token.slice(1);
 
     const local = localsByScope.get(ref.from_symbol_id)?.get(token);
-    if (local) return local;
+    if (local?.type) return local.type;
 
     for (const t of typeChain(enclosingFqn)) {
       const fieldType = fieldsByContainer.get(t.fqn)?.get(token);
@@ -344,6 +355,73 @@ export function resolveJava(db) {
     return result;
   }
 
+  /**
+   * What one element of this call's result is.
+   *
+   * Two sources, both written in the source rather than assumed. A declared
+   * generic argument says it outright -- `Mono<User> find()` yields Users. And
+   * a `Foo.class` argument says it for the generic APIs that take one:
+   * `client.fetch(User.class, name)` is how a Java API asks for Foos back, and
+   * the type is right there in the call.
+   */
+  function elementTypeOfRef(ref, depth) {
+    if (!ref || depth > 6) return null;
+    const fromSymbol = symbolById.get(ref.from_symbol_id);
+
+    // `Foo.class` anywhere in the arguments, when Foo is a type we indexed.
+    for (const token of JSON.parse(ref.arg_types || '[]')) {
+      const cls = /^([A-Za-z_$][\w$.]*)\.class$/.exec(String(token ?? '').replace(/^!/, ''));
+      if (!cls) continue;
+      const hit = resolveTypeName(cls[1], ref.file_id, fromSymbol?.container_fqn ?? null);
+      if (hit) return hit;
+    }
+
+    // Otherwise the callee's declared return type, if it names one element.
+    const recv = receiverType(ref, fromSymbol, depth + 1);
+    if (typeof recv !== 'string' || !recv) return null;
+    const target = findMethod(recv, ref.name, ref.arity, ref, fromSymbol?.container_fqn);
+    if (!target?.type_args) return null;
+    return resolveTypeName(target.type_args, ref.file_id, fromSymbol?.container_fqn ?? null);
+  }
+
+  /**
+   * The type of a lambda parameter, from the call the lambda was handed to.
+   *
+   * `list.forEach(item -> ...)` gives the lambda an element of `list`, so the
+   * answer is the element type of that call's RECEIVER -- not of the call
+   * itself, which is what `forEach` returns.
+   */
+  function lambdaParamType(ownerRefId, depth) {
+    if (depth > 6) return null;
+    const owner = refById.get(ownerRefId);
+    if (!owner) return null;
+
+    if (owner.receiver_ref_id != null) {
+      const fromChain = elementTypeOfRef(refById.get(owner.receiver_ref_id), depth + 1);
+      if (fromChain) return fromChain;
+    }
+    // `posts.forEach(p -> ...)` -- the receiver is a plain name, so its own
+    // declared generic argument is the element type.
+    const holder =
+      localsByScope.get(owner.from_symbol_id)?.get(owner.receiver) ??
+      fieldElementOf(symbolById.get(owner.from_symbol_id)?.container_fqn, owner.receiver);
+    if (holder?.args) {
+      const hit = resolveTypeName(holder.args, owner.file_id, symbolById.get(owner.from_symbol_id)?.container_fqn ?? null);
+      if (hit) return hit;
+    }
+    return null;
+  }
+
+  /** A field's element type, looked up through the enclosing type's chain. */
+  function fieldElementOf(enclosingFqn, name) {
+    if (!enclosingFqn || !name) return null;
+    for (const t of typeChain(enclosingFqn)) {
+      const args = fieldElements.get(`${t.fqn}#${name}`);
+      if (args) return { type: fieldsByContainer.get(t.fqn)?.get(name) ?? null, args };
+    }
+    return null;
+  }
+
   function receiverType(ref, fromSymbol, depth = 0) {
     const enclosing = fromSymbol?.container_fqn ?? null;
     let raw = ref.receiver;
@@ -393,12 +471,18 @@ export function resolveJava(db) {
     const scope = localsByScope.get(ref.from_symbol_id);
     if (scope?.has(raw)) {
       const local = scope.get(raw);
-      // A declared name with no type -- a lambda parameter. Guessing from the
-      // bare method name here would invent edges, so stop instead.
-      if (!local) return { complex: true };
-      const hit = resolveTypeName(local, ref.file_id, enclosing);
+      if (!local?.type) {
+        // A lambda parameter: no declared type, but it holds one element of
+        // whatever the call it was passed to is iterating over.
+        const fromLambda = local?.ownerRef != null ? lambdaParamType(local.ownerRef, depth) : null;
+        if (fromLambda) return fromLambda;
+        // Otherwise a declared name we cannot type. Guessing from the bare
+        // method name here would invent edges, so stop instead.
+        return { complex: true };
+      }
+      const hit = resolveTypeName(local.type, ref.file_id, enclosing);
       if (hit) return hit;
-      const owner = externalOwner(local, ref.file_id);
+      const owner = externalOwner(local.type, ref.file_id);
       return owner ? { external: owner } : null;
     }
 
@@ -452,7 +536,12 @@ export function resolveJava(db) {
       if (!localsByScope.has(local.scope_symbol_id)) {
         localsByScope.set(local.scope_symbol_id, new Map());
       }
-      localsByScope.get(local.scope_symbol_id).set(local.name, target.type_name);
+      localsByScope.get(local.scope_symbol_id).set(local.name, {
+        type: target.type_name,
+        args: target.type_args ?? null,
+        ownerRef: null,
+        init: 'inferred',
+      });
     }
   }
 
