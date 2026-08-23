@@ -564,6 +564,13 @@ export function resolveTypeScript(db, root) {
    * The called name is declared nowhere in the index, so the call cannot target
    * this project. Weaker than naming the package, but a proof all the same.
    */
+  /**
+   * Every name these files declare, of any kind. A call to a name absent from
+   * it provably cannot land in this repository -- the proof that outranks any
+   * runtime guess.
+   */
+  const declaredNames = new Set(allSymbols.map((row) => row.name));
+
   const insertNotInProject = (refId) => {
     insertRow.run(refId, 'external:not-in-project', 1, null);
     refOutcome.set(refId, { external: true, owner: null });
@@ -589,8 +596,18 @@ export function resolveTypeScript(db, root) {
     stats.external++;
     stats.ambient++;
   };
-  /** A language built-in on an untyped receiver: assumed, not proven. */
-  const insertRuntime = (refId) => {
+  /**
+   * A language built-in on an untyped receiver.
+   *
+   * Assumed only when it has to be. `new Error(...)` and `new Map()` reach a
+   * built-in for a reason nothing needs to assume: this repository declares no
+   * `Error` and no `Map` anywhere, so the call cannot land here. Proof runs
+   * before assumption everywhere else in this resolver, and skipping the check
+   * here left 692 provable calls in nest sitting in the assumed bucket, which
+   * the self-audit then charged for.
+   */
+  const insertRuntime = (refId, name) => {
+    if (name && !declaredNames.has(name)) return insertNotInProject(refId);
     insertRow.run(refId, 'external:js-runtime', 1, 'js-runtime');
     refOutcome.set(refId, { external: true, owner: 'js-runtime' });
     stats.external++;
@@ -627,7 +644,7 @@ export function resolveTypeScript(db, root) {
       if (!type?.fqn) {
         const owner = externalOwner(ref.name, ref.file_id, file?.pkg);
         if (owner) insertExternal(ref.id, owner);
-        else if (JS_GLOBALS.has(ref.name)) insertRuntime(ref.id);
+        else if (JS_GLOBALS.has(ref.name)) insertRuntime(ref.id, ref.name);
         else if (!callablesByName.has(ref.name)) insertNotInProject(ref.id);
         else insertUnresolved(ref.id, 'unknown-type');
         continue;
@@ -672,7 +689,7 @@ export function resolveTypeScript(db, root) {
       else if (carried !== undefined) insertExternal(ref.id, carried);
       // The receiver has no type we could work out; a language built-in is by
       // far the likeliest reading of `.map` or `.get` at that point.
-      else if (JS_RUNTIME.has(ref.name)) insertRuntime(ref.id);
+      else if (JS_RUNTIME.has(ref.name)) insertRuntime(ref.id, ref.name);
       else insertUnresolved(ref.id, 'complex-receiver-chain');
       continue;
     }
@@ -706,7 +723,7 @@ export function resolveTypeScript(db, root) {
     // A receiver we could not type, calling something the language provides:
     // linking that to whichever project method shares the name invents an edge.
     if (ref.receiver && JS_RUNTIME.has(ref.name)) {
-      insertRuntime(ref.id);
+      insertRuntime(ref.id, ref.name);
       continue;
     }
     // A bare call is a module function or an import. Both were tried above, so

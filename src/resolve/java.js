@@ -671,6 +671,13 @@ export function resolveJava(db) {
    * target this project. Weaker than naming the library, but still a proof
    * rather than a guess -- recorded separately so it stays auditable.
    */
+  /**
+   * Every name the indexed Java declares, of any kind. A call to a name absent
+   * from it provably cannot land here -- the proof that outranks a JDK guess.
+   */
+  const declaredNames = new Set();
+  for (const row of symbolById.values()) declaredNames.add(row.name);
+
   const insertNotInProject = (refId) => {
     insertRow.run(refId, 'external:not-in-project', 1, null);
     refOutcome.set(refId, { external: true, owner: null });
@@ -689,8 +696,14 @@ export function resolveJava(db) {
     stats.external++;
     stats.outOfScope++;
   };
-  /** A JDK method on an untyped receiver: assumed, not proven. */
-  const insertRuntime = (refId) => {
+  /**
+   * A JDK method on an untyped receiver.
+   *
+   * Assumed only when it has to be: a name this repository declares nowhere
+   * cannot be reached from it, and that is a proof, which outranks the guess.
+   */
+  const insertRuntime = (refId, name) => {
+    if (name && !declaredNames.has(name)) return insertNotInProject(refId);
     insertRow.run(refId, 'external:jdk-runtime', 1, 'jdk-runtime');
     refOutcome.set(refId, { external: true, owner: 'jdk-runtime' });
     stats.external++;
@@ -749,7 +762,7 @@ export function resolveJava(db) {
       // cannot be a call into this project.
       else if (!methodsByName.has(ref.name)) insertNotInProject(ref.id);
       else if (carried !== undefined) insertExternal(ref.id, carried);
-      else if (JAVA_RUNTIME.has(ref.name)) insertRuntime(ref.id);
+      else if (JAVA_RUNTIME.has(ref.name)) insertRuntime(ref.id, ref.name);
       else insertUnresolved(ref.id, 'complex-receiver-chain');
       continue;
     }
@@ -804,7 +817,7 @@ export function resolveJava(db) {
       // Implicit `this` with nothing on the type chain to match: whatever else
       // in the project carries this name is not reachable from here.
       if (!ref.receiver) {
-        if (JAVA_RUNTIME.has(ref.name)) insertRuntime(ref.id);
+        if (JAVA_RUNTIME.has(ref.name)) insertRuntime(ref.id, ref.name);
         else insertOutOfScope(ref.id);
         continue;
       }

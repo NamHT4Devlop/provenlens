@@ -520,8 +520,10 @@ export function resolveRuby(db) {
         stats.dropped++;
         continue;
       }
-      if (RUBY_CORE.has(ref.name)) insertExternal(ref.id, 'Kernel');
-      else if (!methodsByName.has(ref.name)) insertNotInProject(ref.id);
+      // Proof first: a name this repository declares nowhere cannot be
+      // reached from here, and that beats guessing at Kernel.
+      if (!methodsByName.has(ref.name)) insertNotInProject(ref.id);
+      else if (RUBY_CORE.has(ref.name)) insertExternal(ref.id, 'Kernel');
       else insertOutOfScope(ref.id);
       continue;
     }
@@ -535,7 +537,7 @@ export function resolveRuby(db) {
     } else if (byName.length) {
       insertUnresolved(ref.id, 'ambiguous-name');
     } else {
-      if (!ref.receiver && RUBY_CORE.has(ref.name)) {
+      if (!ref.receiver && RUBY_CORE.has(ref.name) && methodsByName.has(ref.name)) {
         insertExternal(ref.id, 'Kernel');
         continue;
       }
