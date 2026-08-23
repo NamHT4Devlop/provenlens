@@ -1,4 +1,7 @@
 node_modules/
+# ...except the stub dependency a fixture needs to exercise ambient types.
+!__fixtures__/**/node_modules/
+!__fixtures__/**/node_modules/**
 .codelens/
 __fixtures__/.test-*.db*
 __fixtures__/*/.codelens/

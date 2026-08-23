@@ -10,6 +10,7 @@ import { discoverFiles } from './project.js';
 import { runBindings, BINDING_LANGS } from './bindings/index.js';
 import { railsAttributes } from './schema/rails.js';
 import { setMeta } from './db.js';
+import { indexAmbient } from './ambient.js';
 
 function sha1(text) {
   return createHash('sha1').update(text).digest('hex');
@@ -239,6 +240,25 @@ export async function indexProject(db, root, { full = false, onProgress } = {}) 
   // in the source. Synthesised here so the resolvers can see them.
   const schemaStats = applyRailsSchema(db, root);
 
+  // Declarations from the dependencies this project imports, read so a chain
+  // can be typed THROUGH a library rather than stopping at one. They are
+  // marked external: never a resolution target, never part of coverage.
+  let ambientStats = { packages: 0, files: 0, symbols: 0 };
+  const needsAmbient = db
+    .prepare("SELECT COUNT(*) AS n FROM files WHERE external = 0 AND lang IN ('typescript','tsx','javascript')")
+    .get().n;
+  if (needsAmbient > 0) {
+    const parsers = new Map();
+    for (const lang of ['typescript', 'tsx', 'javascript']) {
+      try {
+        parsers.set(lang, await getParser(lang));
+      } catch {
+        /* a grammar that will not load simply means no ambient types */
+      }
+    }
+    ambientStats = indexAmbient(db, root, { parsers, extractorFor, langForPath });
+  }
+
   const resolveStats = {};
   for (const { name, langs, fn } of RESOLVERS) {
     const placeholders = langs.map(() => '?').join(', ');
@@ -253,7 +273,13 @@ export async function indexProject(db, root, { full = false, onProgress } = {}) 
   const bindingStats = runBindings(db, root);
 
   setMeta(db, 'last_indexed_at', Date.now());
-  return { ...stats, resolve: resolveStats, bindings: bindingStats, schema: schemaStats };
+  return {
+    ...stats,
+    resolve: resolveStats,
+    bindings: bindingStats,
+    schema: schemaStats,
+    ambient: ambientStats,
+  };
 }
 
 /**

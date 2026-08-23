@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { buildIndex } from './helpers.js';
 import { normalizeType, modulePathOf } from '../src/extract/typescript.js';
 import { readTsconfigPaths } from '../src/resolve/typescript.js';
-import { callersOf, calleesOf, impactOf } from '../src/query.js';
+import { callersOf, calleesOf, impactOf, searchSymbols } from '../src/query.js';
 
 let db;
 let one;
@@ -180,6 +180,42 @@ describe('CommonJS, which no export keyword announces', () => {
     assert.ok(
       callers.some((f) => f.includes('build')),
       `expected the require()d function to be reached, saw ${callers}`,
+    );
+  });
+});
+
+describe('declarations read from a dependency', () => {
+  test('a call on a dependency-typed receiver is proven external, not missed', () => {
+    // `this.ledger.post(...)` where Ledger is declared only in node_modules.
+    // Reading the declaration is what turns this from "we could not work the
+    // receiver out" into "it provably leaves the project".
+    const row = db
+      .prepare(
+        `SELECT u.external, u.owner, u.reason FROM unresolved u
+           JOIN refs r ON r.id = u.ref_id WHERE r.name = 'post' AND r.receiver = 'this.ledger'`,
+      )
+      .get();
+    assert.ok(row, 'expected the call to be accounted for');
+    assert.equal(row.external, 1, `expected external, got ${row.reason}`);
+    assert.equal(row.owner, 'tiny-lib', 'and named after the package it came from');
+  });
+
+  test('the dependency is read but never counted as this project', () => {
+    const mine = db.prepare('SELECT COUNT(*) n FROM files WHERE external = 0').get().n;
+    const theirs = db.prepare('SELECT COUNT(*) n FROM files WHERE external = 1').get().n;
+    assert.ok(theirs > 0, 'the stub dependency should have been read');
+    assert.ok(
+      !db.prepare("SELECT 1 FROM files WHERE external = 0 AND path LIKE 'node_modules/%'").get(),
+      'and none of it counted as project code',
+    );
+    assert.equal(mine, stats.parsed, 'project file count is the parsed count, nothing more');
+  });
+
+  test('a dependency symbol never turns up in a search of this project', () => {
+    const hits = searchSymbols(db, 'Ledger', { limit: 20 });
+    assert.ok(
+      hits.every((h) => !h.file_path.startsWith('node_modules/')),
+      `search must stay inside the project: ${hits.map((h) => h.file_path)}`,
     );
   });
 });

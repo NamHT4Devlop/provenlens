@@ -143,7 +143,8 @@ export function resolveTypeScript(db, root) {
   const types = new Map(); // fqn -> { fqn, symbol_id, kind, supertypes, file_id, module }
   for (const row of db
     .prepare(
-      `SELECT t.fqn, t.symbol_id, t.kind, t.supertypes, s.file_id, s.name, f.pkg AS module
+      `SELECT t.fqn, t.symbol_id, t.kind, t.supertypes, s.file_id, s.name, f.pkg AS module,
+              f.external AS isExternal, f.owner AS extOwner
          FROM types t
          JOIN symbols s ON s.id = t.symbol_id
          JOIN files f   ON f.id = s.file_id
@@ -158,7 +159,7 @@ export function resolveTypeScript(db, root) {
   const allSymbols = db
     .prepare(
       `SELECT s.id, s.name, s.kind, s.arity, s.fqn, s.container_fqn, s.type_name, s.type_args,
-              s.modifiers, f.pkg AS module, s.file_id
+              s.modifiers, f.pkg AS module, s.file_id, f.external AS isExternal, f.owner AS extOwner
          FROM symbols s JOIN files f ON f.id = s.file_id
         WHERE f.lang IN (${LANG_LIST})`,
     )
@@ -175,8 +176,12 @@ export function resolveTypeScript(db, root) {
     }
   }
 
+  // Both of these answer "does THIS repository declare that name?", which is
+  // the proof that a call cannot land here. A dependency's declarations must
+  // stay out of them: reading rxjs must not make `subscribe` look like ours.
   const callablesByName = new Map();
   for (const row of allSymbols) {
+    if (row.isExternal) continue;
     if (!['method', 'function'].includes(row.kind)) continue;
     if (!callablesByName.has(row.name)) callablesByName.set(row.name, []);
     callablesByName.get(row.name).push(row);
@@ -249,6 +254,14 @@ export function resolveTypeScript(db, root) {
       // constructor, which is not in the type table but is one all the same.
       return types.get(hit.fqn) ?? (hit.kind === 'function' ? asConstructible(name, fileId, module) : null);
     }
+
+    // This project's own types answer first. A dependency's declarations are a
+    // last resort -- they exist to prove a call leaves the project, never to
+    // outvote a type the project declares, and letting them into this vote
+    // turned resolutions into nothing by making the match ambiguous.
+    const mine = [...types.values()].filter((t) => t.name === name && !t.isExternal);
+    if (mine.length === 1) return mine[0];
+    if (mine.length > 1) return null;
 
     const matches = [...types.values()].filter((t) => t.name === name);
     if (matches.length === 1) return matches[0];
@@ -543,7 +556,7 @@ export function resolveTypeScript(db, root) {
   const refs = db
     .prepare(
       `SELECT r.* FROM refs r JOIN files f ON f.id = r.file_id
-        WHERE f.lang IN (${LANG_LIST}) AND r.kind != 'annotation'`,
+        WHERE f.lang IN (${LANG_LIST}) AND f.external = 0 AND r.kind != 'annotation'`,
     )
     .all();
   for (const r of refs) refById.set(r.id, r);
@@ -643,7 +656,7 @@ export function resolveTypeScript(db, root) {
    * it provably cannot land in this repository -- the proof that outranks any
    * runtime guess.
    */
-  const declaredNames = new Set(allSymbols.map((row) => row.name));
+  const declaredNames = new Set(allSymbols.filter((row) => !row.isExternal).map((row) => row.name));
 
   const insertNotInProject = (refId) => {
     insertRow.run(refId, 'external:not-in-project', 1, null);
@@ -787,7 +800,20 @@ export function resolveTypeScript(db, root) {
     }
 
     if (type) {
+      // A receiver whose TYPE belongs to a dependency cannot be calling into
+      // this project, whatever the member turns out to be. Reading the
+      // declaration proves the whole call external -- and without this the
+      // gaps in our own .d.ts reading would turn proofs into misses.
+      if (type.isExternal) {
+        insertExternal(ref.id, type.extOwner ?? null);
+        continue;
+      }
       const target = findMember(type, ref.name);
+      if (target?.isExternal) {
+        // Inherited into this project's type from a dependency's.
+        insertExternal(ref.id, target.extOwner ?? null);
+        continue;
+      }
       if (target) {
         insertEdge.run(ref.from_symbol_id, target.id, 'calls', 1.0, 'direct', ref.line);
         stats.direct++;

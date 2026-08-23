@@ -3,7 +3,7 @@ import { mkdirSync, rmSync, existsSync, chmodSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 /** Bump whenever the schema changes: the index is a cache, so it is rebuilt. */
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 
 const SCHEMA = `
 PRAGMA journal_mode = WAL;
@@ -21,7 +21,13 @@ CREATE TABLE IF NOT EXISTS files (
   hash       TEXT NOT NULL,
   pkg        TEXT,
   lines      INTEGER,
-  indexed_at INTEGER
+  indexed_at INTEGER,
+  -- A declaration file from a dependency, read only so a chain can be typed
+  -- through it. Its symbols are never resolution targets and never count
+  -- towards coverage: they are not this project's code.
+  external   INTEGER DEFAULT 0,
+  -- Which dependency it came from, so a call landing there can name it.
+  owner      TEXT
 );
 
 -- One row per declared thing: type, method, constructor, field.

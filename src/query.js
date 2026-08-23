@@ -33,7 +33,11 @@ export function searchSymbols(db, query, { limit = 20, kinds = null } = {}) {
   const trimmed = (query ?? '').trim();
   if (!trimmed) return [];
 
+  // Search answers about this project only: a dependency's declarations are
+  // read to type a chain, not to be browsed. The scope goes on each tier
+  // rather than on `base`, which the full-text tier extends with a JOIN.
   const base = `SELECT ${SYMBOL_COLS} FROM symbols s JOIN files f ON f.id = s.file_id`;
+  const MINE = 'f.external = 0';
   const tiers = [];
 
   // Support "Type#method" and "Type.method" spellings.
@@ -46,22 +50,22 @@ export function searchSymbols(db, query, { limit = 20, kinds = null } = {}) {
   if (rhs) {
     tiers.push({
       score: 100,
-      sql: `${base} WHERE s.name = ? AND (s.container_fqn = ? OR s.container_fqn LIKE ? ESCAPE '\\')`,
+      sql: `${base} WHERE ${MINE} AND s.name = ? AND (s.container_fqn = ? OR s.container_fqn LIKE ? ESCAPE '\\')`,
       args: [rhs, lhs, `%.${likePattern(lhs)}`],
     });
   }
 
   tiers.push(
-    { score: 95, sql: `${base} WHERE s.fqn = ? COLLATE NOCASE`, args: [trimmed] },
-    { score: 90, sql: `${base} WHERE s.name = ? COLLATE NOCASE`, args: [trimmed] },
+    { score: 95, sql: `${base} WHERE ${MINE} AND s.fqn = ? COLLATE NOCASE`, args: [trimmed] },
+    { score: 90, sql: `${base} WHERE ${MINE} AND s.name = ? COLLATE NOCASE`, args: [trimmed] },
     {
       score: 70,
-      sql: `${base} WHERE s.fqn LIKE ? ESCAPE '\\' COLLATE NOCASE`,
+      sql: `${base} WHERE ${MINE} AND s.fqn LIKE ? ESCAPE '\\' COLLATE NOCASE`,
       args: [`%${likePattern(trimmed)}`],
     },
     {
       score: 50,
-      sql: `${base} WHERE s.name LIKE ? ESCAPE '\\' COLLATE NOCASE`,
+      sql: `${base} WHERE ${MINE} AND s.name LIKE ? ESCAPE '\\' COLLATE NOCASE`,
       args: [`%${likePattern(trimmed)}%`],
     },
   );
@@ -94,7 +98,7 @@ export function searchSymbols(db, query, { limit = 20, kinds = null } = {}) {
       db
         .prepare(
           `${base} JOIN symbols_fts ON symbols_fts.rowid = s.id
-           WHERE symbols_fts MATCH ? ORDER BY rank`,
+           WHERE ${MINE} AND symbols_fts MATCH ? ORDER BY rank`,
         )
         .all(escapeFts(trimmed)),
       30,
@@ -216,13 +220,27 @@ export function impactOf(db, symbolId, { maxDepth = 4 } = {}) {
 export function projectStats(db) {
   const one = (sql, ...args) => db.prepare(sql).get(...args);
   return {
-    files: one('SELECT COUNT(*) AS n FROM files').n,
-    symbols: one('SELECT COUNT(*) AS n FROM symbols').n,
-    types: one('SELECT COUNT(*) AS n FROM types').n,
+    // Dependency declarations are read for typing, not owned by the project,
+    // so they are left out of every count it reports about itself.
+    files: one('SELECT COUNT(*) AS n FROM files WHERE external = 0').n,
+    symbols: one(
+      'SELECT COUNT(*) AS n FROM symbols s JOIN files f ON f.id = s.file_id WHERE f.external = 0',
+    ).n,
+    types: one(
+      `SELECT COUNT(*) AS n FROM types t JOIN symbols s ON s.id = t.symbol_id
+         JOIN files f ON f.id = s.file_id WHERE f.external = 0`,
+    ).n,
     edges: one('SELECT COUNT(*) AS n FROM edges').n,
-    refs: one('SELECT COUNT(*) AS n FROM refs').n,
-    unresolved: one('SELECT COUNT(*) AS n FROM unresolved').n,
-    byLang: db.prepare('SELECT lang, COUNT(*) AS n FROM files GROUP BY lang ORDER BY n DESC').all(),
+    refs: one(
+      'SELECT COUNT(*) AS n FROM refs r JOIN files f ON f.id = r.file_id WHERE f.external = 0',
+    ).n,
+    unresolved: one(
+      `SELECT COUNT(*) AS n FROM unresolved u JOIN refs r ON r.id = u.ref_id
+         JOIN files f ON f.id = r.file_id WHERE f.external = 0`,
+    ).n,
+    byLang: db
+      .prepare('SELECT lang, COUNT(*) AS n FROM files WHERE external = 0 GROUP BY lang ORDER BY n DESC')
+      .all(),
   };
 }
 
