@@ -413,6 +413,48 @@ appeared with it. Lower number, more complete graph, every time.
 Re-measure any time with `./scripts/bench.js <repo> --detail`, which prints the miss buckets and
 the guessed links as well as the two headline figures.
 
+### And on ordinary applications, which read higher
+
+The seventeen above are the hardest repositories I could find, not typical ones. Ten of them are
+frameworks and platforms — discourse and solidus exist to be extended, typeorm and nest exist to be
+called — so they are made of the metaprogramming and generics that static analysis is worst at. An
+application that *uses* those frameworks is a much easier read, and the same measurement on real
+checkouts says so:
+
+| Project | Stack | Files | In-repo resolution | Floor | Index time |
+|---|---|---|---|---|---|
+| a Slack bot | TS | 9 | **100%** | 100% | <0.1s |
+| a VS Code extension | TS + JS | 60 | **99.4%** | 94.1% | 0.6s |
+| a small Rails blog | Rails | 91 | **95.8%** | 87.2% | 0.1s |
+| human-essentials | Rails | 1,044 | **93.4%** | 86.0% | 3.6s |
+| agenta | Next.js workspace | 3,805 | **89.0%** | 62.5% | 14.5s |
+
+human-essentials is a working Rails application, and it reads **93.4%** — higher than every Rails
+repository in the benchmark table, discourse at 78.3% included. Same resolver, same language: the
+difference is that one is an app and the other is a platform.
+
+agenta is the one to read carefully, because its floor is 62.5% and almost none of that is guessing
+— only 2 of its links rest on a convention. The gap is 5,768 calls on receivers that no declaration
+types, which in a React codebase means callback parameters. A codebase written that way will have a
+low floor no matter what is installed, and it is better to know that than to be told a number.
+
+**`codelens doctor` answers this for a repository you have rather than one in a table.** It reads
+the index against the machine and says what is missing, because the figure alone cannot tell a weak
+resolver from an uninstalled project:
+
+```
+$ codelens doctor
+reading: 72.4% of the calls that could be in this repo
+
+[MISSING] no node_modules anywhere in the tree, and the code imports 373 package(s)
+  why: a chain through a library stops at the library, and everything past it is a miss
+  fix: npm install   (or yarn / pnpm install, whichever this project uses)
+```
+
+That is express, whose source is unchanged between 72.4% and 91.4%. For Ruby the same command says
+the opposite — that nothing can be installed to change the answer, because the language declares no
+types — so no one spends an afternoon looking for a package that was never going to exist.
+
 ### What is still missed, and why
 
 **A receiver typed only by a dependency.** `contextRunner.run(context -> context.getBean(...))`
@@ -475,6 +517,7 @@ a convention. No amount of engineering turns that into a declaration, because Ru
 | `codelens sync [-w]` | Reparse changed files; `-w` keeps watching |
 | `codelens index` | Rebuild everything |
 | `codelens status` | Coverage, resolution quality, binding counts |
+| `codelens doctor` | **Why this repo reads as it does, and what would change it** — checks dependencies, JDK and jars against what the code imports |
 | `codelens query <name>` | Find symbols by name |
 | `codelens explore <name>` | Source + call paths + bindings + blast radius, in one shot |
 | `codelens node <name>` | One symbol in full, with callers and callees |
