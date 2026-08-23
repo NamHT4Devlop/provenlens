@@ -18,6 +18,8 @@
  * from the source: they have no gem to point at and no ancestor to walk to,
  * because every object has them.
  */
+import { classify } from '../extract/ruby.js';
+
 const RUBY_CORE = new Set([
   'puts', 'print', 'p', 'pp', 'format', 'sprintf', 'raise', 'fail', 'require',
   'require_relative', 'loop', 'sleep', 'rand', 'srand', 'lambda', 'proc', 'catch',
@@ -266,6 +268,17 @@ export function resolveRuby(db) {
       if (t) return { type: t, via: isGenerated ? 'rails-association' : 'direct' };
     }
 
+    // Rails names a variable after the model it holds, and this is the last
+    // evidence left once every declaration has been searched. It is a
+    // convention, not a proof, so it is accepted only when the class it names
+    // actually declares the member being called -- `user.account` needs a User
+    // with an `account` on it. That constraint is what keeps it from inventing
+    // edges: a guess that has to survive a member lookup is a narrow guess.
+    const byConvention = resolveTypeName(classify(raw.replace(/^@/, '')));
+    if (byConvention && isRecord(byConvention) && findMember(byConvention, ref.name, false)) {
+      return { type: byConvention, via: 'name-convention' };
+    }
+
     // The receiver itself is declared nowhere in this repository -- not a
     // local, not a parameter, not a block variable, not a method on anything
     // indexed. Then whatever it holds was not made here, so the call on it
@@ -287,6 +300,8 @@ export function resolveRuby(db) {
     direct: 1.0,
     'rails-association': 0.8,
     'self-chain': 0.7,
+    // A variable named after its model: usual in Rails, never certain.
+    'name-convention': 0.5,
     'unique-name': 0.4,
   };
 

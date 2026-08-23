@@ -31,7 +31,7 @@ describe('inflection', () => {
 
 describe('extraction', () => {
   test('indexes every fixture file', () => {
-    assert.equal(stats.parsed, 10);
+    assert.equal(stats.parsed, 11);
   });
 
   test('turns belongs_to into a reader typed with the associated class', () => {
@@ -184,5 +184,26 @@ describe('metaprogramming the resolver follows', () => {
     const direct = out.find((c) => c.fqn === 'SettingsStore#lookup');
     assert.ok(direct, 'the real member still wins');
     assert.notEqual(direct.via, 'method-missing');
+  });
+});
+
+describe('the Rails naming convention, held to a member check', () => {
+  test('an untyped `donor` reaches Donor, because Donor declares the method', () => {
+    const link = calleesOf(db, one('DonorNotifier#notify').id).find(
+      (c) => c.fqn === 'Donor#total_given',
+    );
+    assert.ok(link, 'expected the convention to type the parameter');
+    assert.equal(link.via, 'name-convention');
+    assert.ok(link.confidence <= 0.5, 'a convention is never a certainty');
+  });
+
+  test('a name matching no class does not go through the convention', () => {
+    // `widget` names nothing in the repo. Anything reached from it is the
+    // older unique-name fallback, which is a weaker guess and labelled as one.
+    const out = calleesOf(db, one('DonorNotifier#skip').id);
+    assert.ok(
+      out.every((c) => c.via !== 'name-convention'),
+      `the convention must not fire here: ${out.map((c) => c.via)}`,
+    );
   });
 });

@@ -65,9 +65,33 @@ if (byEvidence.length) {
     console.log(`    ${String(row.n).padStart(7)}  ${row.evidence}`);
   }
   const assumed = byEvidence.find((r) => r.evidence.includes('assumed'))?.n ?? 0;
-  if (assumed) {
-    // What the figure would be if every assumption were wrong.
-    console.log(`  if every assumption were wrong: ${pct(linked, inRepo + assumed)}%`);
+
+  // Links that rest on a convention rather than a declaration. They belong in
+  // the floor too: an assumption that RESOLVED a call flatters the headline
+  // exactly as much as one that excused a call, and hiding it here would make
+  // the self-audit a half-audit.
+  const GUESSED_VIA = ['name-convention', 'unique-name', 'method-missing'];
+  const guessed = db
+    .prepare(
+      `SELECT via, COUNT(*) n FROM edges
+        WHERE via IN (${GUESSED_VIA.map(() => '?').join(', ')})
+        GROUP BY via ORDER BY n DESC`,
+    )
+    .all(...GUESSED_VIA);
+  const guessedTotal = guessed.reduce((n, r) => n + r.n, 0);
+  if (guessedTotal) {
+    console.log('  links resting on a convention, not a declaration:');
+    for (const row of guessed) {
+      console.log(`    ${String(row.n).padStart(7)}  ${row.via}`);
+    }
+  }
+
+  if (assumed || guessedTotal) {
+    // What the figure would be if every assumption were wrong: the excused
+    // calls come back into the denominator, the guessed links leave the top.
+    console.log(
+      `  if every assumption were wrong: ${pct(linked - guessedTotal, inRepo + assumed)}%`,
+    );
   }
 }
 
