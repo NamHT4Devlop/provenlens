@@ -35,6 +35,27 @@ export function singularize(word) {
 }
 
 const ASSOCIATION_MACROS = new Set(['belongs_to', 'has_one', 'has_many', 'has_and_belongs_to_many']);
+
+/** The value of a `key:` argument in a macro call, as plain text. */
+function keywordArg(args, key) {
+  for (const arg of args) {
+    const pairs = arg.type === 'pair' ? [arg] : [];
+    if (arg.type === 'hash' || arg.type === 'bare_hash' || arg.type === 'keyword_hash') {
+      for (let i = 0; i < arg.namedChildCount; i++) {
+        const c = arg.namedChild(i);
+        if (c?.type === 'pair') pairs.push(c);
+      }
+    }
+    for (const pair of pairs) {
+      const k = pair.childForFieldName('key');
+      const v = pair.childForFieldName('value');
+      if (!k || !v) continue;
+      const keyText = k.text.replace(/[:'"]/g, '');
+      if (keyText === key) return v.text.replace(/^:/, '').replace(/^['"]|['"]$/g, '');
+    }
+  }
+  return null;
+}
 const COLLECTION_MACROS = new Set(['has_many', 'has_and_belongs_to_many']);
 const ATTR_MACROS = new Set(['attr_reader', 'attr_writer', 'attr_accessor']);
 
@@ -108,6 +129,8 @@ export function extractRuby(tree, src, ctx = {}) {
     const first = symbolArgName(args[0], src);
 
     const generated = (name, typeName, extra = {}) =>
+      // addSymbol hands back the symbol's index, which delegate needs for its
+      // synthetic call site.
       addSymbol({
         name,
         fqn: `${containerFqn}#${name}`,
@@ -141,6 +164,34 @@ export function extractRuby(tree, src, ctx = {}) {
         if (macro !== 'attr_reader') generated(`${name}=`, null);
       }
       return true;
+    }
+
+    if (macro === 'delegate') {
+      // `delegate :name, :email, to: :owner` writes forwarding methods. The
+      // forward is real code as far as callers are concerned, so each one
+      // becomes a generated method AND a synthetic call site to the target --
+      // the resolver then links the forward exactly as if it were handwritten.
+      const to = keywordArg(args, 'to');
+      const prefix = keywordArg(args, 'prefix');
+      if (!to) return false;
+      let made = false;
+      for (const arg of args) {
+        const name = symbolArgName(arg, src);
+        if (!name) continue;
+        const exposed = prefix === 'true' ? `${to}_${name}` : name;
+        const id = generated(exposed, null, { annotations: ['delegate', `to:${to}`] });
+        refs.push({
+          fromTmpId: id,
+          name,
+          receiver: to,
+          arity: 0,
+          str_args: [],
+          line: callNode.startPosition.row + 1,
+          kind: 'call',
+        });
+        made = true;
+      }
+      return made;
     }
 
     if (macro === 'scope' && first) {
@@ -304,6 +355,20 @@ export function extractRuby(tree, src, ctx = {}) {
             symbols[scopeId].supertypes = [...(symbols[scopeId].supertypes ?? []), text(mod, src)];
           }
           return;
+        }
+        // A concern's `included do ... end` runs in the includer's class body,
+        // so its macros belong to this module the same way its instance
+        // methods do -- the module->includer machinery carries both across.
+        if (methodName === 'included') {
+          const block = childByField(node, 'block');
+          const blockBody = block ? childByField(block, 'body') ?? block : null;
+          if (blockBody) {
+            for (let i = 0; i < blockBody.namedChildCount; i++) {
+              const c = blockBody.namedChild(i);
+              if (c) walk(c, nest, scopeId, true, classScopeId);
+            }
+            return;
+          }
         }
         if (containerFqn && applyMacro(node, containerFqn, nest[nest.length - 1])) return;
       }

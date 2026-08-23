@@ -148,6 +148,14 @@ export function resolveRuby(db) {
     if (chainMemo.has(ref.id)) return chainMemo.get(ref.id);
     chainMemo.set(ref.id, null);
 
+    // `X.new` is the one call whose result type needs no signature: the
+    // constructor returns an X. This is what lets `X.new.method` resolve.
+    if (ref.kind === 'new' && ref.receiver) {
+      const constructed = { type_name: ref.receiver, constructed: true };
+      chainMemo.set(ref.id, constructed);
+      return constructed;
+    }
+
     const fromSymbol = symbolById.get(ref.from_symbol_id);
     const enclosingClassId = typeIdByFqn.get(fromSymbol?.container_fqn) ?? null;
     const info = receiverInfo(ref, fromSymbol, enclosingClassId, depth + 1);
@@ -181,7 +189,9 @@ export function resolveRuby(db) {
       const target = chainTarget(refById.get(ref.receiver_ref_id), depth);
       if (target?.type_name) {
         const t = resolveTypeName(target.type_name);
-        if (t) return { type: t, via: 'rails-association' };
+        // A constructed receiver is a certainty; an association reader is an
+        // inference, and the confidence table treats them accordingly.
+        if (t) return { type: t, via: target.constructed ? 'direct' : 'rails-association' };
       }
     }
 
@@ -414,6 +424,21 @@ export function resolveRuby(db) {
       if (inherited) {
         insertExternal(ref.id, inherited);
         continue;
+      }
+
+      // Ruby only reaches method_missing after the whole ancestor chain has
+      // failed, which is exactly the point this code has reached: the type is
+      // known, no member matches, and no unindexed ancestor could hold it. A
+      // class that defines method_missing is declaring that such calls are its
+      // API, so the honest edge is to the interceptor -- at low confidence,
+      // because what it does with the name is its own business.
+      if (ref.kind !== 'ident_call') {
+        const interceptor = findMember(info.type, 'method_missing', false);
+        if (interceptor) {
+          insertEdge.run(ref.from_symbol_id, interceptor.id, 'calls', 0.4, 'method-missing', ref.line);
+          stats.uniqueName++;
+          continue;
+        }
       }
     }
 
