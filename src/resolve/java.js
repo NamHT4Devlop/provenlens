@@ -153,7 +153,12 @@ export function resolveJava(db) {
     }
 
     for (const imp of importsByFile.get(fileId) ?? []) {
-      if (!imp.is_wildcard && imp.simple === simple && types.has(imp.fqn)) return imp.fqn;
+      if (imp.is_wildcard || imp.simple !== simple) continue;
+      if (types.has(imp.fqn)) return imp.fqn;
+      // The file says outright which `Money` it means, and it is not one of
+      // ours. Guessing on past that -- to a same-named class in some other
+      // module of a monorepo -- does not fail to resolve, it resolves WRONG.
+      return null;
     }
 
     const pkg = fileById.get(fileId)?.pkg;

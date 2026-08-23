@@ -237,7 +237,13 @@ export function resolveTypeScript(db, root) {
     for (const imp of importsByFile.get(fileId) ?? []) {
       if (imp.kind !== 'import' || imp.simple !== name) continue;
       const target = resolveModule(module, imp.fqn);
-      const hit = target && resolveExport(target, imp.orig ?? name);
+      // The file names which module this identifier comes from. If that module
+      // is not one of ours, the answer is "not ours" -- falling through to a
+      // same-named class elsewhere in the repo resolves wrong, not late.
+      if (!target) return null;
+      // The module IS ours but the export eluded us: that is a gap in barrel
+      // resolution, not evidence about the type, so the search continues.
+      const hit = resolveExport(target, imp.orig ?? name);
       if (!hit) continue;
       // A CommonJS module often exports a plain function used as a
       // constructor, which is not in the type table but is one all the same.
