@@ -145,7 +145,7 @@
 <header>
   <div class="brand">codelens<span id="root"></span></div>
   <div class="search">
-    <input id="q" placeholder="Search for nodes in the graph" autocomplete="off" spellcheck="false">
+    <input id="q" placeholder="Search nodes — or trace a chain with A -> B" autocomplete="off" spellcheck="false">
     <div id="suggest"></div>
   </div>
   <select id="repos" title="Repository to show"></select>
@@ -491,7 +491,10 @@ function draw() {
     ctx.lineTo(hx - Math.cos(ang + 0.4) * 8, hy - Math.sin(ang + 0.4) * 8);
     ctx.fill();
 
-    if (showEdgeLabels && !dim) {
+    // Cross-repo edges carry a label (the queue name); ordinary edges only
+    // have a kind, and a plain call needs no caption at all.
+    const caption = e.label ?? (e.kind && e.kind !== 'calls' ? e.kind : null);
+    if (showEdgeLabels && !dim && caption) {
       const mx = (p.x + q.x) / 2, my = (p.y + q.y) / 2;
       ctx.save();
       ctx.translate(mx, my);
@@ -501,7 +504,7 @@ function draw() {
       ctx.font = '9px ui-monospace, monospace';
       ctx.fillStyle = e.crossRepo ? css('--cross') : css('--muted');
       ctx.textAlign = 'center';
-      ctx.fillText(e.label.toUpperCase(), 0, -4);
+      ctx.fillText(caption.toUpperCase(), 0, -4);
       ctx.restore();
     }
   }
@@ -785,6 +788,31 @@ $('q').addEventListener('input', (e) => {
   clearTimeout(timer);
   const q = e.target.value.trim();
   if (!q) { $('suggest').classList.remove('on'); return; }
+
+  // "A -> B" asks for the chain between two symbols instead of a search.
+  const arrow = q.split('->');
+  if (arrow.length === 2 && arrow[0].trim() && arrow[1].trim()) {
+    timer = setTimeout(async () => {
+      try {
+        const g = await api('/api/path', {
+          from: arrow[0].trim(), to: arrow[1].trim(), repo: activeRepo ?? 'all',
+        });
+        $('suggest').innerHTML = g.found
+          ? '<div class="sg"><i>' + g.length + ' hop(s) — drawn on the canvas</i></div>'
+          : '<div class="sg"><i>No directed path between those two.</i></div>';
+        $('suggest').classList.add('on');
+        if (g.found) {
+          nodes = []; edges = []; byId = new Map(); selected = null;
+          $('panel').classList.remove('on');
+          mergeGraph(g);
+          // The chain is the answer, so every link on it deserves its name.
+          for (const n of nodes) n.seed = true;
+          fit();
+        }
+      } catch { /* one bad half of the query is not an error worth showing */ }
+    }, 250);
+    return;
+  }
   timer = setTimeout(async () => {
     hits = await api('/api/search', { q, limit: 20, repo: activeRepo ?? 'all' });
     cursor = -1;

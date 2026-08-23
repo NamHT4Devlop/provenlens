@@ -15,6 +15,7 @@ import {
   isTestPath,
   graphAround,
   topHubs,
+  pathBetween,
 } from '../src/query.js';
 import {
   formatExplore,
@@ -23,6 +24,7 @@ import {
   formatRelations,
   formatAffected,
   toMermaid,
+  formatPath,
 } from '../src/format.js';
 import { IMPLEMENTED_LANGUAGES } from '../src/extract/index.js';
 
@@ -355,6 +357,32 @@ program
       );
       process.exit(2);
     }
+  });
+
+program
+  .command('path')
+  .argument('<from>', 'starting symbol')
+  .argument('<to>', 'symbol to reach')
+  .option('-d, --depth <n>', 'longest chain to consider', '12')
+  .option('--json', 'machine-readable output')
+  .description('shortest directed chain from one symbol to another, hop by hop')
+  .action((from, to, opts) => {
+    const { db } = useProject();
+    const a = pickSymbol(db, from);
+    const b = pickSymbol(db, to);
+    const found = pathBetween(db, a.id, b.id, {
+      maxDepth: Math.min(Math.max(Number(opts.depth) || 12, 1), 24),
+    });
+    if (opts.json) {
+      return emitJson(
+        found
+          ? { found: true, length: found.length,
+              hops: found.hops.map((h) => ({ ...publicSymbol(h.symbol), edge: h.kind, via: h.via, confidence: h.confidence })) }
+          : { found: false },
+      );
+    }
+    console.log(formatPath(db, a.id, b.id, found));
+    if (!found) process.exitCode = 1;
   });
 
 program

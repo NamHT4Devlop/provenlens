@@ -232,3 +232,35 @@ describe('links that cross a repository boundary', () => {
     assert.ok(ids.every((id) => /^\d+:\d+$/.test(id)));
   });
 });
+
+describe('a path across the repository boundary', () => {
+  test('walks from the publisher to the worker through the queue', async () => {
+    const res = await get('/api/path?from=OrderPublisher%23publishOrder&to=OrderAuditWorker%23record');
+    assert.equal(res.status, 200);
+    const g = res.json();
+    assert.equal(g.found, true, 'the queue is the bridge, and it exists');
+
+    const cross = g.edges.find((e) => e.crossRepo);
+    assert.ok(cross, 'one hop must be the cross-repo binding');
+    assert.match(cross.label, /order-events/);
+
+    // The chain starts where asked, ends where asked, and stays connected.
+    assert.match(g.nodes[0].fqn, /publishOrder/);
+    assert.match(g.nodes.at(-1).fqn ?? g.nodes.at(-1).name, /record/);
+    for (const e of g.edges) {
+      assert.ok(g.nodes.some((n) => n.id === e.from), `dangling from ${e.from}`);
+      assert.ok(g.nodes.some((n) => n.id === e.to), `dangling to ${e.to}`);
+    }
+  });
+
+  test('reports not-found rather than inventing a bridge that is not there', async () => {
+    // Nothing links the notifier back to the publisher in that direction.
+    const res = await get('/api/path?from=OrderNotifier%23sendEmail&to=OrderPublisher%23publishOrder');
+    assert.equal(res.status, 200);
+    assert.equal(res.json().found, false);
+  });
+
+  test('an unknown endpoint answers 404, not an empty chain', async () => {
+    assert.equal((await get('/api/path?from=NoSuchThing&to=OrderPublisher')).status, 404);
+  });
+});

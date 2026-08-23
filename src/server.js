@@ -29,6 +29,7 @@ import {
   callersOf,
   calleesOf,
   impactOf,
+  pathBetween,
   projectStats,
   isTestPath,
   graphAround,
@@ -547,6 +548,93 @@ export async function startServer(
           totalSymbols,
           totalFiles,
           levels: levels.map((level) => (level ?? []).map((r) => relation(project, r))),
+        });
+      }
+
+      if (url.pathname === '/api/path') {
+        // Two names in, one chain out. Names rather than ids, so the search
+        // box can ask "A -> B" directly; each end resolves to its best match
+        // inside the requested scope.
+        const wanted = scope(url);
+        const locate = (name) => {
+          for (const p of wanted) {
+            const hit = searchSymbols(p.db, name, { limit: 1 })[0];
+            if (hit) return { project: p, hit };
+          }
+          return null;
+        };
+        const a = locate(url.searchParams.get('from') ?? '');
+        const b = locate(url.searchParams.get('to') ?? '');
+        if (!a || !b) {
+          return send(404, { error: `no symbol matches "${a ? url.searchParams.get('to') : url.searchParams.get('from')}"` });
+        }
+
+        const asNodes = (project, found, fromRow) => {
+          const nodes = [publicNode(project, fromRow)];
+          const edges = [];
+          let prev = compose(project.id, fromRow.id);
+          for (const hop of found.hops) {
+            const node = publicNode(project, hop.symbol);
+            nodes.push(node);
+            edges.push({ from: prev, to: node.id, kind: hop.kind, via: hop.via, confidence: hop.confidence });
+            prev = node.id;
+          }
+          return { nodes, edges };
+        };
+
+        if (a.project.id === b.project.id) {
+          const found = pathBetween(a.project.db, a.hit.id, b.hit.id);
+          if (!found) return send(200, { found: false, nodes: [], edges: [] });
+          const g = asNodes(a.project, found, a.hit);
+          return send(200, { found: true, length: found.length, ...g });
+        }
+
+        // Different repositories: the only bridges are framework bindings, so
+        // walk from A to a binding endpoint whose key matches one in B's repo,
+        // cross, and walk on to B. Shortest total wins.
+        const pairs = a.project.db
+          .prepare(`SELECT plugin, role, key, symbol_id FROM bindings`)
+          .all()
+          .flatMap((mine) =>
+            b.project.db
+              .prepare(`SELECT symbol_id FROM bindings WHERE plugin = ? AND key = ? AND role != ?`)
+              .all(mine.plugin, mine.key, mine.role)
+              .map((theirs) => ({ mine, theirs })),
+          );
+
+        let best = null;
+        for (const { mine, theirs } of pairs) {
+          const first = pathBetween(a.project.db, a.hit.id, mine.symbol_id);
+          if (!first) continue;
+          const second = pathBetween(b.project.db, theirs.symbol_id, b.hit.id);
+          if (!second) continue;
+          const total = first.length + 1 + second.length;
+          if (!best || total < best.total) best = { mine, theirs, first, second, total };
+        }
+        if (!best) return send(200, { found: false, nodes: [], edges: [] });
+
+        const left = asNodes(a.project, best.first, a.hit);
+        const entry = b.project.db
+          .prepare(`SELECT ${SYMBOL_COLS} FROM symbols s JOIN files f ON f.id = s.file_id WHERE s.id = ?`)
+          .get(best.theirs.symbol_id);
+        const right = asNodes(b.project, best.second, entry);
+        return send(200, {
+          found: true,
+          length: best.total,
+          nodes: [...left.nodes, ...right.nodes],
+          edges: [
+            ...left.edges,
+            {
+              from: compose(a.project.id, best.mine.symbol_id),
+              to: compose(b.project.id, best.theirs.symbol_id),
+              kind: `${best.mine.plugin}-cross-repo`,
+              label: `${best.mine.plugin}: ${best.mine.key}`,
+              via: `binding:${best.mine.plugin}`,
+              confidence: 0.85,
+              crossRepo: true,
+            },
+            ...right.edges,
+          ],
         });
       }
 

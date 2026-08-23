@@ -756,3 +756,39 @@ describe('mermaid export', () => {
     assert.match(text, /#quot;/);
   });
 });
+
+describe('pathBetween', () => {
+  test('finds the chain through two interface layers', async () => {
+    const { db, one } = await buildIndex('java');
+    const { pathBetween } = await import('../src/query.js');
+    const from = one('com.acme.web.DonationController').id;
+    const to = one('com.acme.repo.JpaDonationRepository').id;
+
+    const found = pathBetween(db, from, to);
+    assert.ok(found, 'controller reaches the repository implementation');
+    assert.ok(found.length >= 2, 'and not in a single imaginary hop');
+    // The chain must pass through the service layer, the way the code runs.
+    assert.ok(
+      found.hops.some((h) => (h.symbol.fqn ?? '').includes('DonationServiceImpl')),
+      'the path goes through the implementation, not around it',
+    );
+  });
+
+  test('answers null when only the reverse direction exists', async () => {
+    const { db, one } = await buildIndex('java');
+    const { pathBetween } = await import('../src/query.js');
+    const found = pathBetween(
+      db,
+      one('com.acme.repo.JpaDonationRepository#findAll').id,
+      one('com.acme.web.DonationController#list').id,
+    );
+    assert.equal(found, null, 'edges run caller to callee, and BFS must respect that');
+  });
+
+  test('the same symbol is a zero-hop path, not a cycle', async () => {
+    const { db, one } = await buildIndex('java');
+    const { pathBetween } = await import('../src/query.js');
+    const id = one('com.acme.service.DonationServiceImpl#record').id;
+    assert.deepEqual(pathBetween(db, id, id), { hops: [], length: 0 });
+  });
+});

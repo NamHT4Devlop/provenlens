@@ -330,3 +330,37 @@ export function toMermaid(graph) {
   if (graph.truncated) lines.push('  %% truncated: the neighbourhood was larger than the cap');
   return lines.join('\n');
 }
+
+/** The chain from one symbol to another, one hop per line. */
+export function formatPath(db, fromId, toId, result) {
+  const name = (id) => {
+    const s = db
+      .prepare(`SELECT s.fqn, s.name, f.path AS file_path, s.start_line
+                  FROM symbols s JOIN files f ON f.id = s.file_id WHERE s.id = ?`)
+      .get(id);
+    return s ? { label: s.fqn ?? s.name, at: `${s.file_path}:${s.start_line}` } : null;
+  };
+  const start = name(fromId);
+  const goal = name(toId);
+  const out = [`# Path: ${start.label} → ${goal.label}`, ''];
+
+  if (!result) {
+    out.push('No directed path: nothing this symbol calls ever reaches the target.');
+    out.push('(Edges run the way the code runs — try swapping the two ends.)');
+    return out.join('\n');
+  }
+  if (!result.length) {
+    out.push('They are the same symbol.');
+    return out.join('\n');
+  }
+
+  out.push(`${start.label} — ${start.at}`);
+  for (const hop of result.hops) {
+    const conf = hop.confidence != null && hop.confidence < 1 ? ` · ${hop.confidence.toFixed(2)}` : '';
+    const label = hop.kind && !CALL_KINDS.includes(hop.kind) ? hop.kind : 'calls';
+    out.push(`  └─ ${label} [${hop.via}${conf}]`);
+    out.push(`${hop.symbol.fqn ?? hop.symbol.name} — ${hop.symbol.file_path}:${hop.symbol.start_line}`);
+  }
+  out.push('', `${result.length} hop(s).`);
+  return out.join('\n');
+}

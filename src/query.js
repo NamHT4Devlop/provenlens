@@ -426,3 +426,76 @@ export function topHubs(db, { limit = 12 } = {}) {
   ]).filter((r) => r.degree > 0);
   return anything.length ? anything : ranked(['class', 'interface', 'module', 'record']);
 }
+
+/**
+ * The shortest directed chain from one symbol to another, following edges the
+ * way the code runs: caller to callee, interface to implementation, producer
+ * to consumer. This answers the debugging question the neighbourhood view
+ * cannot -- not "what surrounds A" but "HOW does A ever reach B".
+ *
+ * Plain breadth-first search, so the first arrival is a shortest path. The
+ * hop that reached each node is kept so the answer can say why every link
+ * exists (via + confidence), not just that it does.
+ */
+export function pathBetween(db, fromId, toId, { maxDepth = 12, maxVisited = 50000 } = {}) {
+  if (!fromId || !toId) return null;
+  if (fromId === toId) return { hops: [], length: 0 };
+
+  // Call edges run method-to-method; the type-to-member link exists only as
+  // structure (container_fqn), the same way graphAround synthesizes it. So a
+  // type as the start flows into its members, and a type as the goal counts
+  // as reached when any of its members is.
+  const membersOf = db.prepare(
+    `SELECT m.id FROM symbols m
+       JOIN symbols t ON t.fqn IS NOT NULL AND m.container_fqn = t.fqn
+      WHERE t.id = ? AND m.kind != 'file'`,
+  );
+
+  const targets = new Set([toId]);
+  for (const m of membersOf.all(toId)) targets.add(m.id);
+
+  const step = db.prepare(
+    `SELECT to_symbol_id AS next, kind, via, confidence, line
+       FROM edges WHERE from_symbol_id = ?`,
+  );
+
+  const cameFrom = new Map([[fromId, null]]);
+  let frontier = [fromId];
+
+  const arrive = (edge, at) => {
+    if (cameFrom.has(edge.next)) return null;
+    cameFrom.set(edge.next, { prev: at, kind: edge.kind, via: edge.via, confidence: edge.confidence, line: edge.line });
+    return targets.has(edge.next) ? unwind(db, cameFrom, edge.next) : false;
+  };
+
+  for (let depth = 0; depth < maxDepth && frontier.length; depth++) {
+    const next = [];
+    for (const at of frontier) {
+      const hops = step.all(at);
+      // A type declares its members; code enters a class through them.
+      for (const m of membersOf.all(at)) {
+        hops.push({ next: m.id, kind: 'declares', via: 'structure', confidence: 1, line: null });
+      }
+      for (const e of hops) {
+        const done = arrive(e, at);
+        if (done) return done;
+        if (done === false) next.push(e.next);
+        if (cameFrom.size > maxVisited) return null;
+      }
+    }
+    frontier = next;
+  }
+  return null;
+}
+
+function unwind(db, cameFrom, toId) {
+  const bySymbol = db.prepare(
+    `SELECT ${SYMBOL_COLS} FROM symbols s JOIN files f ON f.id = s.file_id WHERE s.id = ?`,
+  );
+  const hops = [];
+  for (let at = toId; cameFrom.get(at); at = cameFrom.get(at).prev) {
+    const via = cameFrom.get(at);
+    hops.unshift({ symbol: bySymbol.get(at), kind: via.kind, via: via.via, confidence: via.confidence, line: via.line });
+  }
+  return { hops, length: hops.length };
+}
