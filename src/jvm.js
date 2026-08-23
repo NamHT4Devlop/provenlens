@@ -43,8 +43,34 @@ function readMember(line) {
   const returns = before.replace(/^.*>\s+/, '').split(/\s+/).pop() ?? '';
   if (!returns || returns === name) return null; // a constructor
 
-  const arity = call[2].trim() ? call[2].split(',').length : 0;
-  return { name, returns, arity };
+  // Parameter types matter as much as the return type: `configure(Consumer<
+  // ContainerOptions>)` is the only place a lambda's parameter is named, and
+  // that shape is most of what a Spring test harness is made of.
+  const params = splitTopLevel(call[2]);
+  return { name, returns, arity: params.length, params };
+}
+
+/**
+ * Splits an argument list on commas that are not inside a generic argument:
+ * `Consumer<Map<K,V>>, String` is two parameters, not four.
+ */
+function splitTopLevel(text) {
+  const trimmed = (text ?? '').trim();
+  if (!trimmed) return [];
+  const out = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < trimmed.length; i++) {
+    const c = trimmed[i];
+    if (c === '<') depth++;
+    else if (c === '>') depth--;
+    else if (c === ',' && depth === 0) {
+      out.push(trimmed.slice(start, i).trim());
+      start = i + 1;
+    }
+  }
+  out.push(trimmed.slice(start).trim());
+  return out.filter(Boolean);
 }
 
 /** `java.util.Optional<T>` -> { erased, arg } */
@@ -165,7 +191,7 @@ export function indexJvm(db, root) {
     `INSERT INTO symbols
        (file_id, name, fqn, kind, container_fqn, type_name, type_args, signature, arity, params,
         start_line, end_line, start_byte, end_byte, modifiers, annotations)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, 0, 0, 0, '["external"]', '[]')`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, '["external"]', '[]')`,
   );
   const insertType = db.prepare(
     'INSERT OR REPLACE INTO types (fqn, symbol_id, kind, supertypes) VALUES (?, ?, ?, ?)',
@@ -191,7 +217,7 @@ export function indexJvm(db, root) {
       const typeId = Number(
         insertSymbol.run(
           fileId, cls.fqn.split('.').pop(), cls.fqn, 'class', null, null, null,
-          `class ${cls.fqn}  // from the classpath`, null,
+          `class ${cls.fqn}  // from the classpath`, null, null,
         ).lastInsertRowid,
       );
       insertType.run(cls.fqn, typeId, 'class', '[]');
@@ -201,7 +227,8 @@ export function indexJvm(db, root) {
         const { erased, arg } = splitGeneric(m.returns);
         insertSymbol.run(
           fileId, m.name, `${cls.fqn}#${m.name}`, 'method', cls.fqn, erased, arg,
-          `${m.returns} ${m.name}()  // from the classpath`, m.arity,
+          `${m.returns} ${m.name}(${(m.params ?? []).join(', ')})  // from the classpath`,
+          m.arity, JSON.stringify(m.params ?? []),
         );
         stats.members++;
       }
