@@ -157,8 +157,8 @@ export function resolveTypeScript(db, root) {
   const membersByContainer = new Map();
   const allSymbols = db
     .prepare(
-      `SELECT s.id, s.name, s.kind, s.arity, s.fqn, s.container_fqn, s.type_name, s.modifiers,
-              f.pkg AS module, s.file_id
+      `SELECT s.id, s.name, s.kind, s.arity, s.fqn, s.container_fqn, s.type_name, s.type_args,
+              s.modifiers, f.pkg AS module, s.file_id
          FROM symbols s JOIN files f ON f.id = s.file_id
         WHERE f.lang IN (${LANG_LIST})`,
     )
@@ -297,10 +297,14 @@ export function resolveTypeScript(db, root) {
   }
 
   const localsByScope = new Map();
-  for (const row of db.prepare('SELECT scope_symbol_id, name, type_name FROM locals').all()) {
+  for (const row of db.prepare('SELECT scope_symbol_id, name, type_name, type_args, owner_ref_id FROM locals').all()) {
     if (row.scope_symbol_id == null) continue;
     if (!localsByScope.has(row.scope_symbol_id)) localsByScope.set(row.scope_symbol_id, new Map());
-    localsByScope.get(row.scope_symbol_id).set(row.name, row.type_name);
+    localsByScope.get(row.scope_symbol_id).set(row.name, {
+      type: row.type_name,
+      args: row.type_args,
+      ownerRef: row.owner_ref_id,
+    });
   }
 
   const symbolById = new Map(allSymbols.map((s) => [s.id, s]));
@@ -321,14 +325,53 @@ export function resolveTypeScript(db, root) {
   /** The declared type of `name` in this scope or the module around it. */
   function lookupLocal(ref, name) {
     const own = localsByScope.get(ref.from_symbol_id);
-    if (own?.has(name)) return { found: true, type: own.get(name) };
+    if (own?.has(name)) return { found: true, ...own.get(name) };
     const moduleScope = localsByScope.get(fileScopeSymbol.get(ref.file_id));
-    if (moduleScope?.has(name)) return { found: true, type: moduleScope.get(name) };
+    if (moduleScope?.has(name)) return { found: true, ...moduleScope.get(name) };
     return { found: false, type: null };
   }
 
   const refById = new Map();
   const chainMemo = new Map();
+
+  /** The module path a file belongs to, which type lookup is relative to. */
+  const moduleOf = (fileId) => fileById.get(fileId)?.pkg ?? null;
+
+  /**
+   * What one element of this call's result is: from the callee's declared
+   * container type, `Promise<User>` or `User[]` alike.
+   */
+  function elementTypeOfRef(ref, depth) {
+    if (!ref || depth > 6) return null;
+    const from = symbolById.get(ref.from_symbol_id);
+    const recv = receiverType(ref, from, depth + 1);
+    if (!recv?.fqn) return null;
+    const target = findMember(recv, ref.name);
+    if (!target?.type_args) return null;
+    return resolveTypeName(target.type_args, ref.file_id, moduleOf(ref.file_id));
+  }
+
+  /**
+   * The type of an arrow parameter, from the call the arrow was handed to.
+   * `users.forEach(u => ...)` gives it an element of `users`, so the answer is
+   * the element type of that call's RECEIVER, not of the call itself.
+   */
+  function lambdaParamType(ownerRefId, depth) {
+    if (depth > 6) return null;
+    const owner = refById.get(ownerRefId);
+    if (!owner) return null;
+
+    if (owner.receiver_ref_id != null) {
+      const fromChain = elementTypeOfRef(refById.get(owner.receiver_ref_id), depth + 1);
+      if (fromChain) return resolveTypeName(fromChain, owner.file_id, moduleOf(owner.file_id)) ?? fromChain;
+    }
+    const holder = owner.receiver ? lookupLocal(owner, owner.receiver) : null;
+    if (holder?.args) {
+      const hit = resolveTypeName(holder.args, owner.file_id, moduleOf(owner.file_id));
+      if (hit) return hit;
+    }
+    return null;
+  }
 
   /** Resolves an inner call in a chain so its return type can type the next. */
   function chainTarget(ref, depth) {
@@ -380,7 +423,13 @@ export function resolveTypeScript(db, root) {
 
     const scoped = lookupLocal(ref, raw);
     if (scoped.found) {
-      if (!scoped.type) return { complex: true };
+      if (!scoped.type) {
+        // An arrow parameter: no annotation, but it holds one element of what
+        // the call it was passed to is iterating over.
+        const fromLambda = scoped.ownerRef != null ? lambdaParamType(scoped.ownerRef, depth) : null;
+        if (fromLambda) return fromLambda;
+        return { complex: true };
+      }
       const hit = resolveTypeName(scoped.type, ref.file_id, module);
       if (hit) return hit;
       const owner = externalOwner(scoped.type, ref.file_id, module);
@@ -418,31 +467,47 @@ export function resolveTypeScript(db, root) {
   // Return-type inference: `const donation = this.service.record(...)` carries
   // no annotation, but the callee declares what it returns. Runs before the
   // main pass so those locals can type their own receivers.
+  // Loaded before anything walks a chain: receiverType follows receiver_ref_id
+  // through this map, so an empty one turns every chained receiver into
+  // "complex" -- which is what used to happen to the inference pass below.
+  const refs = db
+    .prepare(
+      `SELECT r.* FROM refs r JOIN files f ON f.id = r.file_id
+        WHERE f.lang IN (${LANG_LIST}) AND r.kind != 'annotation'`,
+    )
+    .all();
+  for (const r of refs) refById.set(r.id, r);
+
   const pendingLocals = db
     .prepare(
-      `SELECT l.id, l.scope_symbol_id, l.name, l.line
+      `SELECT l.id, l.scope_symbol_id, l.name, l.line, l.init_kind, l.owner_ref_id
          FROM locals l JOIN files f ON f.id = l.file_id
-        WHERE f.lang IN (${LANG_LIST}) AND l.type_name IS NULL AND l.init_kind = 'call'`,
+        WHERE f.lang IN (${LANG_LIST}) AND l.type_name IS NULL
+            AND l.init_kind IN ('call', 'await')`,
     )
     .all();
   const updateLocal = db.prepare('UPDATE locals SET type_name = ? WHERE id = ?');
-  const refAt = db.prepare(
-    `SELECT * FROM refs WHERE from_symbol_id = ? AND line = ? AND kind = 'call' LIMIT 1`,
-  );
-
   for (const local of pendingLocals) {
-    const ref = refAt.get(local.scope_symbol_id, local.line);
+    // The exact call the value came from, recorded at extraction. No line
+    // matching: a chain spanning several lines used to find nothing.
+    const ref = refById.get(local.owner_ref_id);
     if (!ref) continue;
     const type = receiverType(ref, symbolById.get(ref.from_symbol_id));
     // receiverType may report a library or an untypeable chain instead.
     if (!type?.fqn) continue;
     const target = findMember(type, ref.name);
     if (!target?.type_name) continue;
-    updateLocal.run(target.type_name, local.id);
+    // `await f()` on a `Promise<T>` holds the T, not the promise.
+    const held = local.init_kind === 'await' && target.type_args ? target.type_args : target.type_name;
+    updateLocal.run(held, local.id);
     if (!localsByScope.has(local.scope_symbol_id)) {
       localsByScope.set(local.scope_symbol_id, new Map());
     }
-    localsByScope.get(local.scope_symbol_id).set(local.name, target.type_name);
+    localsByScope.get(local.scope_symbol_id).set(local.name, {
+      type: held,
+      args: held === target.type_name ? (target.type_args ?? null) : null,
+      ownerRef: null,
+    });
   }
 
   db.exec(`DELETE FROM edges WHERE from_symbol_id IN (
@@ -548,13 +613,6 @@ export function resolveTypeScript(db, root) {
     }
   }
 
-  const refs = db
-    .prepare(
-      `SELECT r.* FROM refs r JOIN files f ON f.id = r.file_id
-        WHERE f.lang IN (${LANG_LIST}) AND r.kind != 'annotation'`,
-    )
-    .all();
-  for (const r of refs) refById.set(r.id, r);
 
   for (const ref of refs) {
     if (ref.from_symbol_id == null) {

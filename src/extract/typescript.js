@@ -61,6 +61,22 @@ export function normalizeType(raw) {
   return isArray ? `${t}[]` : t;
 }
 
+/**
+ * One element of a container type: `Promise<User>` and `User[]` both yield
+ * `User`. This is what a callback over the value receives, and dropping it is
+ * what made every `.then(u => ...)` and `.map(item => ...)` untypable.
+ */
+export function elementOf(raw) {
+  if (!raw) return null;
+  const t = raw.trim().replace(/^:\s*/, '');
+  if (/\[\s*\]\s*$/.test(t)) return normalizeType(t.replace(/\[\s*\]\s*$/, ''));
+  const lt = t.indexOf('<');
+  if (lt === -1) return null;
+  const inner = t.slice(lt + 1, t.lastIndexOf('>')).trim();
+  if (!inner || inner.includes(',') || inner.includes('<') || inner.includes('|')) return null;
+  return normalizeType(inner);
+}
+
 /** Strips the array suffix for places that can never hold one (heritage, `new`). */
 function bareType(raw) {
   const t = normalizeType(raw);
@@ -91,6 +107,45 @@ function typeFromAnnotation(node, src) {
   return normalizeType(text(ann, src));
 }
 
+/**
+ * The type a function returns when it never says so: TypeScript infers it, and
+ * a body whose returns all construct the same class says it plainly enough.
+ *
+ * Only `return new X(...)` counts. That is the shape a factory has -- and
+ * `Test.createTestingModule(...)` in Nest is exactly one, with no annotation,
+ * which is where a whole test suite's worth of chains used to stop dead.
+ */
+function inferredReturn(body, src) {
+  if (!body) return null;
+  let found = null;
+  let conflicted = false;
+  const scan = (n, depth) => {
+    if (conflicted || depth > 4 || !n) return;
+    // A nested function's returns belong to it, not to us.
+    if (depth && ['function_declaration', 'function_expression', 'arrow_function', 'method_definition'].includes(n.type)) return;
+    if (n.type === 'return_statement') {
+      const value = n.namedChild(0);
+      const built =
+        value?.type === 'new_expression'
+          ? bareType(text(childByField(value, 'constructor') ?? value, src))
+          : null;
+      if (!built) conflicted = true;
+      else if (found && found !== built) conflicted = true;
+      else found = built;
+      return;
+    }
+    for (let i = 0; i < n.namedChildCount; i++) scan(n.namedChild(i), depth + 1);
+  };
+  scan(body, 0);
+  return conflicted ? null : found;
+}
+
+/** The element of an annotated type: `Promise<User>` -> `User`. */
+function elementFromAnnotation(node, src) {
+  const ann = firstOfType(node, 'type_annotation') ?? childByField(node, 'type');
+  return ann ? elementOf(text(ann, src)) : null;
+}
+
 /** Literal string values of the arguments; null wherever it is not a literal. */
 function stringArgs(argsNode, src) {
   if (!argsNode) return null;
@@ -112,6 +167,8 @@ export function extractTypeScript(tree, src, ctx = {}) {
   const refs = [];
   /** node id -> index of the ref that node's own call produced. */
   const callRefByNode = new Map();
+  /** Arrows already given parameters, so a named one is not done twice. */
+  const arrowSeen = new Set();
   // Decorators seen in a class body, waiting for the member they decorate.
   let pendingDecorators = [];
   const locals = [];
@@ -299,7 +356,7 @@ export function extractTypeScript(tree, src, ctx = {}) {
     return [...new Set(out)];
   }
 
-  function readParams(paramsNode, ownerTmpId, containerFqn) {
+  function readParams(paramsNode, ownerTmpId, containerFqn, extra = {}) {
     const params = [];
     if (!paramsNode) return params;
 
@@ -317,11 +374,18 @@ export function extractTypeScript(tree, src, ctx = {}) {
         ? (p.type === 'identifier' ? p : (childByField(p, 'left') ?? firstOfType(p, 'identifier')))
         : (childByField(p, 'pattern') ?? firstOfType(p, 'identifier'));
       const name = patt ? text(patt, src) : null;
+      const ann = isPlain ? null : (firstOfType(p, 'type_annotation') ?? childByField(p, 'type'));
       const typeName = isPlain ? null : typeFromAnnotation(p, src);
       params.push({ name, type: typeName });
 
       if (name && ownerTmpId != null) {
-        locals.push({ scopeTmpId: ownerTmpId, name, type_name: typeName });
+        locals.push({
+          scopeTmpId: ownerTmpId,
+          name,
+          type_name: typeName,
+          type_args: ann ? elementOf(text(ann, src)) : null,
+          ...extra,
+        });
       }
 
       // TypeScript parameter property: `constructor(private repo: Repo)` also
@@ -333,6 +397,7 @@ export function extractTypeScript(tree, src, ctx = {}) {
           kind: 'field',
           container_fqn: containerFqn,
           type_name: typeName,
+          type_args: ann ? elementOf(text(ann, src)) : null,
           signature: `${text(firstOfType(p, 'accessibility_modifier'), src)} ${name}: ${typeName ?? '?'}`,
           arity: null,
           supertypes: [],
@@ -426,7 +491,7 @@ export function extractTypeScript(tree, src, ctx = {}) {
       const simpleName = text(nameNode, src);
       const containerFqn = typeStack[typeStack.length - 1] ?? modulePath;
       const isCtor = simpleName === 'constructor';
-      const ret = typeFromAnnotation(node, src);
+      const ret = typeFromAnnotation(node, src) ?? inferredReturn(childByField(node, 'body'), src);
 
       const decorators = pendingDecorators;
       pendingDecorators = [];
@@ -436,6 +501,7 @@ export function extractTypeScript(tree, src, ctx = {}) {
         kind: isCtor ? 'constructor' : 'method',
         container_fqn: containerFqn,
         type_name: ret,
+        type_args: elementFromAnnotation(node, src),
         signature: simpleName,
         arity: 0,
         supertypes: [],
@@ -470,6 +536,7 @@ export function extractTypeScript(tree, src, ctx = {}) {
           kind: 'field',
           container_fqn: containerFqn,
           type_name: typeName,
+          type_args: elementFromAnnotation(node, src),
           signature: `${fieldName}${typeName ? `: ${typeName}` : ''}`,
           arity: null,
           supertypes: [],
@@ -487,7 +554,7 @@ export function extractTypeScript(tree, src, ctx = {}) {
       const nameNode = childByField(node, 'name');
       if (!nameNode) return;
       const simpleName = text(nameNode, src);
-      const ret = typeFromAnnotation(node, src);
+      const ret = typeFromAnnotation(node, src) ?? inferredReturn(childByField(node, 'body'), src);
 
       const id = addSymbol({
         name: simpleName,
@@ -495,6 +562,7 @@ export function extractTypeScript(tree, src, ctx = {}) {
         kind: 'function',
         container_fqn: modulePath,
         type_name: ret,
+        type_args: elementFromAnnotation(node, src),
         signature: simpleName,
         arity: 0,
         supertypes: [],
@@ -550,19 +618,31 @@ export function extractTypeScript(tree, src, ctx = {}) {
           return;
         }
 
+        // The initialiser is walked first so the local can name the exact ref
+        // its value came from. Matching by line instead lost every multi-line
+        // chain: `const m = await Test.createTestingModule({...}).compile();`
+        // declares on one line and makes its last call on another.
+        if (value) walk(value, typeStack, scopeId, false);
+
         if (scopeId != null) {
+          const awaited = value?.type === 'await_expression';
+          const call = awaited ? (value.namedChild(0) ?? value) : value;
+          const initRefTmp = call ? (callRefByNode.get(call.id) ?? null) : null;
           locals.push({
             scopeTmpId: scopeId,
             name: varName,
             type_name: typeName,
+            type_args: elementFromAnnotation(node, src),
             line: node.startPosition.row + 1,
             // Flags `const x = svc.doThing()` for return-type inference later.
-            init_kind: !typeName && value?.type === 'call_expression' ? 'call' : null,
+            // `await` is not incidental: the callee returns Promise<T> and the
+            // variable holds the T.
+            ownerRefTmp: typeName ? null : initRefTmp,
+            init_kind: typeName ? null : initRefTmp == null ? null : awaited ? 'await' : 'call',
           });
         }
       }
 
-      if (value) walk(value, typeStack, scopeId, false);
       return;
     }
 
@@ -627,6 +707,22 @@ export function extractTypeScript(tree, src, ctx = {}) {
           arity: args ? args.namedChildCount : null,
           line: node.startPosition.row + 1,
           kind: 'new',
+        });
+      }
+    }
+
+    // An arrow passed straight into a call -- `.then(user => ...)`. Its
+    // parameter holds one element of what that call's receiver produces, and
+    // only the resolver can say what that is, so the link is recorded here.
+    if (node.type === 'arrow_function' && scopeId != null && !arrowSeen.has(node.id)) {
+      arrowSeen.add(node.id);
+      let owner = node.parent;
+      while (owner && owner.type !== 'call_expression') owner = owner.parent;
+      const ownerRefTmp = owner ? (callRefByNode.get(owner.id) ?? null) : null;
+      if (ownerRefTmp != null) {
+        readParams(childByField(node, 'parameters') ?? childByField(node, 'parameter'), scopeId, null, {
+          ownerRefTmp,
+          init_kind: 'lambda',
         });
       }
     }
