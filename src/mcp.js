@@ -4,9 +4,10 @@
  * Only stdout carries protocol traffic -- anything diagnostic must go to stderr
  * or it corrupts the stream.
  */
-import { resolve } from 'node:path';
+import { resolve, join } from 'node:path';
+import { existsSync } from 'node:fs';
 import { openProject } from './db.js';
-import { findProjectRoot, dbPathFor } from './project.js';
+import { dbPathFor, discoverProjects } from './project.js';
 import { indexProject } from './indexer.js';
 import { watchProject } from './watch.js';
 import { formatExplore, formatImpact, formatAffected } from './format.js';
@@ -14,16 +15,26 @@ import { searchSymbols, projectStats } from './query.js';
 
 const projects = new Map(); // root -> { db, watcher }
 
-async function useProject(pathArg, defaultRoot) {
+/**
+ * Every indexed repository the given path names: the repo containing it, or --
+ * when it is a folder of checkouts -- each indexed repo one level down. The
+ * same rule `serve` uses, so pointing any frontend at a workspace just works.
+ */
+async function useProjects(pathArg, defaultRoot) {
   const start = pathArg ? resolve(pathArg) : defaultRoot;
   if (!start) {
     throw new Error(
       'No project. Pass projectPath pointing at a directory that has been `codelens init`-ed.',
     );
   }
-  const root = findProjectRoot(start);
-  if (!root) throw new Error(`No .codelens/ index at or above ${start}. Run \`codelens init\` there.`);
+  const roots = discoverProjects(start);
+  if (!roots.length) {
+    throw new Error(`No .codelens/ index at or under ${start}. Run \`codelens init\` there.`);
+  }
+  return Promise.all(roots.map(openOne));
+}
 
+async function openOne(root) {
   let entry = projects.get(root);
   if (!entry) {
     const { db } = openProject(dbPathFor(root));
@@ -111,26 +122,55 @@ const TOOLS = [
 async function callTool(name, args, defaultRoot) {
   switch (name) {
     case 'codelens_explore': {
-      const { root, db } = await useProject(args.projectPath, defaultRoot);
-      return formatExplore(db, root, args.query, { maxMatches: args.maxMatches ?? 3 });
+      const all = await useProjects(args.projectPath, defaultRoot);
+      // In a workspace, only the repositories that actually match speak, each
+      // under its own name, so one answer covers every service at once.
+      const sections = [];
+      for (const { root, db } of all) {
+        if (all.length > 1 && !searchSymbols(db, args.query, { limit: 1 }).length) continue;
+        const body = formatExplore(db, root, args.query, { maxMatches: args.maxMatches ?? 3 });
+        sections.push(all.length > 1 ? `# repository: ${root.split('/').pop()}\n\n${body}` : body);
+      }
+      return sections.length ? sections.join('\n\n---\n\n') : `No symbol matches "${args.query}".`;
     }
     case 'codelens_impact': {
-      const { db } = await useProject(args.projectPath, defaultRoot);
-      const matches = searchSymbols(db, args.symbol, { limit: 5 });
-      if (!matches.length) return `No symbol matches "${args.symbol}".`;
-      return formatImpact(db, matches[0].id);
+      const all = await useProjects(args.projectPath, defaultRoot);
+      for (const { root, db } of all) {
+        const matches = searchSymbols(db, args.symbol, { limit: 5 });
+        if (!matches.length) continue;
+        const body = formatImpact(db, matches[0].id);
+        return all.length > 1 ? `# repository: ${root.split('/').pop()}\n\n${body}` : body;
+      }
+      return `No symbol matches "${args.symbol}".`;
     }
     case 'codelens_affected': {
-      const { root, db } = await useProject(args.projectPath, defaultRoot);
-      const files = (args.files ?? []).map((f) => {
+      const all = await useProjects(args.projectPath, defaultRoot);
+      if (!(args.files ?? []).length) return 'No files given.';
+      // Each file belongs to exactly one repository; group and answer per repo.
+      const byRepo = new Map();
+      for (const f of args.files) {
         const abs = resolve(f);
-        return abs.startsWith(`${root}/`) ? abs.slice(root.length + 1) : f;
-      });
-      if (!files.length) return 'No files given.';
-      return formatAffected(db, files, { maxDepth: args.depth ?? 4 });
+        const home =
+          all.find((p) => abs.startsWith(`${p.root}/`)) ??
+          all.find((p) => existsSync(join(p.root, f))) ??
+          all[0];
+        const rel = abs.startsWith(`${home.root}/`) ? abs.slice(home.root.length + 1) : f;
+        if (!byRepo.has(home.root)) byRepo.set(home.root, { db: home.db, files: [] });
+        byRepo.get(home.root).files.push(rel);
+      }
+      const sections = [];
+      for (const [root, { db, files }] of byRepo) {
+        const body = formatAffected(db, files, { maxDepth: args.depth ?? 4 });
+        sections.push(byRepo.size > 1 ? `# repository: ${root.split('/').pop()}\n\n${body}` : body);
+      }
+      return sections.join('\n\n---\n\n');
     }
     case 'codelens_status': {
-      const { root, db } = await useProject(args.projectPath, defaultRoot);
+      const all = await useProjects(args.projectPath, defaultRoot);
+      if (all.length > 1) {
+        return (await Promise.all(all.map((p) => callTool('codelens_status', { ...args, projectPath: p.root }, defaultRoot)))).join('\n\n');
+      }
+      const { root, db } = all[0];
       const s = projectStats(db);
       const external = db.prepare('SELECT COUNT(*) AS n FROM unresolved WHERE external = 1').get().n;
       const linked = s.refs - s.unresolved;
@@ -162,7 +202,10 @@ async function callTool(name, args, defaultRoot) {
 }
 
 export async function startMcpServer(pathArg) {
-  const defaultRoot = findProjectRoot(pathArg ? resolve(pathArg) : process.cwd());
+  // The default scope may be one repository or a workspace folder holding
+  // several; discovery settles which at call time, not here.
+  const start = pathArg ? resolve(pathArg) : process.cwd();
+  const defaultRoot = discoverProjects(start).length ? start : null;
 
   const send = (msg) => process.stdout.write(`${JSON.stringify(msg)}\n`);
   const reply = (id, result) => send({ jsonrpc: '2.0', id, result });

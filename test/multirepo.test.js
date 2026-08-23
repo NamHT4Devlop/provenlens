@@ -1,13 +1,17 @@
 import { test, before, after, describe } from 'node:test';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { request } from 'node:http';
 import { openDb } from '../src/db.js';
 import { dbPathFor, discoverProjects } from '../src/project.js';
 import { indexProject } from '../src/indexer.js';
 import { startServer } from '../src/server.js';
+
+const HERE2 = dirname(fileURLToPath(import.meta.url));
 
 /**
  * Three services that only ever meet through a queue name — the shape a
@@ -262,5 +266,87 @@ describe('a path across the repository boundary', () => {
 
   test('an unknown endpoint answers 404, not an empty chain', async () => {
     assert.equal((await get('/api/path?from=NoSuchThing&to=OrderPublisher')).status, 404);
+  });
+});
+
+describe('the same workspace through the CLI', () => {
+  const CLI = join(HERE2, '..', 'bin', 'codelens.js');
+
+  const run = (args, cwd = workspace) =>
+    new Promise((done) => {
+      const child = spawn(process.execPath, ['--no-warnings', CLI, ...args], { cwd });
+      let out = '';
+      let errOut = '';
+      child.stdout.on('data', (c) => (out += c));
+      child.stderr.on('data', (c) => (errOut += c));
+      child.on('close', (code) => done({ code, out, errOut }));
+    });
+
+  test('query searches every repository and says which one answered', async () => {
+    const r = await run(['query', 'publishOrder']);
+    assert.equal(r.code, 0, r.errOut);
+    assert.match(r.out, /order-service · /);
+  });
+
+  test('status reports each repository under its own heading', async () => {
+    const r = await run(['status']);
+    assert.equal(r.code, 0, r.errOut);
+    for (const name of ['order-service', 'notify-service', 'audit-service']) {
+      assert.match(r.out, new RegExp(`# repository: ${name}`));
+    }
+  });
+
+  test('path crosses repositories through the queue binding', async () => {
+    const r = await run(['path', 'publishOrder', 'OrderAuditWorker#record']);
+    assert.equal(r.code, 0, r.errOut);
+    assert.match(r.out, /sqs: order-events/);
+    assert.match(r.out, /crosses into audit-service/);
+    assert.match(r.out, /across two repositories/);
+  });
+
+  test('impact finds the symbol in whichever repository holds it', async () => {
+    const r = await run(['impact', 'OrderAuditWorker#record']);
+    assert.equal(r.code, 0, r.errOut);
+    assert.match(r.out, /perform/);
+  });
+});
+
+describe('the same workspace through MCP', () => {
+  test('codelens_status covers every repository in one call', async () => {
+    const CLI = join(HERE2, '..', 'bin', 'codelens.js');
+    const child = spawn(process.execPath, ['--no-warnings', CLI, 'mcp', workspace]);
+    const replies = [];
+    let buffer = '';
+    child.stdout.on('data', (c) => {
+      buffer += c;
+      let nl;
+      while ((nl = buffer.indexOf('\n')) !== -1) {
+        const line = buffer.slice(0, nl).trim();
+        buffer = buffer.slice(nl + 1);
+        if (line) replies.push(JSON.parse(line));
+      }
+    });
+
+    const ask = (msg) => child.stdin.write(JSON.stringify(msg) + '\n');
+    ask({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+    ask({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'codelens_status', arguments: {} } });
+
+    const until = async (pred, ms = 15000) => {
+      const start = Date.now();
+      while (!pred()) {
+        if (Date.now() - start > ms) throw new Error('timed out waiting for MCP reply');
+        await new Promise((s) => setTimeout(s, 50));
+      }
+    };
+    try {
+      await until(() => replies.some((r) => r.id === 2));
+      const status = replies.find((r) => r.id === 2);
+      const text = status.result.content[0].text;
+      for (const name of ['order-service', 'notify-service', 'audit-service']) {
+        assert.match(text, new RegExp(name));
+      }
+    } finally {
+      child.kill();
+    }
   });
 });

@@ -22,6 +22,7 @@ import { openProject } from './db.js';
 import { discoverProjects, dbPathFor } from './project.js';
 import { indexProject } from './indexer.js';
 import { watchProject } from './watch.js';
+import { pathAcross } from './workspace.js';
 import {
   searchSymbols,
   getSymbol,
@@ -29,7 +30,6 @@ import {
   callersOf,
   calleesOf,
   impactOf,
-  pathBetween,
   projectStats,
   isTestPath,
   graphAround,
@@ -582,36 +582,12 @@ export async function startServer(
           return { nodes, edges };
         };
 
-        if (a.project.id === b.project.id) {
-          const found = pathBetween(a.project.db, a.hit.id, b.hit.id);
-          if (!found) return send(200, { found: false, nodes: [], edges: [] });
-          const g = asNodes(a.project, found, a.hit);
-          return send(200, { found: true, length: found.length, ...g });
-        }
-
-        // Different repositories: the only bridges are framework bindings, so
-        // walk from A to a binding endpoint whose key matches one in B's repo,
-        // cross, and walk on to B. Shortest total wins.
-        const pairs = a.project.db
-          .prepare(`SELECT plugin, role, key, symbol_id FROM bindings`)
-          .all()
-          .flatMap((mine) =>
-            b.project.db
-              .prepare(`SELECT symbol_id FROM bindings WHERE plugin = ? AND key = ? AND role != ?`)
-              .all(mine.plugin, mine.key, mine.role)
-              .map((theirs) => ({ mine, theirs })),
-          );
-
-        let best = null;
-        for (const { mine, theirs } of pairs) {
-          const first = pathBetween(a.project.db, a.hit.id, mine.symbol_id);
-          if (!first) continue;
-          const second = pathBetween(b.project.db, theirs.symbol_id, b.hit.id);
-          if (!second) continue;
-          const total = first.length + 1 + second.length;
-          if (!best || total < best.total) best = { mine, theirs, first, second, total };
-        }
+        const best = pathAcross(a, b);
         if (!best) return send(200, { found: false, nodes: [], edges: [] });
+        if (best.same) {
+          const g = asNodes(a.project, best.found, a.hit);
+          return send(200, { found: true, length: best.found.length, ...g });
+        }
 
         const left = asNodes(a.project, best.first, a.hit);
         const entry = b.project.db

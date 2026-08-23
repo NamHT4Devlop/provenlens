@@ -15,7 +15,6 @@ import {
   isTestPath,
   graphAround,
   topHubs,
-  pathBetween,
 } from '../src/query.js';
 import {
   formatExplore,
@@ -25,8 +24,11 @@ import {
   formatAffected,
   toMermaid,
   formatPath,
+  pathLines,
+  symbolLabel,
 } from '../src/format.js';
 import { IMPLEMENTED_LANGUAGES } from '../src/extract/index.js';
+import { openWorkspace, locateSymbol, pathAcross } from '../src/workspace.js';
 
 const program = new Command();
 
@@ -76,6 +78,40 @@ function useProject(pathArg, { needsData = true } = {}) {
     die('index was built by an older version and has been reset. Run `codelens index`.');
   }
   return { root, db };
+}
+
+/**
+ * Like useProject, but a folder of indexed checkouts counts too: every repo
+ * one level down becomes part of the scope, the same rule `serve` follows.
+ */
+function useScope(pathArg) {
+  const start = pathArg ? resolve(pathArg) : process.cwd();
+  if (findProjectRoot(start)) {
+    const { root, db } = useProject(pathArg);
+    return [{ id: 0, name: root.split('/').pop(), root, db }];
+  }
+  const projects = openWorkspace(start);
+  if (!projects.length) {
+    die(`no ${INDEX_DIR}/ found here, in any parent, or one level down. Run \`codelens init\` first.`);
+  }
+  return projects;
+}
+
+/** Finds the one repository in scope that knows this name, or dies usefully. */
+function pickAcross(projects, name) {
+  const found = locateSymbol(projects, name);
+  if (!found) die(`no symbol matches "${name}" in ${projects.length} repositor${projects.length === 1 ? 'y' : 'ies'}.`);
+  if (projects.length > 1) {
+    // Same-scored hits in other repos deserve a mention, not a guess.
+    const elsewhere = projects
+      .filter((p) => p.id !== found.project.id)
+      .filter((p) => (locateSymbol([p], name)?.hit.score ?? -1) >= found.hit.score)
+      .map((p) => p.name);
+    if (elsewhere.length) {
+      console.error(`note: "${name}" also matches in ${elsewhere.join(', ')} — using ${found.project.name}.`);
+    }
+  }
+  return found;
 }
 
 /** Resolves a user-typed name to exactly one symbol, or reports the ambiguity. */
@@ -181,7 +217,15 @@ program
   .argument('[path]', 'project directory')
   .description('show index size, language coverage and resolution quality')
   .action((path) => {
-    const { root, db } = useProject(path);
+    const scope = useScope(path);
+    scope.forEach((project, i) => {
+      if (i) console.log('');
+      if (scope.length > 1) console.log(`# repository: ${project.name}`);
+      printStatus(project.root, project.db);
+    });
+  });
+
+function printStatus(root, db) {
     const s = projectStats(db);
     const last = getMeta(db, 'last_indexed_at');
     console.log(`root:    ${root}`);
@@ -221,7 +265,7 @@ program
           : '  (no extractor yet)';
       console.log(`  ${l.lang.padEnd(12)} ${String(l.n).padStart(5)}${note}`);
     }
-  });
+}
 
 program
   .command('query')
@@ -230,11 +274,16 @@ program
   .option('--json', 'machine-readable output')
   .description('find symbols by name')
   .action((search, opts) => {
-    const { db } = useProject();
-    const results = searchSymbols(db, search.join(' '), { limit: Number(opts.limit) });
-    if (opts.json) return emitJson(results.map(publicSymbol));
+    const scope = useScope();
+    const results = scope.flatMap((p) =>
+      searchSymbols(p.db, search.join(' '), { limit: Number(opts.limit) }).map((r) => ({ ...r, repoName: p.name })),
+    ).slice(0, Number(opts.limit));
+    if (opts.json) {
+      return emitJson(results.map((r) => ({ ...publicSymbol(r), ...(scope.length > 1 ? { repo: r.repoName } : {}) })));
+    }
     if (!results.length) return console.log('no matches');
     for (const r of results) {
+      if (scope.length > 1) process.stdout.write(`${r.repoName} · `);
       console.log(
         `${String(r.id).padStart(5)}  ${r.kind.padEnd(11)} ${r.fqn ?? r.name}\n` +
           `       ${r.file_path}:${r.start_line}  ${r.signature ?? ''}`,
@@ -248,8 +297,15 @@ program
   .option('-m, --max-matches <n>', 'how many matches to expand', '3')
   .description('source + call paths for an area, in one shot')
   .action((query, opts) => {
-    const { root, db } = useProject();
-    console.log(formatExplore(db, root, query.join(' '), { maxMatches: Number(opts.maxMatches) }));
+    const scope = useScope();
+    const q = query.join(' ');
+    const sections = scope
+      .filter((p) => scope.length === 1 || searchSymbols(p.db, q, { limit: 1 }).length)
+      .map((p) => {
+        const body = formatExplore(p.db, p.root, q, { maxMatches: Number(opts.maxMatches) });
+        return scope.length > 1 ? `# repository: ${p.name}\n\n${body}` : body;
+      });
+    console.log(sections.length ? sections.join('\n\n---\n\n') : `no symbol matches "${q}".`);
   });
 
 program
@@ -257,8 +313,10 @@ program
   .argument('<name>', 'symbol name')
   .description('one symbol in full, with its caller/callee trail')
   .action((name) => {
-    const { root, db } = useProject();
-    console.log(formatNode(db, root, pickSymbol(db, name).id));
+    const scope = useScope();
+    const { project, hit } = pickAcross(scope, name);
+    if (scope.length > 1) console.log(`# repository: ${project.name}\n`);
+    console.log(formatNode(project.db, project.root, hit.id));
   });
 
 program
@@ -267,10 +325,9 @@ program
   .option('--json', 'machine-readable output')
   .description('what calls this symbol')
   .action((name, opts) => {
-    const { db } = useProject();
-    const id = pickSymbol(db, name).id;
-    if (opts.json) return emitJson(callersOf(db, id).map(publicSymbol));
-    console.log(formatRelations(db, id, 'callers'));
+    const { project, hit } = pickAcross(useScope(), name);
+    if (opts.json) return emitJson(callersOf(project.db, hit.id).map(publicSymbol));
+    console.log(formatRelations(project.db, hit.id, 'callers'));
   });
 
 program
@@ -279,10 +336,9 @@ program
   .option('--json', 'machine-readable output')
   .description('what this symbol calls')
   .action((name, opts) => {
-    const { db } = useProject();
-    const id = pickSymbol(db, name).id;
-    if (opts.json) return emitJson(calleesOf(db, id).map(publicSymbol));
-    console.log(formatRelations(db, id, 'callees'));
+    const { project, hit } = pickAcross(useScope(), name);
+    if (opts.json) return emitJson(calleesOf(project.db, hit.id).map(publicSymbol));
+    console.log(formatRelations(project.db, hit.id, 'callees'));
   });
 
 program
@@ -291,18 +347,17 @@ program
   .option('--json', 'machine-readable output')
   .description('blast radius: everything that transitively reaches this symbol')
   .action((name, opts) => {
-    const { db } = useProject();
-    const id = pickSymbol(db, name).id;
+    const { project, hit } = pickAcross(useScope(), name);
     if (opts.json) {
-      const { levels, totalSymbols, totalFiles } = impactOf(db, id);
+      const { levels, totalSymbols, totalFiles } = impactOf(project.db, hit.id);
       return emitJson({
-        symbol: publicSymbol(pickSymbol(db, name)),
+        symbol: publicSymbol(hit),
         totalSymbols,
         totalFiles,
         levels: levels.map((level) => (level ?? []).map(publicSymbol)),
       });
     }
-    console.log(formatImpact(db, id));
+    console.log(formatImpact(project.db, hit.id));
   });
 
 program
@@ -367,22 +422,43 @@ program
   .option('--json', 'machine-readable output')
   .description('shortest directed chain from one symbol to another, hop by hop')
   .action((from, to, opts) => {
-    const { db } = useProject();
-    const a = pickSymbol(db, from);
-    const b = pickSymbol(db, to);
-    const found = pathBetween(db, a.id, b.id, {
-      maxDepth: Math.min(Math.max(Number(opts.depth) || 12, 1), 24),
-    });
+    const scope = useScope();
+    const a = pickAcross(scope, from);
+    const b = pickAcross(scope, to);
+    const best = pathAcross(a, b);
+
+    const hops = (leg) =>
+      leg.hops.map((h) => ({ ...publicSymbol(h.symbol), edge: h.kind, via: h.via, confidence: h.confidence }));
+
     if (opts.json) {
-      return emitJson(
-        found
-          ? { found: true, length: found.length,
-              hops: found.hops.map((h) => ({ ...publicSymbol(h.symbol), edge: h.kind, via: h.via, confidence: h.confidence })) }
-          : { found: false },
-      );
+      if (!best) return emitJson({ found: false });
+      if (best.same) return emitJson({ found: true, length: best.found.length, hops: hops(best.found) });
+      return emitJson({
+        found: true,
+        length: best.total,
+        crossRepo: { plugin: best.mine.plugin, key: best.mine.key, from: a.project.name, to: b.project.name },
+        hops: [...hops(best.first), ...hops(best.second)],
+      });
     }
-    console.log(formatPath(db, a.id, b.id, found));
-    if (!found) process.exitCode = 1;
+
+    if (!best) {
+      console.log(formatPath(a.project.db, a.hit.id, b.hit.id, null));
+      process.exitCode = 1;
+      return;
+    }
+    if (best.same) {
+      console.log(formatPath(a.project.db, a.hit.id, b.hit.id, best.found));
+      return;
+    }
+    // One continuous listing: leg A, the binding that bridges the repos, leg B.
+    const head = symbolLabel(a.project.db, a.hit.id);
+    const goal = symbolLabel(b.project.db, b.hit.id);
+    const lines = [`# Path: ${head.label} → ${goal.label}  (${a.project.name} → ${b.project.name})`, ''];
+    lines.push(...pathLines(a.project.db, a.hit.id, best.first));
+    lines.push(`  ══╡ ${best.mine.plugin}: ${best.mine.key} ╞══  crosses into ${b.project.name}`);
+    lines.push(...pathLines(b.project.db, best.theirs.symbol_id, best.second));
+    lines.push('', `${best.total} hop(s) across two repositories.`);
+    console.log(lines.join('\n'));
   });
 
 program

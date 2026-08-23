@@ -331,17 +331,36 @@ export function toMermaid(graph) {
   return lines.join('\n');
 }
 
+/** One symbol's display name and location, straight from its index. */
+export function symbolLabel(db, id) {
+  const s = db
+    .prepare(`SELECT s.fqn, s.name, f.path AS file_path, s.start_line
+                FROM symbols s JOIN files f ON f.id = s.file_id WHERE s.id = ?`)
+    .get(id);
+  return s ? { label: s.fqn ?? s.name, at: `${s.file_path}:${s.start_line}` } : null;
+}
+
+/**
+ * The body of a chain -- start line plus one indented hop per link -- with no
+ * header or verdict, so a cross-repository path can splice two of these
+ * around the binding that bridges them.
+ */
+export function pathLines(db, fromId, result) {
+  const start = symbolLabel(db, fromId);
+  const out = [`${start.label} — ${start.at}`];
+  for (const hop of result.hops) {
+    const conf = hop.confidence != null && hop.confidence < 1 ? ` · ${hop.confidence.toFixed(2)}` : '';
+    const label = hop.kind && !CALL_KINDS.includes(hop.kind) ? hop.kind : 'calls';
+    out.push(`  └─ ${label} [${hop.via}${conf}]`);
+    out.push(`${hop.symbol.fqn ?? hop.symbol.name} — ${hop.symbol.file_path}:${hop.symbol.start_line}`);
+  }
+  return out;
+}
+
 /** The chain from one symbol to another, one hop per line. */
 export function formatPath(db, fromId, toId, result) {
-  const name = (id) => {
-    const s = db
-      .prepare(`SELECT s.fqn, s.name, f.path AS file_path, s.start_line
-                  FROM symbols s JOIN files f ON f.id = s.file_id WHERE s.id = ?`)
-      .get(id);
-    return s ? { label: s.fqn ?? s.name, at: `${s.file_path}:${s.start_line}` } : null;
-  };
-  const start = name(fromId);
-  const goal = name(toId);
+  const start = symbolLabel(db, fromId);
+  const goal = symbolLabel(db, toId);
   const out = [`# Path: ${start.label} → ${goal.label}`, ''];
 
   if (!result) {
@@ -354,13 +373,7 @@ export function formatPath(db, fromId, toId, result) {
     return out.join('\n');
   }
 
-  out.push(`${start.label} — ${start.at}`);
-  for (const hop of result.hops) {
-    const conf = hop.confidence != null && hop.confidence < 1 ? ` · ${hop.confidence.toFixed(2)}` : '';
-    const label = hop.kind && !CALL_KINDS.includes(hop.kind) ? hop.kind : 'calls';
-    out.push(`  └─ ${label} [${hop.via}${conf}]`);
-    out.push(`${hop.symbol.fqn ?? hop.symbol.name} — ${hop.symbol.file_path}:${hop.symbol.start_line}`);
-  }
+  out.push(...pathLines(db, fromId, result));
   out.push('', `${result.length} hop(s).`);
   return out.join('\n');
 }
