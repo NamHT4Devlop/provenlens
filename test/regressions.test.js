@@ -861,3 +861,35 @@ describe('JVM signatures read with javap', () => {
     assert.ok(!names.includes('com.example.NotAThing'), 'the imaginary one yields nothing');
   });
 });
+
+describe('dependency declarations are read once, not on every sync', () => {
+  test('a re-sync keeps them and does not report them as vanished', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'codelens-ambient-'));
+    mkdirSync(join(root, 'src'), { recursive: true });
+    writeFileSync(
+      join(root, 'src', 'A.java'),
+      'package d;\nimport java.util.Optional;\npublic class A { Optional<String> f() { return Optional.empty(); } }\n',
+    );
+
+    const db = openDb(dbPathFor(root), { create: true });
+    try {
+      await indexProject(db, root, { full: true });
+      const read = db.prepare('SELECT COUNT(*) n FROM files WHERE external = 1').get().n;
+
+      // A dependency row has no path on disk. The pass that prunes files which
+      // vanished must not mistake one for a deletion, or every sync would
+      // throw away what the last one read and pay to read it again.
+      const again = await indexProject(db, root, { full: false });
+      assert.equal(again.removed ?? 0, 0, 'nothing vanished');
+      assert.equal(
+        db.prepare('SELECT COUNT(*) n FROM files WHERE external = 1').get().n,
+        read,
+        'the declarations survive a sync',
+      );
+      if (read > 0) assert.equal(again.ambient?.reused, true, 'and are not read a second time');
+    } finally {
+      db.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

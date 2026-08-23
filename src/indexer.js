@@ -9,7 +9,7 @@ import { resolveTypeScript } from './resolve/typescript.js';
 import { discoverFiles } from './project.js';
 import { runBindings, BINDING_LANGS } from './bindings/index.js';
 import { railsAttributes } from './schema/rails.js';
-import { setMeta } from './db.js';
+import { setMeta, getMeta } from './db.js';
 import { indexAmbient } from './ambient.js';
 import { indexJvm } from './jvm.js';
 
@@ -39,7 +39,12 @@ export async function indexProject(db, root, { full = false, onProgress } = {}) 
   const bindingLangs = BINDING_LANGS.map(() => '?').join(', ');
   const existing = new Map();
   for (const row of db
-    .prepare(`SELECT id, path, hash FROM files WHERE lang NOT IN (${bindingLangs})`)
+    // External rows describe a dependency, not a file in this tree: they have
+    // no path on disk and must not be mistaken for one that vanished.
+    .prepare(
+      `SELECT id, path, hash FROM files
+        WHERE external = 0 AND lang NOT IN (${bindingLangs})`,
+    )
     .all(...BINDING_LANGS)) {
     existing.set(row.path, row);
   }
@@ -244,8 +249,27 @@ export async function indexProject(db, root, { full = false, onProgress } = {}) 
   // Declarations from the dependencies this project imports, read so a chain
   // can be typed THROUGH a library rather than stopping at one. They are
   // marked external: never a resolution target, never part of coverage.
-  let ambientStats = { packages: 0, files: 0, symbols: 0 };
-  const needsAmbient = db
+  // Reading dependencies costs a second or two -- javap in particular -- and
+  // nothing about them changes unless this project's imports do. A watch loop
+  // reindexing on every keystroke must not pay it each time.
+  const importFingerprint = createHash('sha1')
+    .update(
+      db
+        .prepare(
+          `SELECT i.fqn FROM imports i JOIN files f ON f.id = i.file_id
+            WHERE f.external = 0 ORDER BY i.fqn`,
+        )
+        .all()
+        .map((r) => r.fqn)
+        .join('\n'),
+    )
+    .digest('hex');
+  const alreadyRead =
+    getMeta(db, 'ambient_fingerprint') === importFingerprint &&
+    db.prepare('SELECT COUNT(*) AS n FROM files WHERE external = 1').get().n > 0;
+
+  let ambientStats = { packages: 0, files: 0, symbols: 0, reused: alreadyRead };
+  const needsAmbient = !alreadyRead && db
     .prepare("SELECT COUNT(*) AS n FROM files WHERE external = 0 AND lang IN ('typescript','tsx','javascript')")
     .get().n;
   if (needsAmbient > 0) {
@@ -264,9 +288,9 @@ export async function indexProject(db, root, { full = false, onProgress } = {}) 
   // Optional<Post> has its type declared in a jar, and a chain stops there
   // without it. The JDK's own classes need no download at all, which turns a
   // pile of "assumed runtime" into proof.
-  const hasJava = db
-    .prepare("SELECT COUNT(*) AS n FROM files WHERE external = 0 AND lang = 'java'")
-    .get().n;
+  const hasJava = alreadyRead
+    ? 0
+    : db.prepare("SELECT COUNT(*) AS n FROM files WHERE external = 0 AND lang = 'java'").get().n;
   if (hasJava > 0) {
     try {
       const jvm = indexJvm(db, root);
@@ -290,6 +314,7 @@ export async function indexProject(db, root, { full = false, onProgress } = {}) 
   // Flyway plugin reads statements the MyBatis plugin has just created.
   const bindingStats = runBindings(db, root);
 
+  if (!alreadyRead) setMeta(db, 'ambient_fingerprint', importFingerprint);
   setMeta(db, 'last_indexed_at', Date.now());
   return {
     ...stats,
