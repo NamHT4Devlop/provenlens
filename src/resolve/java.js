@@ -659,6 +659,46 @@ export function resolveJava(db) {
     .all();
   for (const r of refs) refById.set(r.id, r);
 
+  // `var manager = context.entityManager` names no type and calls nothing, so
+  // there was nothing to infer from. The path is what declares it: one field
+  // per segment. Runs first -- a path usually starts from something already
+  // declared, and what it types can then carry a call below.
+  {
+    const updateLocal = db.prepare('UPDATE locals SET type_name = ? WHERE id = ?');
+    const pathLocals = db
+      .prepare(
+        `SELECT l.id, l.file_id, l.scope_symbol_id, l.name, l.init_path
+           FROM locals l JOIN files f ON f.id = l.file_id
+          WHERE f.lang = 'java' AND l.type_name IS NULL AND l.init_kind = 'path'`,
+      )
+      .all();
+    for (const local of pathLocals) {
+      if (!local.init_path || local.scope_symbol_id == null) continue;
+      const scope = symbolById.get(local.scope_symbol_id);
+      const held = receiverType(
+        {
+          file_id: local.file_id,
+          from_symbol_id: local.scope_symbol_id,
+          receiver: local.init_path,
+          receiver_ref_id: null,
+        },
+        scope,
+        0,
+      );
+      if (typeof held !== 'string' || !held) continue;
+      updateLocal.run(held, local.id);
+      if (!localsByScope.has(local.scope_symbol_id)) {
+        localsByScope.set(local.scope_symbol_id, new Map());
+      }
+      localsByScope.get(local.scope_symbol_id).set(local.name, {
+        type: held,
+        args: null,
+        ownerRef: null,
+        init: 'inferred',
+      });
+    }
+  }
+
   // Return-type inference: `var builder = Foo.builder()` names no type, but the
   // method it calls declares what it returns. Runs before the main pass so
   // those locals can type their own receivers afterwards.

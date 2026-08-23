@@ -3,7 +3,7 @@ import { mkdirSync, rmSync, existsSync, chmodSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 /** Bump whenever the schema changes: the index is a cache, so it is rebuilt. */
-export const SCHEMA_VERSION = 7;
+export const SCHEMA_VERSION = 8;
 
 const SCHEMA = `
 PRAGMA journal_mode = WAL;
@@ -100,7 +100,11 @@ CREATE TABLE IF NOT EXISTS locals (
   -- Set when the declaration was x = someCall(), so a resolver can come back
   -- and fill type_name in from the callee's declared return type.
   line            INTEGER,
-  init_kind       TEXT
+  init_kind       TEXT,
+  -- For init_kind = 'path', the initialiser as written: connection.manager.
+  -- Nothing about that declares a type, but every segment of it does, and the
+  -- resolver can walk them once the whole project is in the index.
+  init_path       TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_locals_scope ON locals(scope_symbol_id);
 

@@ -602,6 +602,44 @@ export function resolveTypeScript(db, root) {
     .all();
   for (const r of refs) refById.set(r.id, r);
 
+  const updateLocal = db.prepare('UPDATE locals SET type_name = ? WHERE id = ?');
+
+  // `const manager = connection.manager` names no type and calls nothing, so
+  // there was never anything to infer from -- and every call on `manager`
+  // went down with it. The path is the answer: walking it reads a declared
+  // field per segment. Runs first, because a path usually starts from
+  // something already annotated, and what it types can then carry a call.
+  const pathLocals = db
+    .prepare(
+      `SELECT l.id, l.file_id, l.scope_symbol_id, l.name, l.init_path
+         FROM locals l JOIN files f ON f.id = l.file_id
+        WHERE f.lang IN (${LANG_LIST}) AND l.type_name IS NULL AND l.init_kind = 'path'`,
+    )
+    .all();
+  for (const local of pathLocals) {
+    if (!local.init_path || local.scope_symbol_id == null) continue;
+    const scope = symbolById.get(local.scope_symbol_id);
+    const type = receiverType(
+      {
+        file_id: local.file_id,
+        from_symbol_id: local.scope_symbol_id,
+        receiver: local.init_path,
+        receiver_ref_id: null,
+      },
+      scope,
+    );
+    if (!type?.fqn) continue;
+    updateLocal.run(type.fqn, local.id);
+    if (!localsByScope.has(local.scope_symbol_id)) {
+      localsByScope.set(local.scope_symbol_id, new Map());
+    }
+    localsByScope.get(local.scope_symbol_id).set(local.name, {
+      type: type.fqn,
+      args: null,
+      ownerRef: null,
+    });
+  }
+
   const pendingLocals = db
     .prepare(
       `SELECT l.id, l.scope_symbol_id, l.name, l.line, l.init_kind, l.owner_ref_id
@@ -610,7 +648,6 @@ export function resolveTypeScript(db, root) {
             AND l.init_kind IN ('call', 'await')`,
     )
     .all();
-  const updateLocal = db.prepare('UPDATE locals SET type_name = ? WHERE id = ?');
   for (const local of pendingLocals) {
     // The exact call the value came from, recorded at extraction. No line
     // matching: a chain spanning several lines used to find nothing.

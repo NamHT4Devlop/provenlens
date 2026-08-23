@@ -657,6 +657,18 @@ export function extractTypeScript(tree, src, ctx = {}) {
             const ctor = childByField(value, 'constructor');
             constructed = ctor ? bareType(text(ctor, src)) : null;
           }
+          // `const manager = connection.manager` -- no annotation, no call, so
+          // there was nothing to infer from and the variable stayed untyped,
+          // taking every call on it down with it. The path itself is the
+          // answer: each segment is a declared field, and the resolver can
+          // walk it once the whole project is indexed.
+          let initPath = null;
+          if (!typeName && !constructed && initRefTmp == null && value?.type === 'member_expression') {
+            const written = text(value, src).trim();
+            if (/^(?:this\.)?[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+$/.test(written)) {
+              initPath = written;
+            }
+          }
           locals.push({
             scopeTmpId: scopeId,
             name: varName,
@@ -668,7 +680,16 @@ export function extractTypeScript(tree, src, ctx = {}) {
             // variable holds the T.
             ownerRefTmp: typeName || constructed ? null : initRefTmp,
             init_kind:
-              typeName || constructed ? null : initRefTmp == null ? null : awaited ? 'await' : 'call',
+              typeName || constructed
+                ? null
+                : initRefTmp == null
+                  ? initPath
+                    ? 'path'
+                    : null
+                  : awaited
+                    ? 'await'
+                    : 'call',
+            init_path: initPath,
           });
         }
       }

@@ -427,6 +427,15 @@ export function extractJava(tree, src) {
           const ctor = childByField(value, 'type');
           if (ctor) typeName = normalizeType(text(ctor, src));
         }
+        // `var manager = context.entityManager` names no type and calls
+        // nothing. The path is what declares it, one field per segment.
+        let initPath = null;
+        if (!typeName && value?.type === 'field_access') {
+          const written = text(value, src).trim();
+          if (/^(?:this\.)?[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+$/.test(written)) {
+            initPath = written;
+          }
+        }
         if (nameNode && scopeId != null) {
           locals.push({
             scopeTmpId: scopeId,
@@ -434,7 +443,14 @@ export function extractJava(tree, src) {
             type_name: typeName,
             type_args: typeNode ? genericArgOf(text(typeNode, src)) : null,
             line: node.startPosition.row + 1,
-            init_kind: !typeName && value?.type === 'method_invocation' ? 'call' : null,
+            init_kind: typeName
+              ? null
+              : value?.type === 'method_invocation'
+                ? 'call'
+                : initPath
+                  ? 'path'
+                  : null,
+            init_path: initPath,
           });
         }
         if (value) walk(value, typeStack, scopeId);

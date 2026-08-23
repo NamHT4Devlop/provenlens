@@ -83,8 +83,9 @@ export async function indexProject(db, root, { full = false, onProgress } = {}) 
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
   );
   const insertLocal = db.prepare(
-    `INSERT INTO locals (file_id, scope_symbol_id, name, type_name, type_args, owner_ref_id, line, init_kind)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO locals (file_id, scope_symbol_id, name, type_name, type_args, owner_ref_id, line,
+                         init_kind, init_path)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const insertRef = db.prepare(
     `INSERT INTO refs (file_id, from_symbol_id, name, receiver, arity, arg_types, str_args,
@@ -211,6 +212,7 @@ export async function indexProject(db, root, { full = false, onProgress } = {}) 
           l.ownerRefTmp == null ? null : refIds[l.ownerRefTmp],
           l.line ?? null,
           l.init_kind ?? null,
+          l.init_path ?? null,
         );
       }
 
