@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { buildIndex } from './helpers.js';
 import { diagnose } from '../src/doctor.js';
 import { nodeModulesRoots } from '../src/ambient.js';
-import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -49,6 +49,29 @@ describe('doctor', () => {
       assert.ok(ruby, 'expected an inherent finding for Ruby');
       assert.match(ruby.fix, /nothing to install/);
     });
+  });
+});
+
+describe('workspace tsconfig', () => {
+  test('reads the paths a workspace declares, anchored to its own directory', async () => {
+    const { readTsconfigScopes } = await import('../src/resolve/typescript.js');
+    const root = mkdtempSync(join(tmpdir(), 'codelens-tsc-'));
+    try {
+      // No tsconfig at the top at all, which is how immich is laid out: the
+      // aliases live in server/tsconfig.json and used to resolve to nothing.
+      mkdirSync(join(root, 'server'), { recursive: true });
+      writeFileSync(
+        join(root, 'server', 'tsconfig.json'),
+        JSON.stringify({ compilerOptions: { paths: { 'src/*': ['./src/*'] } } }),
+      );
+
+      const scopes = readTsconfigScopes(root);
+      assert.equal(scopes.length, 1, 'the workspace config should be found');
+      assert.equal(scopes[0].dir, 'server', 'anchored to the directory that declares it');
+      assert.deepEqual(scopes[0].paths, { 'src/*': ['./src/*'] });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

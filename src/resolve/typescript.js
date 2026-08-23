@@ -9,8 +9,8 @@
  *   0.9  interface->impl  -- receiver was an interface; linked to implementations
  *   0.5  unique-name      -- no type info, exactly one match in the project
  */
-import { readFileSync } from 'node:fs';
-import { join, dirname, normalize } from 'node:path';
+import { readFileSync, readdirSync } from 'node:fs';
+import { join, dirname, normalize, relative } from 'node:path';
 
 const TS_LANGS = ['typescript', 'tsx', 'javascript'];
 const LANG_LIST = TS_LANGS.map((l) => `'${l}'`).join(', ');
@@ -56,6 +56,44 @@ const JS_GLOBALS = new Set([
   'FormData', 'Headers', 'Request', 'Response', 'Event', 'EventTarget',
 ]);
 
+/**
+ * Every tsconfig in the tree, with the paths each one declares.
+ *
+ * A workspace declares its aliases in its own tsconfig, not the one at the
+ * top -- immich answers `src/decorators` from `server/tsconfig.json`, and
+ * there is no tsconfig at its root at all. Reading only the root meant every
+ * such import resolved to nothing, so an ordinary call to an imported
+ * function was mistaken for a method on `this` and reported as missing from a
+ * class that had never declared it.
+ *
+ * Each config's `paths` are anchored to the directory that declares them,
+ * which is what the compiler does and the only reading that can be right when
+ * two workspaces both map `src/*` to different places.
+ */
+export function readTsconfigScopes(root, maxDepth = 2) {
+  const scopes = [];
+  const visit = (dir, depth) => {
+    const config = readTsconfigPaths(dir);
+    if (Object.keys(config.paths).length) {
+      const prefix = relative(root, dir).replace(/\\/g, '/');
+      scopes.push({ ...config, dir: prefix });
+    }
+    if (depth >= maxDepth) return;
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      if (!e.isDirectory() || e.name.startsWith('.') || e.name === 'node_modules') continue;
+      visit(join(dir, e.name), depth + 1);
+    }
+  };
+  visit(root, 0);
+  return scopes;
+}
+
 /** Reads `compilerOptions.paths` so alias imports resolve like the compiler does. */
 export function readTsconfigPaths(root) {
   for (const name of ['tsconfig.json', 'jsconfig.json']) {
@@ -78,7 +116,7 @@ export function readTsconfigPaths(root) {
 }
 
 export function resolveTypeScript(db, root) {
-  const { baseUrl, paths } = readTsconfigPaths(root);
+  const scopes = readTsconfigScopes(root);
 
   const files = db
     .prepare(`SELECT id, path, pkg FROM files WHERE lang IN (${LANG_LIST})`)
@@ -107,22 +145,32 @@ export function resolveTypeScript(db, root) {
       return probe(joined);
     }
 
-    for (const [pattern, targets] of Object.entries(paths)) {
-      const prefix = pattern.replace(/\*$/, '');
-      if (!pattern.endsWith('*')) {
-        if (specifier !== pattern) continue;
+    // The importing file's own workspace answers first: two workspaces may
+    // each map `src/*`, and the nearer one is the one that meant it.
+    const ordered = [...scopes].sort(
+      (a, b) =>
+        (fromModule.startsWith(b.dir) ? b.dir.length : -1) -
+        (fromModule.startsWith(a.dir) ? a.dir.length : -1),
+    );
+    for (const scope of ordered) {
+      const base = join(scope.dir, scope.baseUrl);
+      for (const [pattern, targets] of Object.entries(scope.paths)) {
+        const prefix = pattern.replace(/\*$/, '');
+        if (!pattern.endsWith('*')) {
+          if (specifier !== pattern) continue;
+          for (const target of targets) {
+            const hit = probe(normalize(join(base, target)).replace(/\\/g, '/'));
+            if (hit) return hit;
+          }
+          continue;
+        }
+        if (!specifier.startsWith(prefix)) continue;
+        const rest = specifier.slice(prefix.length);
         for (const target of targets) {
-          const hit = probe(normalize(join(baseUrl, target)).replace(/\\/g, '/'));
+          const candidate = normalize(join(base, target.replace(/\*$/, rest))).replace(/\\/g, '/');
+          const hit = probe(candidate);
           if (hit) return hit;
         }
-        continue;
-      }
-      if (!specifier.startsWith(prefix)) continue;
-      const rest = specifier.slice(prefix.length);
-      for (const target of targets) {
-        const candidate = normalize(join(baseUrl, target.replace(/\*$/, rest))).replace(/\\/g, '/');
-        const hit = probe(candidate);
-        if (hit) return hit;
       }
     }
 
