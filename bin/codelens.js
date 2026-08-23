@@ -133,6 +133,11 @@ function reportIndex(stats) {
       (stats.skipped ? `, ${stats.skipped} unchanged` : '') +
       (stats.removed ? `, ${stats.removed} removed` : ''),
   );
+  if (stats.unparsable) {
+    console.log(
+      `${stats.unparsable} file(s) too large or malformed to parse — their calls are not in the graph`,
+    );
+  }
   if (stats.pending) {
     const pendingLangs = Object.keys(stats.byLang).filter((l) => !IMPLEMENTED_LANGUAGES.includes(l));
     if (pendingLangs.length) {

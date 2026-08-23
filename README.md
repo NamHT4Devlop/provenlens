@@ -352,22 +352,22 @@ from 97.3% to 95.2% once its types became readable enough to be counted properly
 | Repo | Stack | In-repo resolution | Floor if every assumption were wrong |
 |---|---|---|---|
 | spring-petclinic | Spring Boot + Data, 51 files | **99.7%** | **98.6%** |
-| mall | Spring Boot + MyBatis, 630 files | **99.3%** | **99.2%** |
+| mall | Spring Boot + MyBatis, 630 files | **99.4%** | **99.3%** |
 | mybatis spring-boot-starter | MyBatis, 154 files | **98.5%** | **98.5%** |
+| TheAlgorithms/Java | plain Java, 1588 files | **97.6%** | **97.0%** |
 | camel-spring-boot-examples | ~50 Camel examples, 325 files | **95.2%** | **94.1%** |
-| TheAlgorithms/Java | plain Java, 1588 files | **97.1%** | **96.3%** |
 | mybatis jpetstore | MyBatis + Flyway, 43 files | **95.1%** | **95.1%** |
 | express | plain JS, 141 files | **91.4%** | **91.1%** |
-| java-design-patterns | Java, 1991 files | **91.2%** | 89.1% |
+| java-design-patterns | Java, 1991 files | **91.2%** | 89.4% |
+| typeorm | TS, 3575 files | **88.1%** | 82.4% |
 | rubygems.org | Rails, 1392 files | **88.1%** | 80.4% |
-| mastodon | Rails + TS, 4199 files | **87.4%** | 79.8% |
-| halo | Java + TS, 2228 files | **86.6%** | 84.5% |
-| spring-cloud-aws | Java, 816 files | **85.9%** | 84.7% |
-| solidus | Rails, 2329 files | **83.4%** | 74.7% |
-| nest | TS, 1904 files | **83.4%** | 78.0% |
-| discourse | Rails, 14358 files | **78.2%** | 72.2% |
-| typeorm | TS, 3575 files | **71.8%** | 65.3% |
-| axios | JS, 242 files | **64.5%** | 54.0% |
+| mastodon | Rails + TS, 4199 files | **87.4%** | 79.9% |
+| spring-cloud-aws | Java, 816 files | **87.1%** | 85.9% |
+| halo | Java + TS, 2228 files | **87.0%** | 85.0% |
+| nest | TS, 1904 files | **84.8%** | 79.5% |
+| solidus | Rails, 2329 files | **83.5%** | 74.8% |
+| discourse | Rails, 14358 files | **78.3%** | 72.2% |
+| axios | JS, 242 files | **66.8%** | 56.1% |
 
 **Seven of the seventeen clear 90% on both columns**, and which seven is the most useful thing the
 table says. Several rows moved *down* on the way there and were kept: an import naming a library
@@ -387,7 +387,7 @@ declares the receiver's type**:
   different job from reading them.
 - Types declared **nowhere** — Ruby, and JavaScript callbacks. `axios` is the clearest case in the
   table: its tests are written as `startHTTPServer((req, res) => res.end(...))`, and nothing in
-  JavaScript ever says what `res` is. 64.5% is the honest reading of that, not a defect.
+  JavaScript ever says what `res` is. 66.8% is the honest reading of that, not a defect.
 
 **Two numbers, and the second is the one that keeps the first honest.** The floor assumes every
 judgement the resolver made without a declaration behind it was wrong — both directions. Calls
@@ -398,7 +398,7 @@ a call flatters the headline exactly as much as one that excuses it, and countin
 made the self-audit a half-audit. `bench` prints the guessed links so the gap is inspectable.
 
 Read the two columns together. spring-petclinic is 99.7% on one guessed link in the whole repo.
-axios is 64.5% on a floor of 54.0% — plain JS annotates nothing, so a tenth of what it *does* link
+axios is 66.8% on a floor of 56.1% — plain JS annotates nothing, so a tenth of what it *does* link
 rests on a convention rather than a declaration. mastodon and rubygems.org sit near 88% with floors
 near 80%, which is what Rails looks like when half the receivers are named after their model and
 nothing else says so.
@@ -696,7 +696,7 @@ attributed to the right library. If a resolver later drops an internal call, a t
   and gives up rather than guess elsewhere.
 - **A callback parameter in JavaScript** is the sharpest form of that. `startHTTPServer((req, res)
   => res.end(...))` says nothing about `res` anywhere, and neither does the helper it is passed to.
-  Reported as a miss rather than guessed, which is most of why axios reads 64.5%.
+  Reported as a miss rather than guessed, which is most of why axios reads 66.8%.
 - **Node object-modules** — `var app = module.exports = {}` then `app.set = function(){}` — are not
   modelled, so their members look external. Modelling them is correct in principle: express really
   does define `res.send`. It is left out because without a way to type the `req`/`res` parameters

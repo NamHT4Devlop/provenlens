@@ -1,4 +1,7 @@
 import { readFileSync } from 'node:fs';
+
+/** Above this a file is generated, not written, and can exhaust the WASM heap. */
+const MAX_PARSE_BYTES = 2 * 1024 * 1024;
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { getParser, langForPath } from './lang.js';
@@ -57,6 +60,10 @@ export async function indexProject(db, root, { full = false, onProgress } = {}) 
     removed: 0,
     byLang: {},
     symbols: 0,
+    // Files the parser could not take. Counted and reported rather than
+    // silently dropped: a file that is not in the index is a file whose calls
+    // are missing from the graph, and the number should say so.
+    unparsable: 0,
   };
 
   const seen = new Set();
@@ -122,9 +129,26 @@ export async function indexProject(db, root, { full = false, onProgress } = {}) 
       // Cascades away the old symbols/refs/imports/locals for this file.
       deleteFileRows.run(rel);
 
+      // tree-sitter runs in a WebAssembly heap of fixed size, and a generated
+      // or minified file large enough to exhaust it aborts the runtime -- not
+      // an exception this file could survive, but one that killed the whole
+      // run and left no index at all. A cap is the only defence, and 2 MB is
+      // far above any file written by hand.
+      if (source.length > MAX_PARSE_BYTES) {
+        stats.unparsable++;
+        continue;
+      }
+
       const parser = await getParser(lang);
-      const tree = parser.parse(source);
-      const result = extractor(tree, source, { path: rel, lang });
+      let result;
+      try {
+        result = extractor(parser.parse(source), source, { path: rel, lang });
+      } catch {
+        // One file the grammar cannot take is one file missing from the graph,
+        // which is a far better outcome than no graph.
+        stats.unparsable++;
+        continue;
+      }
 
       const fileId = Number(
         insertFile.run(
