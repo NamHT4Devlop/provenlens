@@ -18,8 +18,12 @@ import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 
-/** javap is fast per class but not free; batching keeps the total sane. */
-const BATCH = 40;
+/**
+ * Each javap run reopens the whole classpath, so the cost is per *invocation*
+ * far more than per class. Bigger batches mean fewer of them: on halo this is
+ * the difference between a dozen runs over 400 jars and a handful.
+ */
+const BATCH = 250;
 const MAX_TYPES = 4000;
 /** A shared cache can hold a great many jars that this project never asked for. */
 const MAX_JARS = 4000;
