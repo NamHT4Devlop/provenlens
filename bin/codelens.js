@@ -12,6 +12,7 @@ import {
   calleesOf,
   impactOf,
   affectedBy,
+  isTestPath,
 } from '../src/query.js';
 import {
   formatExplore,
@@ -304,6 +305,10 @@ program
   .argument('[files...]', 'changed files; reads stdin when omitted')
   .option('-d, --depth <n>', 'how far to follow callers', '4')
   .option('--json', 'machine-readable output')
+  .option(
+    '--fail-if-untested',
+    'exit 2 when the change touches production code that no existing test reaches',
+  )
   .description('what a set of changed files reaches, and which tests cover it')
   .action(async (files, opts) => {
     const { root, db } = useProject();
@@ -322,16 +327,31 @@ program
       const abs = resolve(p);
       return abs.startsWith(`${root}/`) ? abs.slice(root.length + 1) : p;
     });
+    const r = affectedBy(db, normalised, { maxDepth: Number(opts.depth) });
+
+    // The CI question: does anything already exercise what this change can
+    // break? A diff that only touches tests passes by definition.
+    const production = r.changed.filter((s) => !isTestPath(s.file_path));
+    const untested = opts.failIfUntested && production.length > 0 && r.tests.length === 0;
+
     if (opts.json) {
-      const r = affectedBy(db, normalised, { maxDepth: Number(opts.depth) });
-      return emitJson({
+      emitJson({
         changed: r.changed.map(publicSymbol),
         reached: r.reached.map(publicSymbol),
         tests: r.tests.map(publicSymbol),
         missingFiles: r.missingFiles,
+        ...(opts.failIfUntested ? { untested } : {}),
       });
+    } else {
+      console.log(formatAffected(db, normalised, { maxDepth: Number(opts.depth) }));
     }
-    console.log(formatAffected(db, normalised, { maxDepth: Number(opts.depth) }));
+
+    if (untested) {
+      process.stderr.write(
+        `affected: ${production.length} changed production symbol(s) and no test reaches any of them.\n`,
+      );
+      process.exit(2);
+    }
   });
 
 program

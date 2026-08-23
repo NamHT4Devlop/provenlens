@@ -1,13 +1,17 @@
-import { test, before, describe } from 'node:test';
+import { test, before, after, describe } from 'node:test';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { buildIndex } from './helpers.js';
 import { openDb } from '../src/db.js';
 import { indexProject } from '../src/indexer.js';
 import { searchSymbols, callersOf, affectedBy, isTestPath } from '../src/query.js';
-import { buildIgnoreFilter } from '../src/project.js';
+import { buildIgnoreFilter, dbPathFor } from '../src/project.js';
+
+const HERE = dirname(fileURLToPath(import.meta.url));
 
 /** A throwaway project written from literals, for cases no fixture covers. */
 async function tempProject(files) {
@@ -646,5 +650,77 @@ describe('rails schema', () => {
     const attr = db.prepare("SELECT COUNT(*) n FROM symbols WHERE fqn = 'Status#uri'").get();
     assert.equal(attr.n, 1);
     cleanup();
+  });
+});
+
+describe('affected --fail-if-untested', () => {
+  // The CI gate: exit 2 when a production change is reached by no test.
+  const CLI = join(HERE, '..', 'bin', 'codelens.js');
+  let covered;
+  let bare;
+
+  const run = (cwd, args) =>
+    new Promise((done) => {
+      const child = spawn(process.execPath, ['--no-warnings', CLI, ...args], { cwd });
+      let out = '';
+      let errOut = '';
+      child.stdout.on('data', (c) => (out += c));
+      child.stderr.on('data', (c) => (errOut += c));
+      child.on('close', (code) => done({ code, out, errOut }));
+    });
+
+  before(async () => {
+    covered = mkdtempSync(join(tmpdir(), 'codelens-gate-a-'));
+    bare = mkdtempSync(join(tmpdir(), 'codelens-gate-b-'));
+    const price = [
+      'package shop;',
+      'public class Price {',
+      '  public int total(int cents) { return cents * 2; }',
+      '}',
+    ].join('\n');
+    const spec = [
+      'package shop;',
+      'public class PriceTest {',
+      '  public void checks() { new Price().total(3); }',
+      '}',
+    ].join('\n');
+    for (const root of [covered, bare]) {
+      mkdirSync(join(root, 'src'), { recursive: true });
+      writeFileSync(join(root, 'src', 'Price.java'), price);
+    }
+    mkdirSync(join(covered, 'test'), { recursive: true });
+    writeFileSync(join(covered, 'test', 'PriceTest.java'), spec);
+    for (const root of [covered, bare]) {
+      const db = openDb(dbPathFor(root), { create: true });
+      await indexProject(db, root, { full: true });
+      db.close();
+    }
+  });
+
+  after(() => {
+    rmSync(covered, { recursive: true, force: true });
+    rmSync(bare, { recursive: true, force: true });
+  });
+
+  test('passes when an existing test reaches the changed code', async () => {
+    const r = await run(covered, ['affected', 'src/Price.java', '--fail-if-untested']);
+    assert.equal(r.code, 0, r.errOut);
+  });
+
+  test('fails with exit 2 when nothing tests the change', async () => {
+    const r = await run(bare, ['affected', 'src/Price.java', '--fail-if-untested']);
+    assert.equal(r.code, 2);
+    assert.match(r.errOut, /no test reaches/);
+  });
+
+  test('a diff that only touches tests passes by definition', async () => {
+    const r = await run(covered, ['affected', 'test/PriceTest.java', '--fail-if-untested']);
+    assert.equal(r.code, 0, r.errOut);
+  });
+
+  test('--json reports the same verdict without exiting differently', async () => {
+    const r = await run(bare, ['affected', 'src/Price.java', '--fail-if-untested', '--json']);
+    assert.equal(r.code, 2);
+    assert.equal(JSON.parse(r.out).untested, true);
   });
 });
