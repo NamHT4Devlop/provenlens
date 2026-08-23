@@ -190,6 +190,15 @@ export function resolveTypeScript(db, root) {
     const local = (symbolsByModule.get(module) ?? []).find((s) => s.name === name);
     if (local) return local;
 
+    // `require('./view')` asks the module for its whole value, and CommonJS
+    // says that value is whatever `module.exports =` named.
+    if (name === '*' || name === 'default') {
+      const cjs = (symbolsByModule.get(module) ?? []).find((s) =>
+        (s.modifiers ?? '').includes('cjs-default'),
+      );
+      if (cjs) return cjs;
+    }
+
     const file = moduleToFile.get(module);
     if (!file) return null;
 
@@ -230,7 +239,38 @@ export function resolveTypeScript(db, root) {
     }
 
     const matches = [...types.values()].filter((t) => t.name === name);
-    return matches.length === 1 ? matches[0] : null;
+    if (matches.length === 1) return matches[0];
+
+    // Before classes, a constructor in JavaScript was a function, and plenty
+    // of Node code still is: `function User(...)` then `new User(...)`. Such a
+    // function is a type for every purpose this resolver has.
+    return asConstructible(name, fileId, module);
+  }
+
+  /** A module-level function usable as a constructor, local or imported. */
+  function asConstructible(name, fileId, module) {
+    const asType = (row) => ({
+      fqn: row.fqn,
+      name: row.name,
+      kind: 'class',
+      module: row.module,
+      file_id: row.file_id,
+      symbol_id: row.id,
+      supertypes: [],
+    });
+
+    const here = (symbolsByModule.get(module) ?? []).find(
+      (s) => s.name === name && s.kind === 'function',
+    );
+    if (here) return asType(here);
+
+    for (const imp of importsByFile.get(fileId) ?? []) {
+      if (imp.kind !== 'import' || imp.simple !== name) continue;
+      const target = resolveModule(module, imp.fqn);
+      const hit = target && resolveExport(target, imp.orig ?? name);
+      if (hit?.kind === 'function') return asType(hit);
+    }
+    return null;
   }
 
   function typeChain(type, seen = new Set()) {

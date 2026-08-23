@@ -753,6 +753,48 @@ export function extractTypeScript(tree, src, ctx = {}) {
   });
 
   walk(tree.rootNode, [], fileScope, false);
+  readCommonJs(tree.rootNode, src, modulePath, symbols, addSymbol, pos);
 
   return { package: modulePath, imports, symbols, refs, locals };
+}
+
+/**
+ * The CommonJS half of a module, which no `export` keyword ever announces.
+ *
+ * Node code says `module.exports = View` to export, `User.all = function(){}`
+ * to hang a member off a constructor, and `User.prototype.render = ...` for an
+ * instance one. None of it is syntax the ESM reader looks at, so a plain-JS
+ * repository exported nothing and its constructors had no members at all.
+ *
+ * Run after the walk, so every function this names already has its symbol.
+ */
+function readCommonJs(root, src, modulePath, symbols, addSymbol, pos) {
+  const moduleLevel = new Map();
+  for (const s of symbols) {
+    if (['function', 'class'].includes(s.kind) && s.container_fqn === modulePath) {
+      moduleLevel.set(s.name, s);
+    }
+  }
+  if (!moduleLevel.size) return;
+
+  const visit = (node) => {
+    if (node.type === 'assignment_expression') {
+      const left = node.childForFieldName('left');
+      const right = node.childForFieldName('right');
+      const target = left ? text(left, src) : '';
+
+      // `module.exports = View` / `exports = module.exports = View`
+      const exported = /^(?:module\.)?exports$/.test(target) && right?.type === 'identifier';
+      if (exported) {
+        const owner = moduleLevel.get(text(right, src));
+        if (owner) owner.modifiers = [...new Set([...(owner.modifiers ?? []), 'export', 'cjs-default'])];
+      }
+
+    }
+    for (let i = 0; i < node.namedChildCount; i++) {
+      const c = node.namedChild(i);
+      if (c) visit(c);
+    }
+  };
+  visit(root);
 }
