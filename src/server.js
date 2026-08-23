@@ -78,7 +78,7 @@ function persistentToken({ fresh = false } = {}) {
   if (!fresh) {
     try {
       const saved = readFileSync(file, 'utf8').trim();
-      if (/^[0-9a-f]{32}$/.test(saved)) return saved;
+      if (/^[0-9a-f]{32}$/.test(saved)) return { token: saved, minted: false };
     } catch { /* absent or unreadable: mint a new one below */ }
   }
   const minted = randomBytes(16).toString('hex');
@@ -87,7 +87,7 @@ function persistentToken({ fresh = false } = {}) {
     writeFileSync(file, minted + '\n', { mode: 0o600 });
     chmodSync(file, 0o600);
   } catch { /* read-only home: the token still works for this run */ }
-  return minted;
+  return { token: minted, minted: true };
 }
 
 /** Constant-time compare, so a wrong token leaks nothing by how long it took. */
@@ -95,6 +95,17 @@ function sameToken(given, expected) {
   const a = Buffer.from(String(given ?? ''));
   const b = Buffer.from(expected);
   return a.length === b.length && timingSafeEqual(a, b);
+}
+
+/**
+ * A numeric query parameter, clamped to [lo, hi]. Math.min alone is half a
+ * clamp: SQLite reads `LIMIT -1` as "no limit at all", so a negative limit
+ * walked straight past every cap this server promises. NaN falls to the
+ * default for the same reason -- garbage in, bounded out.
+ */
+function num(raw, def, lo, hi) {
+  const n = Number(raw ?? def);
+  return Number.isFinite(n) ? Math.min(Math.max(Math.trunc(n), lo), hi) : def;
 }
 
 /** `2:481` -- a symbol is only unique within the repository that indexed it. */
@@ -288,7 +299,7 @@ export async function startServer(
   // Loopback keeps other machines out; the token keeps other processes on this
   // machine out. Printed with the URL, the way Jupyter does it -- but stored,
   // so the URL you bookmark today still opens tomorrow.
-  const token = persistentToken({ fresh: newToken });
+  const { token, minted } = persistentToken({ fresh: newToken });
 
   /** Repositories a request is scoped to: one named repo, or all of them. */
   function scope(url) {
@@ -321,6 +332,16 @@ export async function startServer(
     // URL you can bookmark. It loads, reads the token it kept from an earlier
     // visit, and asks for data with it. Every route below still demands it.
     if (url.pathname === '/') {
+      // Second line of defence behind esc(): should an unescaped sink ever
+      // slip into the page, connect-src 'self' still keeps an injected script
+      // from carrying anything off this machine. The page needs nothing a
+      // stricter policy would allow anyway -- it is one inline script talking
+      // to its own origin.
+      res.setHeader(
+        'content-security-policy',
+        "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; " +
+          "connect-src 'self'; img-src data:; base-uri 'none'; form-action 'none'",
+      );
       return send(200, page, 'text/html; charset=utf-8');
     }
 
@@ -353,7 +374,7 @@ export async function startServer(
 
       if (url.pathname === '/api/search') {
         const q = url.searchParams.get('q') ?? '';
-        const limit = Math.min(Number(url.searchParams.get('limit') ?? 40), 200);
+        const limit = num(url.searchParams.get('limit'), 40, 1, 200);
         const targets = scope(url);
         // Each repository is searched to the full limit, then the merged list
         // is ranked, so a small repo is not crowded out by a large one.
@@ -376,7 +397,7 @@ export async function startServer(
         // Opening on an empty canvas answers nothing. This is the shape of the
         // whole workspace: each repository, the types most depended upon in it,
         // and any binding that crosses between them.
-        const perRepo = Math.min(Number(url.searchParams.get('limit') ?? 10), 30);
+        const perRepo = num(url.searchParams.get('limit'), 10, 1, 30);
         const nodes = [];
         const edges = [];
 
@@ -477,8 +498,8 @@ export async function startServer(
       }
 
       if (url.pathname === '/api/graph') {
-        const depth = Math.min(Number(url.searchParams.get('depth') ?? 1), 3);
-        const maxNodes = Math.min(Number(url.searchParams.get('max') ?? 160), 400);
+        const depth = num(url.searchParams.get('depth'), 1, 1, 3);
+        const maxNodes = num(url.searchParams.get('max'), 160, 1, 400);
 
         // Seeds may name several repositories at once; each is walked in its
         // own index and the pieces are stitched together by composite id.
@@ -531,7 +552,10 @@ export async function startServer(
 
       send(404, { error: 'not found' });
     } catch (err) {
-      send(500, { error: err.message });
+      // The message can name absolute paths on this machine; the operator gets
+      // it on stderr, the browser gets only the fact that something broke.
+      process.stderr.write(`codelens serve: ${err.message}\n`);
+      send(500, { error: 'internal error — details on the server console' });
     }
   });
 
@@ -558,7 +582,11 @@ export async function startServer(
   if (openBrowser) {
     const { spawn } = await import('node:child_process');
     const opener = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
-    spawn(opener, [address], { stdio: 'ignore', detached: true }).unref();
+    // Command arguments are visible to `ps`, so the token rides along only
+    // when it was minted this run and no browser can have stored it yet. A
+    // reused token is already in the browser's storage, and if this happens to
+    // be a fresh browser instead, the full URL above is one copy-paste away.
+    spawn(opener, [minted ? address : home], { stdio: 'ignore', detached: true }).unref();
   }
 
   const close = () => {

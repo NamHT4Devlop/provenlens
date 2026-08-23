@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import { mkdirSync, rmSync, existsSync } from 'node:fs';
+import { mkdirSync, rmSync, existsSync, chmodSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 /** Bump whenever the schema changes: the index is a cache, so it is rebuilt. */
@@ -157,7 +157,9 @@ CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
 `;
 
 export function openDb(dbPath, { create = false } = {}) {
-  if (create) mkdirSync(dirname(dbPath), { recursive: true });
+  // Owner-only, to match the token guarding the HTTP API: a world-readable
+  // index would hand any other local user the very data that token protects.
+  if (create) mkdirSync(dirname(dbPath), { recursive: true, mode: 0o700 });
   const db = new DatabaseSync(dbPath);
   if (create) {
     db.exec(SCHEMA);
@@ -165,6 +167,13 @@ export function openDb(dbPath, { create = false } = {}) {
       'schema_version',
       String(SCHEMA_VERSION),
     );
+    // SQLite creates the file under the umask; tighten it and the sidecars.
+    // The directory too: mkdirSync's mode only applies when it creates the
+    // directory, and an index rebuilt in place keeps whatever mode it had.
+    for (const suffix of ['', '-wal', '-shm']) {
+      try { chmodSync(dbPath + suffix, 0o600); } catch { /* sidecar not there yet */ }
+    }
+    try { chmodSync(dirname(dbPath), 0o700); } catch { /* not ours to change */ }
   }
   return db;
 }

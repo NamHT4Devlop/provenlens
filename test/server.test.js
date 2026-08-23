@@ -218,6 +218,36 @@ describe('the API stays read-only and bounded', () => {
     assert.ok(graph.nodes.length <= 400, 'graph is capped');
   });
 
+  test('a negative or garbage limit stays inside the caps too', async () => {
+    // SQLite reads `LIMIT -1` as unlimited, so before the clamp this walked
+    // straight past every cap: /api/landing?limit=-1 answered with more nodes
+    // than limit=999 did.
+    const floor = await (await ask('/api/landing?limit=-1')).json();
+    const ceiling = await (await ask('/api/landing?limit=999')).json();
+    assert.ok(floor.nodes.length <= ceiling.nodes.length, 'negative must not out-pull the cap');
+    assert.ok(floor.nodes.length >= 1, 'and it clamps to the floor, not to nothing');
+
+    for (const path of ['/api/search?q=e&limit=abc', '/api/landing?limit=NaN', '/api/graph?ids=1&depth=-5&max=-1']) {
+      assert.equal((await ask(path)).status, 200, path);
+    }
+  });
+
+  test('the shell carries a CSP that keeps scripts on this origin', async () => {
+    const res = await ask('/', { token: null });
+    assert.match(res.headers['content-security-policy'] ?? '', /connect-src 'self'/);
+    assert.match(res.headers['content-security-policy'] ?? '', /default-src 'none'/);
+  });
+
+  test('a route that throws answers with a generic message, not the real one', async () => {
+    // NaN ids reach the db layer and make it throw; the response must not
+    // carry paths or SQLite internals back to the page.
+    const res = await ask('/api/graph?ids=zz:zz');
+    if (res.status === 500) {
+      const body = await res.json();
+      assert.equal(body.error.includes('/'), false, 'no filesystem paths in the reply');
+    }
+  });
+
   test('treats an unknown path as not found rather than guessing', async () => {
     assert.equal((await ask('/api/../etc/passwd')).status, 404);
     assert.equal((await ask('/nope')).status, 404);
