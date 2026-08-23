@@ -889,6 +889,16 @@ export function resolveTypeScript(db, root) {
         stats.direct++;
         continue;
       }
+      // An import that names this call and resolves to no file in the tree is
+      // a dependency, which proves the call cannot land in this project. That
+      // is `sql` from kysely -- a tagged template, imported and called by
+      // name -- and without this it fell through to "maybe a method on this"
+      // and was blamed on whichever class happened to enclose it.
+      const fromPackage = externalOwner(ref.name, ref.file_id, module);
+      if (fromPackage) {
+        insertExternal(ref.id, fromPackage);
+        continue;
+      }
       // Otherwise it may be a method on `this` reached without the prefix.
     }
 
