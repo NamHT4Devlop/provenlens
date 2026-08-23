@@ -724,3 +724,35 @@ describe('affected --fail-if-untested', () => {
     assert.equal(JSON.parse(r.out).untested, true);
   });
 });
+
+describe('mermaid export', () => {
+  test('serializes a graph with quoted labels and typed shapes', async () => {
+    const { db, one } = await buildIndex('java');
+    const { graphAround } = await import('../src/query.js');
+    const { toMermaid } = await import('../src/format.js');
+    const text = toMermaid(graphAround(db, one('com.acme.service.DonationService').id, { depth: 1 }));
+
+    assert.match(text, /^flowchart LR/);
+    // A type gets the stadium shape, a member the rectangle.
+    assert.match(text, /\(\["com\.acme\.service\.DonationService"\]\)/);
+    assert.match(text, /\["com\.acme\.service\.DonationService#record"\]/);
+    // Non-call edges carry their kind as the edge label.
+    assert.match(text, /-- implements -->/);
+    // Every node referenced by an edge is declared.
+    for (const m of text.matchAll(/n(\d+) (?:--.*)?-+> n(\d+)/g)) {
+      assert.match(text, new RegExp(`  n${m[1]}[\\[({]`), `undeclared node n${m[1]}`);
+      assert.match(text, new RegExp(`  n${m[2]}[\\[({]`), `undeclared node n${m[2]}`);
+    }
+  });
+
+  test('escapes double quotes so a hostile name cannot break the diagram', async () => {
+    const { toMermaid } = await import('../src/format.js');
+    const text = toMermaid({
+      nodes: [{ id: 1, fqn: 'evil"] --> pwn["x', kind: 'class', derived: false }],
+      edges: [],
+      truncated: false,
+    });
+    assert.ok(!text.includes('evil"]'), 'quote must be neutralised');
+    assert.match(text, /#quot;/);
+  });
+});

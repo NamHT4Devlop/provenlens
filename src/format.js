@@ -303,3 +303,30 @@ export function formatImpact(db, symbolId) {
   if (!totalSymbols) out.push('Nothing calls this symbol — it is a leaf or an entry point.');
   return out.join('\n');
 }
+
+/**
+ * The graph as Mermaid, for pasting into a README, a PR description, or any
+ * Markdown renderer. Symbols become short node ids; the human-readable name
+ * goes in the label, quoted so Mermaid never parses it as syntax.
+ */
+export function toMermaid(graph) {
+  const label = (n) => (n.fqn ?? n.name).replace(/"/g, '#quot;');
+  const lines = ['flowchart LR'];
+
+  for (const n of graph.nodes) {
+    // Three shapes carry the three things worth telling apart at a glance:
+    // stadium for types, rectangle for members, hexagon for derived symbols.
+    const shape = n.derived
+      ? `{{"${label(n)}"}}`
+      : ['class', 'interface', 'enum', 'record', 'module'].includes(n.kind)
+        ? `(["${label(n)}"])`
+        : `["${label(n)}"]`;
+    lines.push(`  n${n.id}${shape}`);
+  }
+  for (const e of graph.edges) {
+    const note = e.kind && !CALL_KINDS.includes(e.kind) ? `-- ${e.kind} -->` : '-->';
+    lines.push(`  n${e.from} ${note} n${e.to}`);
+  }
+  if (graph.truncated) lines.push('  %% truncated: the neighbourhood was larger than the cap');
+  return lines.join('\n');
+}

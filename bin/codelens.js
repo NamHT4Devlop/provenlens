@@ -13,6 +13,8 @@ import {
   impactOf,
   affectedBy,
   isTestPath,
+  graphAround,
+  topHubs,
 } from '../src/query.js';
 import {
   formatExplore,
@@ -20,6 +22,7 @@ import {
   formatImpact,
   formatRelations,
   formatAffected,
+  toMermaid,
 } from '../src/format.js';
 import { IMPLEMENTED_LANGUAGES } from '../src/extract/index.js';
 
@@ -351,6 +354,32 @@ program
         `affected: ${production.length} changed production symbol(s) and no test reaches any of them.\n`,
       );
       process.exit(2);
+    }
+  });
+
+program
+  .command('export')
+  .argument('[name]', 'symbol to centre on; the busiest hubs when omitted')
+  .option('-f, --format <fmt>', 'json | mermaid', 'json')
+  .option('-d, --depth <n>', 'how far out from the seed', '2')
+  .option('-m, --max <n>', 'node cap', '160')
+  .description('write the graph around a symbol as JSON or a Mermaid diagram')
+  .action((name, opts) => {
+    const { db } = useProject();
+    const depth = Math.min(Math.max(Number(opts.depth) || 2, 1), 4);
+    const maxNodes = Math.min(Math.max(Number(opts.max) || 160, 1), 400);
+
+    const seeds = name
+      ? [pickSymbol(db, name).id]
+      : topHubs(db, { limit: 12 }).map((h) => h.id);
+    const graph = graphAround(db, seeds, { depth, maxNodes });
+
+    if (opts.format === 'mermaid') {
+      console.log('```mermaid\n' + toMermaid(graph) + '\n```');
+    } else if (opts.format === 'json') {
+      emitJson(graph);
+    } else {
+      die(`unknown format "${opts.format}" — use json or mermaid.`);
     }
   });
 
