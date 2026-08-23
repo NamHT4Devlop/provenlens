@@ -16,5 +16,6 @@ public class Ledger {
         var built = Receipt.builder().note("x").build();
         built.setSettled(true);
         new Ticket().setSeat("1A").getSeat();
+        store.configure(options -> options.getSeat());
     }
 }

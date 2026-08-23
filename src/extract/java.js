@@ -139,6 +139,9 @@ function paramList(paramsNode, src) {
     params.push({
       name: nameNode ? text(nameNode, src) : null,
       type: typeNode ? normalizeType(text(typeNode, src)) : null,
+      // Kept whole: `Consumer<Options>` is the only place a lambda's parameter
+      // type is written down. Overload matching erases it again on read.
+      raw: typeNode ? text(typeNode, src).trim() : null,
     });
   }
   return params;
@@ -347,7 +350,7 @@ export function extractJava(tree, src) {
           .map((p) => p.type ?? '?')
           .join(', ')})`,
         arity: params.length,
-        params: params.map((p) => p.type),
+        params: params.map((p) => p.raw ?? p.type),
         supertypes: [],
         modifiers,
         annotations,

@@ -252,7 +252,11 @@ export function resolveJava(db) {
       let best = null;
       let bestScore = -1;
       for (const candidate of sameArity) {
-        const params = candidate.params ? JSON.parse(candidate.params) : [];
+        // Declared types are stored whole; the generic part means nothing to
+        // overload matching, which compares erased names.
+        const params = (candidate.params ? JSON.parse(candidate.params) : []).map((t) =>
+          typeof t === 'string' ? t.replace(/<.*$/, '').replace(/\[\s*\]/g, '').trim() : t,
+        );
         let score = 0;
         for (const [i, want] of params.entries()) {
           const got = argTypes[i];
@@ -429,7 +433,42 @@ export function resolveJava(db) {
       const hit = resolveTypeName(holder.args, owner.file_id, symbolById.get(owner.from_symbol_id)?.container_fqn ?? null);
       if (hit) return hit;
     }
+
+    // Last and most direct: the callee's own signature. `configure(Consumer<
+    // ContainerOptions> c)` says outright what the lambda is handed, and a
+    // functional parameter is the one with a single type argument.
+    const recv = receiverType(owner, from, depth + 1);
+    if (typeof recv === 'string' && recv) {
+      const target = findMethod(recv, owner.name, owner.arity, owner, from?.container_fqn);
+      const declared = JSON.parse(target?.params || 'null');
+      if (Array.isArray(declared)) {
+        const candidates = declared
+          .map((d) => genericArgOfName(typeof d === 'string' ? d : d?.type))
+          .filter(Boolean);
+        if (candidates.length === 1) {
+          const hit = resolveTypeName(candidates[0], owner.file_id, from?.container_fqn ?? null);
+          if (hit) return hit;
+        }
+      }
+      return null;
+    }
+
+    // The call itself goes into a library, so what it hands the lambda came
+    // from there too -- the same inheritance proof, one argument along.
+    if (recv && typeof recv === 'object' && recv.external !== undefined) {
+      return { external: recv.external };
+    }
     return null;
+  }
+
+  /** `Consumer<Options>` -> `Options`; nothing for a raw or multi-arg type. */
+  function genericArgOfName(raw) {
+    if (!raw || typeof raw !== 'string') return null;
+    const lt = raw.indexOf('<');
+    if (lt === -1) return null;
+    const inner = raw.slice(lt + 1, raw.lastIndexOf('>')).trim();
+    if (!inner || inner.includes(',') || inner.includes('<') || inner === '?') return null;
+    return inner.replace(/^\?\s+(?:extends|super)\s+/, '').trim() || null;
   }
 
   /** A field's element type, looked up through the enclosing type's chain. */

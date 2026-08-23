@@ -159,3 +159,12 @@ describe('generics carry the element type into a lambda', () => {
     assert.ok(callees.includes('com.acme.lombok.Receipt#getId'), callees.join(' '));
   });
 });
+
+describe('a lambda typed by the signature that receives it', () => {
+  test("Consumer<Ticket> says what the lambda's parameter holds", () => {
+    // store.configure(options -> options.getSeat()) -- nothing else in the
+    // file says what `options` is; the declared parameter type does.
+    const callees = calleesOf(db, one('Ledger#summarise').id).map((c) => c.fqn);
+    assert.ok(callees.includes('com.acme.lombok.Ticket#getSeat'), callees.join(' '));
+  });
+});
