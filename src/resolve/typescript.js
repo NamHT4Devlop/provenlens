@@ -444,9 +444,18 @@ export function resolveTypeScript(db, root) {
     if (ref.receiver_ref_id != null) {
       const target = chainTarget(refById.get(ref.receiver_ref_id), depth);
       if (target?.type_name) {
-        const hit = resolveTypeName(target.type_name, ref.file_id, module);
+        // Resolved where the method was DECLARED first. A caller need not
+        // import the type it is handed back: a nest spec imports `Test` and
+        // receives a TestingModuleBuilder from it, and looking that name up in
+        // the spec's own imports finds nothing -- which killed the chain at its
+        // first hop, and with it every call downstream.
+        const hit =
+          resolveTypeName(target.type_name, target.file_id, target.module) ??
+          resolveTypeName(target.type_name, ref.file_id, module);
         if (hit) return hit;
-        const owner = externalOwner(target.type_name, ref.file_id, module);
+        const owner =
+          externalOwner(target.type_name, target.file_id, target.module) ??
+          externalOwner(target.type_name, ref.file_id, module);
         if (owner) return { external: owner };
       }
     }

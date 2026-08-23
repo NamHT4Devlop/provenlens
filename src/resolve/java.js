@@ -492,9 +492,17 @@ export function resolveJava(db) {
     if (ref.receiver_ref_id != null) {
       const target = chainTarget(refById.get(ref.receiver_ref_id), depth);
       if (target?.type_name) {
-        const hit = resolveTypeName(target.type_name, ref.file_id, enclosing);
+        // Resolved against the file that DECLARED the method first: a caller
+        // need not import the type it is handed back, and asking its imports
+        // for a name it never mentions ends the chain one hop in.
+        const hit =
+          (target.file_id != null
+            ? resolveTypeName(target.type_name, target.file_id, target.container_fqn)
+            : null) ?? resolveTypeName(target.type_name, ref.file_id, enclosing);
         if (hit) return hit;
-        const owner = externalOwner(target.type_name, ref.file_id);
+        const owner =
+          (target.file_id != null ? externalOwner(target.type_name, target.file_id) : null) ??
+          externalOwner(target.type_name, ref.file_id);
         if (owner) return { external: owner };
       }
     }
