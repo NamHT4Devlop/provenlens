@@ -351,11 +351,21 @@ out of those two rounds, and every fix is in its own commit with the repository 
 **Twelve clear 90% on both columns, nineteen on the headline, and all forty-three index without
 crashing.**
 
-Every repository here was measured with its dependencies **installed**: `npm`/`pnpm` for the
-JavaScript and TypeScript clones, a JDK plus the jars Maven and Gradle had fetched for the Java
-ones. That is the configuration codelens is meant to run in, and it is also the harder one to
-report — reading real declarations replaces guesses with facts in both directions, so camel fell
-from 97.3% to 95.2% once its types became readable enough to be counted properly.
+The Java repositories were measured with their dependencies **installed** — a JDK plus the jars
+Maven and Gradle had already fetched. Reading real declarations replaces guesses with facts in both
+directions, which is why camel fell from 97.3% to 95.2% once its types became readable enough to be
+counted properly.
+
+The **JavaScript and TypeScript** clones were measured **bare**, with no `node_modules`. That is the
+weaker configuration, and it was worth checking what it costs rather than assuming. Installing zod's
+dependencies moved it **from 75.7% to 75.7%** — not a rounding difference, the same number. The
+declarations were read (`doctor` stops reporting a missing tree and starts naming the twelve
+specifiers that have no types, four of which are path aliases), and the miss shape did not move
+either: **3939 of 4029 misses, 97.8%, are `complex-receiver-chain`** — a chained expression whose
+receiver the resolver cannot type, which no amount of installing fixes.
+
+nest, typeorm and axios have their `node_modules` present and read **90.9%, 88.2% and 67.6%**. So
+a dependency tree is not what separates these repositories from 90%.
 
 | Repo | Stack | In-repo resolution | Floor if every assumption were wrong |
 |---|---|---|---|
@@ -798,7 +808,7 @@ it automatically.
 yarn test
 ```
 
-179 tests across five fixture suites plus regression, security and multi-repo coverage:
+198 tests across five fixture suites plus regression, security and multi-repo coverage:
 
 | Fixture | Simulates | The chain grep cannot follow |
 |---|---|---|
@@ -840,9 +850,19 @@ attributed to the right library. If a resolver later drops an internal call, a t
 ## Roadmap
 
 - [ ] NestJS custom-provider tokens as a binding plugin (needs object-literal extraction)
-- [ ] Read `.d.ts` from `node_modules` and signatures from JARs, to keep a chain alive past a
-      library hop. This is now the single change that would move halo, spring-cloud-aws, nest and
-      typeorm, and the benchmark says so plainly: every repository that misses 90% on the floor
-      misses it because a dependency, not the repository, declares the receiver's type. It needs
-      the dependencies installed first — the measurement above was taken on bare clones, with no
-      `node_modules` and no `~/.m2`.
+- [x] Read `.d.ts` from `node_modules` and signatures from JARs, to keep a chain alive past a
+      library hop. Done — see *Optional: install the project's dependencies* above.
+
+      This item used to claim it was "the single change that would move halo, spring-cloud-aws,
+      nest and typeorm". That claim is **wrong**, and measuring it is what showed it: nest and
+      typeorm already have their dependencies on disk, and installing zod's changed its figure by
+      **0.0 points**. A prediction about what a fix is worth is not evidence, which is the rule the
+      rest of this README is written to and the one this line broke.
+
+- [ ] **Type a chained receiver.** This is what actually separates the sub-90 repositories from the
+      rest. `complex-receiver-chain` is 97.8% of zod's misses, 99.3% of trpc's and 98.8% of
+      astro's: `a.b().c().d()` where some link in the chain has no declared type. In the Ruby
+      repositories the equivalent is `ambiguous-name` (116373 of discourse's misses), and that one
+      is the language rather than the resolver — Ruby declares nothing to walk.
+
+      No estimate of what fixing it would be worth is given here on purpose. It will be measured.
