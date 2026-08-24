@@ -893,3 +893,61 @@ describe('dependency declarations are read once, not on every sync', () => {
     }
   });
 });
+
+describe('a .gitignore that un-ignores a vendored node_modules', () => {
+  // A repository is free to commit a dependency stub and negate the ignore for it
+  // (`!vendor/**/node_modules/**`). That is a statement about what git TRACKS. Read as a
+  // statement about what this tool should treat as project source, it made the same .d.ts
+  // arrive twice -- once through discovery, once through the ambient reader -- and the
+  // second insert hit the files.path UNIQUE constraint and aborted the whole index.
+  const build = () => {
+    const root = mkdtempSync(join(tmpdir(), 'codelens-negated-nm-'));
+    const stub = join(root, 'vendor', 'stub', 'node_modules', 'tiny-lib');
+    mkdirSync(join(root, 'src'), { recursive: true });
+    mkdirSync(stub, { recursive: true });
+    writeFileSync(
+      join(root, '.gitignore'),
+      'node_modules/\n!vendor/**/node_modules/\n!vendor/**/node_modules/**\n',
+    );
+    writeFileSync(join(stub, 'package.json'), '{"name":"tiny-lib","types":"index.d.ts"}\n');
+    writeFileSync(join(stub, 'index.d.ts'), 'export declare function tiny(): string;\n');
+    writeFileSync(
+      join(root, 'src', 'use.ts'),
+      "import { tiny } from 'tiny-lib';\nexport function go(): string { return tiny(); }\n",
+    );
+    return root;
+  };
+
+  test('indexes instead of aborting on files.path', async () => {
+    const root = build();
+    const db = openDb(dbPathFor(root), { create: true });
+    try {
+      // Before the fix this threw ERR_SQLITE_ERROR and left the repository unusable.
+      const stats = await indexProject(db, root, { full: true });
+      assert.ok(stats.parsed > 0, 'the project was indexed');
+    } finally {
+      db.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('the vendored dependency is never counted as this project', async () => {
+    const root = build();
+    const db = openDb(dbPathFor(root), { create: true });
+    try {
+      await indexProject(db, root, { full: true });
+      const own = db
+        .prepare("SELECT path FROM files WHERE external = 0")
+        .all()
+        .map((r) => r.path);
+      assert.ok(
+        own.every((p) => !p.includes('node_modules')),
+        `no node_modules path may be project code, got: ${own.join(', ')}`,
+      );
+      assert.ok(own.includes('src/use.ts'), 'the real source is still indexed');
+    } finally {
+      db.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

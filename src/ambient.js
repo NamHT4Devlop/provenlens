@@ -158,8 +158,13 @@ export function indexAmbient(db, root, { parsers, extractorFor, langForPath }) {
   if (!roots.length) return { packages: 0, files: 0, symbols: 0 };
 
   const insertFile = db.prepare(
+    // DO NOTHING rather than REPLACE: if a path is somehow already in the index it
+    // belongs to the project, and the project's own copy of a file outranks a
+    // reading of it as somebody's dependency. Skipping one declaration file costs a
+    // little type information; the plain INSERT used to cost the whole index.
     `INSERT INTO files (path, lang, hash, pkg, lines, indexed_at, external, owner)
-     VALUES (?, ?, ?, ?, ?, ?, 1, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+     ON CONFLICT(path) DO NOTHING`,
   );
   const insertSymbol = db.prepare(
     `INSERT INTO symbols
@@ -207,10 +212,12 @@ export function indexAmbient(db, root, { parsers, extractorFor, langForPath }) {
         continue;
       }
 
-      const fileId = Number(
-        insertFile.run(rel, lang, '', result.package ?? null, source.split('\n').length, Date.now(), pkg)
-          .lastInsertRowid,
+      const inserted = insertFile.run(
+        rel, lang, '', result.package ?? null, source.split('\n').length, Date.now(), pkg,
       );
+      // The path was already taken by project code: leave that row alone.
+      if (!inserted.changes) continue;
+      const fileId = Number(inserted.lastInsertRowid);
 
       for (const imp of result.imports ?? []) {
         insertImport.run(

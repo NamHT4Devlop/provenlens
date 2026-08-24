@@ -65,7 +65,7 @@ export function dbPathFor(root) {
 }
 
 function buildIgnore(root) {
-  const ig = ignore().add(ALWAYS_IGNORE);
+  const ig = ignore();
   const gitignore = join(root, '.gitignore');
   if (existsSync(gitignore)) {
     try {
@@ -74,6 +74,13 @@ function buildIgnore(root) {
       /* an unreadable .gitignore just means fewer exclusions */
     }
   }
+  // Added LAST, so it wins over a negation in the repository's own .gitignore.
+  // `!vendor/**/node_modules/**` tells git what to TRACK; it does not tell this
+  // tool that a dependency tree is the project's own source. Applied the other way
+  // round, such a repository indexed the same .d.ts twice -- once as project code,
+  // then again as an external declaration -- and the second insert hit the
+  // files.path UNIQUE constraint and aborted the entire index.
+  ig.add(ALWAYS_IGNORE);
   return ig;
 }
 
