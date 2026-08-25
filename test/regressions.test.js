@@ -2,7 +2,7 @@ import { test, before, after, describe } from 'node:test';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, statSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { buildIndex } from './helpers.js';
@@ -949,5 +949,33 @@ describe('a .gitignore that un-ignores a vendored node_modules', () => {
       db.close();
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe('the MCP entry the installer writes', () => {
+  // It pinned the interpreter that ran the install. Under nvm that path carries the version
+  // number, so the server stopped starting the next time the user upgraded Node -- silently,
+  // in a config file they had no reason to open.
+  test('names no version-stamped interpreter', async () => {
+    const { serverEntry } = await import('../src/install.js');
+    const entry = serverEntry();
+    const words = [entry.command, ...entry.args].join(' ');
+    assert.ok(
+      !/\/versions\/node\/v\d+/.test(words) && !/\/\.nvm\//.test(words),
+      `a version-stamped interpreter path would break on the next upgrade: ${words}`,
+    );
+  });
+
+  test('runs the bin directly, which resolves node at run time', async () => {
+    const { serverEntry } = await import('../src/install.js');
+    const entry = serverEntry();
+    assert.match(entry.command, /bin\/codelens\.js$/);
+    assert.deepEqual(entry.args, ['mcp']);
+
+    // The command is only safe to spawn if the file really is executable and really carries a
+    // shebang -- the two facts the entry now depends on.
+    const stat = statSync(entry.command);
+    assert.ok(stat.mode & 0o111, 'the bin must be executable');
+    assert.match(readFileSync(entry.command, 'utf8').split('\n')[0], /^#!.*\bnode\b/);
   });
 });

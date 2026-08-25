@@ -30,7 +30,13 @@ export const TARGETS = {
 };
 
 export function serverEntry() {
-  return { command: process.execPath, args: [BIN, 'mcp'] };
+  // The bin has a `#!/usr/bin/env -S node` shebang and the executable bit, so it can be the
+  // command itself. Writing process.execPath instead pinned the exact interpreter that happened
+  // to be running the install -- under nvm that is a version-stamped path like
+  // .../versions/node/v24.13.0/bin/node -- and the server then died the next time the user
+  // switched Node versions, in a config file nobody would think to look at. The README already
+  // gives this same warning about `npm link` for the CLI; the installer was doing it to itself.
+  return { command: BIN, args: ['mcp'] };
 }
 
 function readJson(file) {
