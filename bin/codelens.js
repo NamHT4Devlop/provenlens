@@ -290,6 +290,59 @@ program
   });
 
 program
+  .command('routes')
+  .argument('[path]', 'project directory')
+  .option('-m, --match <text>', 'only routes whose path or handler contains this')
+  .description('HTTP routes this repository serves, and who calls them')
+  .action((path, opts) => {
+    const { db } = useProject(path);
+    const rows = db
+      .prepare(
+        `SELECT b.key, b.role, b.detail, b.line, f.path AS file_path, s.fqn
+           FROM bindings b
+           JOIN files f ON f.id = b.file_id
+           LEFT JOIN symbols s ON s.id = b.symbol_id
+          WHERE b.plugin = 'http'
+          ORDER BY b.key, b.role DESC`,
+      )
+      .all()
+      .filter(
+        (r) =>
+          !opts.match ||
+          `${r.key} ${r.fqn ?? ''} ${r.detail ?? ''}`.toLowerCase().includes(opts.match.toLowerCase()),
+      );
+
+    if (!rows.length) {
+      console.log(
+        opts.match
+          ? `no route matches "${opts.match}"`
+          : 'no HTTP routes found — Spring, NestJS, Express and Rails routing are recognised',
+      );
+      return;
+    }
+
+    const byKey = new Map();
+    for (const r of rows) {
+      if (!byKey.has(r.key)) byKey.set(r.key, { providers: [], consumers: [] });
+      byKey.get(r.key)[r.role === 'provider' ? 'providers' : 'consumers'].push(r);
+    }
+
+    for (const [key, group] of byKey) {
+      console.log(`\n${key}`);
+      for (const p of group.providers) {
+        console.log(`  served by  ${p.fqn ?? p.detail}`);
+        console.log(`             ${p.file_path}:${p.line}`);
+      }
+      if (!group.providers.length) console.log('  served by  (nothing in this repository)');
+      for (const c of group.consumers) {
+        console.log(`  called by  ${c.fqn ?? c.detail}`);
+        console.log(`             ${c.file_path}:${c.line}`);
+      }
+    }
+    console.log(`\n${byKey.size} route(s).`);
+  });
+
+program
   .command('hotspots')
   .argument('[path]', 'project directory')
   .option('-n, --limit <n>', 'how many to list', '20')

@@ -21,8 +21,9 @@ import mybatis from './mybatis.js';
 import camel from './camel.js';
 import sqs from './sqs.js';
 import flyway from './flyway.js';
+import http from './http.js';
 
-export const PLUGINS = [mybatis, camel, sqs, flyway];
+export const PLUGINS = [mybatis, camel, sqs, flyway, http];
 
 /**
  * Languages the binding plugins own. They have no grammar, so the normal

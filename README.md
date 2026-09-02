@@ -290,6 +290,7 @@ that. A plugin declares both ends, and one shared pass matches them:
 | `camel` | `from("direct:x")` ↔ `.to("direct:x")` | `routes-to` (0.9) |
 | `sqs` | Producer ↔ `@SqsListener` / NestJS `@SqsMessageHandler` / Shoryuken worker, **across languages** | `sends-to` (0.85) |
 | `flyway` | `V*__*.sql` ↔ the entity or mapper touching that table | `touches-table` (0.6) |
+| `http` | A URL is a string on both sides: `@GetMapping`/`@Get`/`app.get`/`config/routes.rb` declare the handler, an HTTP client naming a path calls it — **across services** | `calls-route` (0.8) |
 
 SQL statements in XML and each migration file **become real symbols** — `codelens explore
 "OrderMapper#findById"` returns both the Java signature and the SQL that will actually run.
@@ -606,6 +607,7 @@ a convention. No amount of engineering turns that into a declaration, because Ru
 | `codelens hotspots` | **What the most other code depends on** — read this before changing anything |
 | `codelens dead [--public]` | Methods nothing reaches, with framework entry points and template-named symbols already ruled out |
 | `codelens cycles` | Files that depend on each other, directly or the long way round |
+| `codelens routes [-m <text>]` | **Every HTTP route the repo serves and who calls it** — Spring, NestJS, Express and Rails |
 | `codelens path <from> <to>` | **Shortest directed chain** between two symbols, hop by hop — across repositories when a binding bridges them |
 | `codelens affected [files...] [--fail-if-untested]` | What changed files reach, and **which tests already cover it**; the flag exits 2 when nothing does — a CI gate |
 | `codelens export [name] [-f json\|mermaid]` | The graph around a symbol as JSON or a **Mermaid diagram** ready for a README or PR |
@@ -646,6 +648,33 @@ the cost of a false positive is a deleted function:
 **`cycles` — what depends on itself the long way round.** Between *files*, which is the level a
 dependency cycle is actually felt at: two modules that each import the other cannot be understood,
 tested, or extracted separately. Method recursion is normal and is not reported.
+
+### `routes` — the URL is a string on both sides
+
+A controller declares `@GetMapping("/orders/{id}")`; something, frequently in another repository,
+calls `GET /orders/42`. No call graph crosses that gap — it is a string at each end — which is the
+same shape as an SQS queue name, so it is the same kind of plugin.
+
+```
+$ codelens routes -m owners
+GET /owners/{}
+  served by  org.springframework.samples.petclinic.owner.OwnerController#showOwner
+             src/main/java/.../OwnerController.java:180
+```
+
+Four routing styles are read, covering the languages this tool supports:
+
+| | Recognised |
+|---|---|
+| **Spring** | `@GetMapping`/`@PostMapping`/…, `@RequestMapping` with its verb, class-level prefix joined on |
+| **NestJS** | `@Controller('albums')` + `@Get(':id')`, prefix joined — 170 routes in immich |
+| **Express** | `app.get('/x', handler)`, `router.post(…)`, only where a handler is actually registered |
+| **Rails** | `config/routes.rb`, including `resources :orders` expanded to the six routes it means |
+
+Consumers are HTTP clients that name a path — `RestTemplate`, `WebClient`, `axios`, `fetch`. The
+key is the pair `METHOD /path`, and a parameter is normalised so `{id}`, `:id`, `<int:id>` and the
+`42` a caller actually wrote are all one route. Anything computed — a path built from a config
+placeholder — is left out rather than guessed at.
 
 **Workspaces.** Every read command accepts a folder of service checkouts, not just one repository:
 run from such a folder, `query`/`explore`/`status` answer per repository under its own heading, the

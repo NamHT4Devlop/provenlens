@@ -535,12 +535,19 @@ export function extractTypeScript(tree, src, ctx = {}) {
       const simpleName = text(nameNode, src);
       const fqn = `${modulePath}:${simpleName}`;
 
+      // `@Controller('albums')` written above `export class` belongs to the
+      // export statement, not to the class, so reading only the class's own
+      // children found nothing -- and with it went every NestJS route prefix.
       const decorators = [];
-      for (let i = 0; i < node.namedChildCount; i++) {
-        const c = node.namedChild(i);
-        if (c?.type === 'decorator') {
+      const decoratedNodes = node.parent?.type === 'export_statement' ? [node.parent, node] : [node];
+      for (const owner of decoratedNodes) {
+        for (let i = 0; i < owner.namedChildCount; i++) {
+          const c = owner.namedChild(i);
+          if (c?.type !== 'decorator') continue;
           const d = readDecorator(c, src);
-          if (d) decorators.push(d);
+          if (d && !decorators.some((seen) => seen.name === d.name && seen.line === d.line)) {
+            decorators.push(d);
+          }
         }
       }
 
