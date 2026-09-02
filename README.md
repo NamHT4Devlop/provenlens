@@ -866,3 +866,11 @@ attributed to the right library. If a resolver later drops an internal call, a t
       is the language rather than the resolver — Ruby declares nothing to walk.
 
       No estimate of what fixing it would be worth is given here on purpose. It will be measured.
+
+## License
+
+MIT — see [`LICENSE`](LICENSE). The four runtime dependencies are MIT (`commander`, `ignore`,
+`web-tree-sitter`) and Unlicense (`tree-sitter-wasms`, which bundles the grammars under their own
+permissive licenses). No copyleft anywhere in the tree, and `yarn list` shows no transitive
+dependencies to audit beyond those four.
+
