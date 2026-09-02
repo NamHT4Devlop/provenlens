@@ -341,7 +341,7 @@ And proof **always runs before** assumption: if it can be proven, it is never gu
 
 Forty-three repositories, none of them chosen for its score. They were added in four rounds, each
 named in advance, and each round pulled the median down: the first eleven sat at 91.4%, and all
-forty-three bring it to 88.5%. That is what picking before measuring costs, and it is the only way
+forty-three bring it to 88.7%. That is what picking before measuring costs, and it is the only way
 the table means anything.
 
 The later rounds were picked for **structural variety** rather than difficulty — pnpm workspaces,
@@ -378,38 +378,38 @@ a dependency tree is not what separates these repositories from 90%.
 | camel-spring-boot-examples | ~50 Camel examples, 325 files | **95.2%** | **94.7%** |
 | mybatis jpetstore | MyBatis + Flyway, 43 files | **95.1%** | **95.1%** |
 | devise | Rails engine, Ruby | **94.4%** | 85.0% |
-| google/guava | Java, Maven | **94.3%** | **93.7%** |
+| google/guava | Java, Maven | **94.4%** | **93.7%** |
 | vuejs/core | TS pnpm workspace, 527 files | **93.9%** | 86.8% |
-| spring-framework | Gradle multi-module, 9901 files | **93.1%** | **91.5%** |
-| apache/dubbo | Maven multi-module, 4190 files | **93.0%** | **91.5%** |
+| spring-framework | Gradle multi-module, 9901 files | **93.5%** | **92.0%** |
+| apache/dubbo | Maven multi-module, 4190 files | **93.1%** | **91.6%** |
 | date-fns | JS, monorepo | **92.9%** | 83.5% |
-| jenkins | Java, Maven | **92.4%** | **90.2%** |
-| apache/kafka | Gradle multi-module, 6196 files | **92.3%** | **91.0%** |
+| jenkins | Java, Maven | **92.5%** | **90.4%** |
+| apache/kafka | Gradle multi-module, 6196 files | **92.4%** | **91.1%** |
 | express | plain JS, 141 files | **91.4%** | **91.1%** |
 | java-design-patterns | Java, 1991 files | **91.4%** | 89.6% |
-| immich | NestJS + Svelte monorepo | **91.4%** | 85.2% |
-| nest | TS, 1904 files | **90.9%** | 86.8% |
+| immich | NestJS + Svelte monorepo | **91.6%** | 85.6% |
+| nest | TS, 1904 files | **91.3%** | 87.3% |
 | puma | Ruby | **89.1%** | 77.8% |
-| micronaut-core | Java, Gradle | **88.6%** | 86.1% |
+| micronaut-core | Java, Gradle | **88.7%** | 86.1% |
 | sinatra | Ruby, 147 files | **88.5%** | 81.3% |
-| typeorm | TS, 3575 files | **88.2%** | 82.5% |
-| spring-cloud-aws | Java, 816 files | **88.2%** | 86.9% |
+| typeorm | TS, 3575 files | **88.7%** | 83.3% |
+| spring-cloud-aws | Java, 816 files | **88.4%** | 87.1% |
 | rubygems.org | Rails, 1392 files | **88.1%** | 80.4% |
 | mastodon | Rails + TS, 4199 files | **87.6%** | 80.1% |
 | halo | Java + TS, 2228 files | **87.6%** | 85.4% |
-| prettier | JS + TS, 5762 files | **87.8%** | 68.7% |
-| storybook | TS monorepo | **87.3%** | 74.8% |
+| prettier | JS + TS, 5762 files | **88.1%** | 68.5% |
+| storybook | TS monorepo | **87.4%** | 74.9% |
 | medusa | TS monorepo | **87.3%** | 74.2% |
 | fastlane | Ruby, 1340 files | **86.7%** | 77.4% |
 | sidekiq | Ruby | **85.9%** | 79.7% |
-| quarkus | Java, Maven multi-module | **85.0%** | 81.9% |
+| quarkus | Java, Maven multi-module | **85.1%** | 82.0% |
 | jekyll | Ruby, 171 files | **84.5%** | 75.0% |
 | solidus | Rails, 2329 files | **83.5%** | 74.8% |
 | svelte | JS + TS monorepo | **87.9%** | 75.1% |
 | redmine | Rails app | **81.4%** | 72.7% |
 | astro | TS monorepo | **80.9%** | 68.8% |
 | trpc | TS monorepo | **80.4%** | 74.3% |
-| discourse | Rails, 14358 files | **78.6%** | 72.7% |
+| discourse | Rails, 14358 files | **78.7%** | 72.7% |
 | zod | TS pnpm workspace | **75.7%** | 62.1% |
 | rails | Rails framework | **74.8%** | 62.5% |
 | axios | JS, 242 files | **67.6%** | 56.9% |
@@ -493,6 +493,36 @@ What actually blocks the remaining twenty-four is not fixable by engineering:
 Twelve repositories clear 90% on both columns and nineteen on the headline. Which twelve is the
 useful fact: every one of them is a codebase whose receivers are declared where the code can see
 them.
+
+### Can `ambiguous-name` be narrowed without guessing? Measured, and mostly no
+
+`ambiguous-name` is a receiver that could not be typed, where several methods share the name. The
+obvious narrowing looks like proof rather than a guess: a Java call cannot reach a class the file
+neither imports nor shares a package with, so any candidate that is not visible can be struck out.
+
+Measured on dubbo, 714 such calls: **232 had no visible candidate at all**, which would make them
+library calls — a third of the bucket, apparently free.
+
+Reading six of them found four correct (`unlock`, `name`, `getCause` — all JDK) and two wrong:
+
+```java
+class RandomLoadBalanceTest extends LoadBalanceBaseTest {
+    invocation.getMethodName()   // `invocation` is an INHERITED field, typed Invocation
+}
+```
+
+The subclass never imports `Invocation` because it never names it. The rule would have called that
+a library call, and it reaches straight into the repository.
+
+That was not a limit of the rule — it was **a bug the rule would have hidden**. An inherited field
+was being typed against the calling file's imports instead of the declaring file's. Fixing it took
+the no-visible-candidate group from 232 to 136: **the original number was 41% contamination**, and
+a heuristic shipped first would have frozen 96 wrong answers in place.
+
+So the answer is: narrow it by fixing what stopped the receiver being typed, and measure the bucket
+again. Two such fixes came out of this one investigation — inherited fields, and `super` in a class
+whose `extends` clause Java never wrote down. Both are proof; neither cost a point of floor
+anywhere.
 
 ### And on ordinary applications, which read higher
 
