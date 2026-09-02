@@ -48,6 +48,44 @@ const JS_RUNTIME = new Set([
   'parse', 'assign', 'freeze', 'bind', 'call', 'apply', 'toISOString', 'getTime',
 ]);
 
+/**
+ * Members every value has, because the prototype chain ends there.
+ *
+ * `Function.prototype` gives `bind`, `call` and `apply` to every function and
+ * every class; `Object.prototype` gives the rest to everything. A type that
+ * does not declare one is not missing it -- n8n writes `const Template:
+ * StoryFn = ...` then `Template.bind({})` 128 times, and reporting those as
+ * members `Template` lacks blames the repository for the language.
+ *
+ * Kept deliberately short. The wider runtime list is consulted only for a
+ * receiver that could not be typed, because a name like `get` or `map` is one
+ * a project class really may declare, and excusing those would hide the misses
+ * this tool exists to report.
+ */
+const UNIVERSAL_MEMBERS = new Set([
+  'bind', 'call', 'apply',
+  'toString', 'toLocaleString', 'valueOf', 'hasOwnProperty', 'isPrototypeOf',
+  'propertyIsEnumerable', 'constructor',
+]);
+
+/**
+ * Functions the language provides with no receiver at all.
+ *
+ * The list above is prototype methods and is deliberately not consulted for a
+ * bare call -- `get()` alone is not `Map.get`. These are the opposite case:
+ * they are *called* bare, by everyone, and a project that happens to have a
+ * method somewhere named `clearTimeout` is not what `clearTimeout(handle)`
+ * reaches. A module-level function or import of the same name is tried first
+ * and wins, so shadowing still resolves the way the file wrote it.
+ */
+const GLOBAL_FUNCTIONS = new Set([
+  'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval',
+  'setImmediate', 'clearImmediate', 'queueMicrotask', 'structuredClone',
+  'parseInt', 'parseFloat', 'isNaN', 'isFinite',
+  'encodeURIComponent', 'decodeURIComponent', 'encodeURI', 'decodeURI',
+  'btoa', 'atob',
+]);
+
 /** Constructors the runtime provides, for `new Set()` and the like. */
 const JS_GLOBALS = new Set([
   'Set', 'Map', 'WeakMap', 'WeakSet', 'Promise', 'Date', 'RegExp', 'Error', 'TypeError',
@@ -1081,7 +1119,15 @@ export function resolveTypeScript(db, root) {
       // language, not a miss in this repository -- reporting 21 of those in
       // prettier as unresolved blamed the repo for the standard library.
       else if (JS_GLOBALS.has(type.name)) insertRuntime(ref.id, type.name);
+      // "declared nowhere in the project" is a proof and outranks both lists
+      // below, which are only ever a better answer than reporting a miss.
       else if (!callablesByName.has(ref.name)) insertNotInProject(ref.id);
+      // The prototype chain ends at Object, so a type not declaring `bind` or
+      // `toString` is not missing it.
+      else if (UNIVERSAL_MEMBERS.has(ref.name)) insertRuntime(ref.id, 'Object.prototype');
+      // A bare call inside a method is given `this` as its receiver, so a
+      // global arrives here looking like a member the class does not have.
+      else if (!ref.receiver && GLOBAL_FUNCTIONS.has(ref.name)) insertRuntime(ref.id, ref.name);
       else insertUnresolved(ref.id, `no-such-member-on:${type.name}`);
       continue;
     }

@@ -1125,3 +1125,48 @@ describe('an intersection type says more than either half alone', () => {
     }
   });
 });
+
+describe('a call the language provides is not a miss in this repository', () => {
+  test('.bind on a function value is Function.prototype, not a missing member', async () => {
+    // n8n writes `const Template: StoryFn = ...` then `Template.bind({})` 128
+    // times. The prototype chain ends at Object, so a type that does not
+    // declare `bind` is not missing it.
+    const project = await tempProject({
+      'src/story.ts': [
+        'export class Template { render() { return 1; } }',
+        'export function make() { return Template.bind({}); }',
+      ].join('\n'),
+    });
+    try {
+      const missed = project.db
+        .prepare(
+          `SELECT u.reason FROM unresolved u JOIN refs r ON r.id = u.ref_id
+            WHERE u.external = 0 AND r.name = 'bind'`,
+        )
+        .all();
+      assert.equal(missed.length, 0, `bind should not be reported as a miss, saw ${JSON.stringify(missed)}`);
+    } finally {
+      project.cleanup();
+    }
+  });
+
+  test('a proof still outranks the excuse', async () => {
+    // "declared nowhere in the project" is a proof; "the runtime provides it"
+    // is an assumption the floor strikes off. Consulting the lists first
+    // downgraded proofs into assumptions and cost jest half a point of floor.
+    const project = await tempProject({
+      'src/timers.ts': ['export function go() { clearTimeout(1); }'].join('\n'),
+    });
+    try {
+      const row = project.db
+        .prepare(
+          `SELECT u.reason FROM unresolved u JOIN refs r ON r.id = u.ref_id
+            WHERE r.name = 'clearTimeout'`,
+        )
+        .get();
+      assert.equal(row?.reason, 'external:not-in-project');
+    } finally {
+      project.cleanup();
+    }
+  });
+});

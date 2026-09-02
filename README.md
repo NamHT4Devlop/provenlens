@@ -397,8 +397,8 @@ a dependency tree is not what separates these repositories from 90%.
 | rubygems.org | Rails, 1392 files | **88.2%** | 80.4% |
 | mastodon | Rails + TS, 4199 files | **87.6%** | 80.1% |
 | halo | Java + TS, 2228 files | **87.6%** | 85.5% |
-| prettier | JS + TS, 5762 files | **89.3%** | 70.7% |
-| storybook | TS monorepo | **87.5%** | 75.0% |
+| prettier | JS + TS, 5762 files | **89.4%** | 70.7% |
+| storybook | TS monorepo | **87.6%** | 75.0% |
 | medusa | TS monorepo | **87.5%** | 74.4% |
 | fastlane | Ruby, 1340 files | **86.7%** | 77.4% |
 | sidekiq | Ruby | **85.9%** | 79.7% |
@@ -410,7 +410,7 @@ a dependency tree is not what separates these repositories from 90%.
 | astro | TS monorepo | **81.4%** | 69.5% |
 | trpc | TS monorepo | **80.4%** | 74.3% |
 | discourse | Rails, 14358 files | **78.7%** | 72.8% |
-| axios | JS, 242 files | **76.1%** | 69.1% |
+| axios | JS, 242 files | **76.2%** | 69.1% |
 | zod | TS pnpm workspace | **75.7%** | 62.1% |
 | rails | Rails framework | **74.8%** | 62.6% |
 
