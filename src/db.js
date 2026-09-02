@@ -8,6 +8,11 @@ export const SCHEMA_VERSION = 8;
 const SCHEMA = `
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
+-- A watcher syncing in the background and an index run started by hand are
+-- two writers on one file. Without a timeout the second one fails instantly
+-- rather than waiting the moment the first needs, and takes its whole run
+-- with it. Thirty seconds is far longer than any single statement here.
+PRAGMA busy_timeout = 30000;
 
 CREATE TABLE IF NOT EXISTS meta (
   key   TEXT PRIMARY KEY,
@@ -182,6 +187,9 @@ export function openDb(dbPath, { create = false } = {}) {
   // index would hand any other local user the very data that token protects.
   if (create) mkdirSync(dirname(dbPath), { recursive: true, mode: 0o700 });
   const db = new DatabaseSync(dbPath);
+  // The pragma above only runs for a database being created; an existing one
+  // is opened without re-reading the schema, and needs telling separately.
+  db.exec('PRAGMA busy_timeout = 30000');
   if (create) {
     db.exec(SCHEMA);
     db.prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)').run(

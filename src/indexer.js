@@ -259,13 +259,23 @@ export async function indexProject(db, root, { full = false, onProgress } = {}) 
   }
 
   // Full-text index is small; rebuilding it beats keeping it in sync by hand.
+  //
+  // Rolled back on failure, like the pass above. A BEGIN left open by an error
+  // does not merely lose its own work: the NEXT BEGIN fails with SQLite's
+  // "SQL logic error", which names neither statement, and the real cause is
+  // gone by the time anyone reads it.
   db.exec('BEGIN');
-  db.exec('DELETE FROM symbols_fts');
-  db.exec(
-    `INSERT INTO symbols_fts (rowid, name, fqn, signature)
-     SELECT id, name, COALESCE(fqn, ''), COALESCE(signature, '') FROM symbols`,
-  );
-  db.exec('COMMIT');
+  try {
+    db.exec('DELETE FROM symbols_fts');
+    db.exec(
+      `INSERT INTO symbols_fts (rowid, name, fqn, signature)
+       SELECT id, name, COALESCE(fqn, ''), COALESCE(signature, '') FROM symbols`,
+    );
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
 
   // An ActiveRecord model declares almost none of its own methods: `account.uri`
   // works because a column exists, and db/schema.rb is the only record of that
@@ -383,30 +393,35 @@ function applyRailsSchema(db, root) {
 
   let attributes = 0;
   db.exec('BEGIN');
-  for (const [modelName, { table, attributes: names }] of perClass) {
-    const model = byName.get(modelName);
-    if (!model) continue;
-    for (const attribute of names) {
-      insert.run(
-        model.file_id,
-        attribute,
-        `${model.fqn}#${attribute}`,
-        'method',
-        model.fqn,
-        null,
-        `${attribute}  # column on ${table}`,
-        0,
-        null,
-        1,
-        1,
-        0,
-        0,
-        JSON.stringify(['generated', 'schema-column']),
-        JSON.stringify([`column:${table}`]),
-      );
-      attributes++;
+  try {
+    for (const [modelName, { table, attributes: names }] of perClass) {
+      const model = byName.get(modelName);
+      if (!model) continue;
+      for (const attribute of names) {
+        insert.run(
+          model.file_id,
+          attribute,
+          `${model.fqn}#${attribute}`,
+          'method',
+          model.fqn,
+          null,
+          `${attribute}  # column on ${table}`,
+          0,
+          null,
+          1,
+          1,
+          0,
+          0,
+          JSON.stringify(['generated', 'schema-column']),
+          JSON.stringify([`column:${table}`]),
+        );
+        attributes++;
+      }
     }
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
   }
-  db.exec('COMMIT');
   return { tables: perClass.size, attributes };
 }

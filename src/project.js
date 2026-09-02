@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync, writeFileSync, rmSync } from 'node:fs';
 import { join, resolve, relative, sep } from 'node:path';
 import ignore from 'ignore';
 import { langForPath } from './lang.js';
@@ -142,4 +142,71 @@ export function walkFiles(root, accept, { maxBytes = 2_000_000 } = {}) {
 /** Every source file with a grammar, as repo-relative paths. */
 export function discoverFiles(root, opts) {
   return walkFiles(root, (rel) => Boolean(langForPath(rel)), opts);
+}
+
+/**
+ * One index run per project at a time.
+ *
+ * Two runs on the same database do not merely contend for the write lock --
+ * SQLite handles that. They contend over the CONTENT: one deletes and rebuilds
+ * the symbols the other is still resolving edges against, and the second run
+ * dies on a foreign-key violation with the index half written. A busy timeout
+ * cannot help, because nothing here is waiting: both are working, on different
+ * versions of the truth.
+ *
+ * So the second run is refused rather than allowed to corrupt the first. The
+ * lock names the process holding it, and a lock whose process is gone -- a
+ * machine that lost power mid-index -- is taken over rather than blocking the
+ * project forever.
+ */
+export function acquireIndexLock(root) {
+  const lockDir = join(root, INDEX_DIR);
+  // No index directory means the database lives somewhere else entirely --
+  // a benchmark writing to a temp file, a test fixture. There is no shared
+  // index to protect, and creating the directory to hold a lock would leave
+  // a footprint in a tree that never asked for one.
+  if (!existsSync(lockDir)) return () => {};
+
+  const lockPath = join(lockDir, 'index.lock');
+  const mine = String(process.pid);
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      writeFileSync(lockPath, mine, { flag: 'wx' });
+      return () => {
+        try {
+          if (readFileSync(lockPath, 'utf8') === mine) rmSync(lockPath, { force: true });
+        } catch {
+          /* already gone, which is the state we wanted */
+        }
+      };
+    } catch (err) {
+      if (err?.code !== 'EEXIST') throw err;
+      let holder = null;
+      try {
+        holder = readFileSync(lockPath, 'utf8').trim();
+      } catch {
+        continue; // vanished between the failed write and the read
+      }
+      // `kill(pid, 0)` asks whether the process exists without signalling it.
+      let alive = false;
+      try {
+        process.kill(Number(holder), 0);
+        alive = true;
+      } catch (probe) {
+        // EPERM means it exists and belongs to somebody else, so it is alive.
+        alive = probe?.code === 'EPERM';
+      }
+      if (alive) {
+        const error = new Error(
+          `another codelens index is running on this project (pid ${holder}). ` +
+            `Wait for it, or remove ${lockPath} if that process is gone.`,
+        );
+        error.code = 'CODELENS_LOCKED';
+        throw error;
+      }
+      rmSync(lockPath, { force: true });
+    }
+  }
+  throw new Error('could not take the index lock');
 }

@@ -3,7 +3,7 @@ import { Command } from 'commander';
 import { resolve, join } from 'node:path';
 import { existsSync, rmSync } from 'node:fs';
 import { openDb, openProject, getMeta } from '../src/db.js';
-import { findProjectRoot, dbPathFor, INDEX_DIR } from '../src/project.js';
+import { findProjectRoot, dbPathFor, INDEX_DIR, acquireIndexLock } from '../src/project.js';
 import { indexProject } from '../src/indexer.js';
 import {
   searchSymbols,
@@ -127,6 +127,32 @@ function pickSymbol(db, name) {
   return matches[0];
 }
 
+/**
+ * Every command that writes the index goes through here.
+ *
+ * Two index runs on one database do not merely contend for the write lock --
+ * they contend over the CONTENT: one rebuilds the symbols the other is still
+ * resolving edges against, and the loser dies on a foreign-key violation with
+ * the index half written. The lock lives at the CLI, because this is where a
+ * project's own `.codelens/` is the database being written; the library takes
+ * whatever database it is handed, which a benchmark or a test may keep
+ * somewhere else entirely.
+ */
+async function withIndexLock(root, run) {
+  let release;
+  try {
+    release = acquireIndexLock(root);
+  } catch (err) {
+    if (err?.code === 'CODELENS_LOCKED') die(err.message);
+    throw err;
+  }
+  try {
+    return await run();
+  } finally {
+    release();
+  }
+}
+
 function reportIndex(stats) {
   console.log(
     `indexed ${stats.parsed} file(s), ${stats.symbols} symbol(s)` +
@@ -179,7 +205,9 @@ program
     const fresh = !existsSync(dbPath);
     const db = openDb(dbPath, { create: true });
     console.log(`${fresh ? 'created' : 'reusing'} ${INDEX_DIR}/ in ${root}`);
-    reportIndex(await indexProject(db, root, { full: true }));
+    await withIndexLock(root, async () =>
+      reportIndex(await indexProject(db, root, { full: true })),
+    );
   });
 
 program
@@ -188,7 +216,9 @@ program
   .description('rebuild the whole index from scratch')
   .action(async (path) => {
     const { root, db } = useProject(path, { needsData: false });
-    reportIndex(await indexProject(db, root, { full: true }));
+    await withIndexLock(root, async () =>
+      reportIndex(await indexProject(db, root, { full: true })),
+    );
   });
 
 program
@@ -198,7 +228,9 @@ program
   .description('reindex only files whose contents changed')
   .action(async (path, opts) => {
     const { root, db } = useProject(path, { needsData: false });
-    reportIndex(await indexProject(db, root, { full: false }));
+    await withIndexLock(root, async () =>
+      reportIndex(await indexProject(db, root, { full: false })),
+    );
 
     if (!opts.watch) return;
     const { watchProject } = await import('../src/watch.js');
