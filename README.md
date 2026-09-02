@@ -373,7 +373,7 @@ a dependency tree is not what separates these repositories from 90%.
 | mall | Spring Boot + MyBatis, 630 files | **99.4%** | **99.3%** |
 | mybatis spring-boot-starter | MyBatis, 154 files | **98.5%** | **98.5%** |
 | TheAlgorithms/Java | plain Java, 1588 files | **98.0%** | **97.5%** |
-| nx | TS monorepo, 5305 files | **95.4%** | 89.3% |
+| nx | TS monorepo, 5305 files | **95.5%** | 89.4% |
 | camel-spring-boot-examples | ~50 Camel examples, 325 files | **95.2%** | **94.7%** |
 | mybatis jpetstore | MyBatis + Flyway, 43 files | **95.1%** | **95.1%** |
 | devise | Rails engine, Ruby | **94.4%** | 85.0% |
@@ -396,18 +396,18 @@ a dependency tree is not what separates these repositories from 90%.
 | rubygems.org | Rails, 1392 files | **88.1%** | 80.4% |
 | mastodon | Rails + TS, 4199 files | **87.6%** | 80.1% |
 | halo | Java + TS, 2228 files | **87.6%** | 85.4% |
-| prettier | JS + TS, 5762 files | **87.6%** | 68.3% |
+| prettier | JS + TS, 5762 files | **87.8%** | 68.7% |
 | storybook | TS monorepo | **87.3%** | 74.8% |
-| medusa | TS monorepo | **87.3%** | 74.1% |
+| medusa | TS monorepo | **87.3%** | 74.2% |
 | fastlane | Ruby, 1340 files | **86.7%** | 77.4% |
 | sidekiq | Ruby | **85.9%** | 79.7% |
 | quarkus | Java, Maven multi-module | **85.0%** | 81.9% |
 | jekyll | Ruby, 171 files | **84.5%** | 75.0% |
 | solidus | Rails, 2329 files | **83.5%** | 74.8% |
-| svelte | JS + TS monorepo | **82.4%** | 68.9% |
+| svelte | JS + TS monorepo | **87.9%** | 75.1% |
 | redmine | Rails app | **81.4%** | 72.7% |
-| astro | TS monorepo | **80.9%** | 68.9% |
-| trpc | TS monorepo | **80.1%** | 73.9% |
+| astro | TS monorepo | **80.9%** | 68.8% |
+| trpc | TS monorepo | **80.4%** | 74.3% |
 | discourse | Rails, 14358 files | **78.6%** | 72.7% |
 | zod | TS pnpm workspace | **75.7%** | 62.1% |
 | rails | Rails framework | **74.8%** | 62.5% |
@@ -457,6 +457,41 @@ appeared with it. Lower number, more complete graph, every time.
 
 Re-measure any time with `./scripts/bench.js <repo> --detail`, which prints the miss buckets and
 the guessed links as well as the two headline figures.
+
+### Why the last twenty-four will not reach 90%, and what was tried
+
+The obvious levers were pulled and measured, and most of them did nothing:
+
+| Tried | Result |
+|---|---|
+| **Install every missing dependency** (9 repos, npm/pnpm/yarn) | nx 95.4 → 95.5, astro unchanged, svelte +0.1. **No effect.** |
+| **Read JSDoc** — `@param {T}` and `@import` | svelte 82.4 → **87.9%**. Kept. |
+| **Type what a factory returns** — `return { … }` as a type | astro 80.9 → 80.3, axios 67.6 → 67.2. **Reverted.** |
+
+The dependency result is worth stating plainly because it contradicts what this file said two
+rounds ago. express really does go 72.4% → 91.4% when `node_modules` appears — and express is the
+exception, not the rule. A library or framework mostly calls *itself*; installing its dependencies
+adds declarations for calls that were already booked as library calls either way.
+
+The factory experiment failed in an instructive direction. Naming the type a function returns adds
+member names to the index, and a name the repository declares can no longer be **proven** absent —
+so calls that were correctly excused as library calls came back as misses. More symbols, less
+proof, lower number. That is the same reason object-module modelling was reverted before it.
+
+What actually blocks the remaining twenty-four is not fixable by engineering:
+
+- **Ruby declares no types.** rails, discourse and solidus are dominated by `ambiguous-name` --
+  54,459 of them in rails alone, meaning a receiver that cannot be typed and several methods
+  sharing the name. Choosing between them is guessing, and a guess would raise the headline while
+  lowering the floor. The language never wrote the declaration.
+- **A callback parameter in JavaScript has no type anywhere.** axios ends the table at 67.6%
+  because its tests are written `startHTTPServer((req, res) => res.end(...))`.
+- **Type-level computation is not a call graph.** zod and trpc compute their types with conditional
+  and mapped types; `z.string().optional()` has a type that exists only in the checker.
+
+Twelve repositories clear 90% on both columns and nineteen on the headline. Which twelve is the
+useful fact: every one of them is a codebase whose receivers are declared where the code can see
+them.
 
 ### And on ordinary applications, which read higher
 
