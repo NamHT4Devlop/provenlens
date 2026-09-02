@@ -25,6 +25,28 @@ import { homedir } from 'node:os';
  */
 const BATCH = 250;
 const MAX_TYPES = 4000;
+
+/**
+ * The `java.lang` classes a call is most likely to land on.
+ *
+ * No import ever names these -- the language imports them into every file --
+ * so the search for unread types never asks about them, and a project that
+ * declares a nested class by the same name silently answers for them instead.
+ * spring-boot has a `System`, jackson-databind a `Double`.
+ *
+ * A fixed list rather than a scan: java.lang is a stable, closed API, and
+ * asking about the whole of it costs a single javap batch. Deriving the names
+ * from the source instead means competing with the imports for the cap above,
+ * which measurably costs more than it wins.
+ */
+const JAVA_LANG = [
+  'Object', 'String', 'Class', 'System', 'Math', 'Thread', 'Runnable', 'Enum', 'Record',
+  'Integer', 'Long', 'Double', 'Float', 'Short', 'Byte', 'Boolean', 'Character', 'Number',
+  'Throwable', 'Exception', 'RuntimeException', 'Error', 'StringBuilder', 'StringBuffer',
+  'Iterable', 'Comparable', 'CharSequence', 'Cloneable', 'AutoCloseable', 'Appendable',
+  'Void', 'Package', 'Process', 'ProcessBuilder', 'ClassLoader', 'Runtime', 'ThreadLocal',
+  'StackTraceElement', 'ThreadGroup', 'SecurityManager', 'Readable',
+].map((n) => `java.lang.${n}`);
 /** A shared cache can hold a great many jars that this project never asked for. */
 const MAX_JARS = 4000;
 
@@ -200,7 +222,10 @@ export function unresolvedImports(db) {
     nested.push(`java.util.${outer}$${inner}`);
   }
 
-  return [...new Set([...wanted, ...implicit, ...nested])].slice(0, MAX_TYPES);
+  // Appended after the cap, not folded into it, so they never displace an import.
+  return [...new Set([...wanted, ...implicit, ...nested])]
+    .slice(0, MAX_TYPES)
+    .concat(JAVA_LANG);
 }
 
 /**

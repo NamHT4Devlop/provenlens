@@ -402,7 +402,7 @@ a dependency tree is not what separates these repositories from 90%.
 | medusa | TS monorepo | **87.3%** | 74.2% |
 | fastlane | Ruby, 1340 files | **86.7%** | 77.4% |
 | sidekiq | Ruby | **85.9%** | 79.7% |
-| quarkus | Java, Maven multi-module | **85.3%** | 82.1% |
+| quarkus | Java, Maven multi-module | **85.2%** | 82.2% |
 | jekyll | Ruby, 171 files | **84.5%** | 75.0% |
 | solidus | Rails, 2329 files | **83.5%** | 74.8% |
 | svelte | JS + TS monorepo | **87.9%** | 75.1% |
@@ -614,18 +614,23 @@ through a callback. This is now the largest remaining bucket by a wide margin �
 misses, against 62 for the next reason down — and it is a long tail rather than one missing rule,
 which is why the fixes above bought whole points and the next ones will not.
 
-**A JDK class the project shadows.** spring-boot declares a nested class called `System`, and 368
-`System.getProperty` calls across the repository resolve to it rather than to `java.lang.System`.
-The precedence is now right — the language's implicit import outranks "some class somewhere shares
-the name" — but it only fires once `java.lang.System` is in the index, and it is not: javap is
-asked about the types the code *declares*, and `System` appears only as the receiver of a static
-call.
+**A JDK class the project shadows — fixed, and the shape of the fix is the point.** spring-boot
+declares a nested class called `System`, and 368 `System.getProperty` calls across the repository
+used to resolve to it rather than to `java.lang.System`; jackson-databind had the same bug on
+`Double`. Precedence was only half of it: the language's implicit import outranks "some class
+somewhere shares the name", but that rule cannot fire until `java.lang.System` is actually in the
+index, and it was not — javap is asked about the types the code *declares*, and `System` appears
+only as the receiver of a static call.
 
-Widening that question was tried and reverted. Reading every capitalised receiver as a java.lang
-candidate competes for the same capped budget as the imports that actually need reading, and the
-imports are worth more: jenkins lost 350 proven library calls, which became 321 misses and 39
-guesses. Four arrangements of that budget were measured and none was better everywhere. The bug is
-real, the fix is not this.
+Deriving the missing names from the source was tried in four arrangements and all four were
+reverted. Reading every capitalised receiver as a java.lang candidate competes for the same capped
+budget as the imports that genuinely need reading, and the imports are worth more: jenkins lost 350
+proven library calls, which became 321 misses and 39 guesses. What works is the unglamorous version
+— a fixed list of ~40 java.lang names, appended *after* the cap so it can never displace an import.
+java.lang is a closed, stable API; asking about all of it costs one javap batch. spring-boot went
+84.4% → 84.9% (floor 83.5% → 84.0%), the mistaken `.System` bucket 368 → 0, and across all 43
+repositories nothing else moved except quarkus, whose headline fell 0.1 while its floor rose 0.1 —
+guesses turning into proofs, which is the trade this project is built to take.
 
 **A receiver nothing declares at all.** A method parameter in a dynamically typed language names no
 type anywhere, so `def deliver(recipient)` gives the resolver the name and nothing else. That is why
