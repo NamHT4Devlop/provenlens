@@ -242,6 +242,8 @@ export function extractJava(tree, src) {
   const refs = [];
   /** node id -> index of the ref that node's own call produced. */
   const callRefByNode = new Map();
+  // javac numbers anonymous classes per file, and so does this.
+  let anonymousCount = 0;
   const locals = [];
   const imports = [];
   let pkg = null;
@@ -615,6 +617,43 @@ export function extractJava(tree, src) {
           line: node.startPosition.row + 1,
           kind: 'new',
         });
+      }
+
+      // `new ClassLoader() { ... }` declares a class. It has no name in the
+      // source, but it has a supertype written right there, and `super` inside
+      // it means THAT type -- not the class the expression happens to sit in.
+      // Walking the body as ordinary code attributed every member to the
+      // enclosing class and left `super` pointing at the wrong place.
+      const body = firstOfType(node, 'class_body');
+      if (body && typeNode) {
+        const superName = normalizeType(text(typeNode, src));
+        anonymousCount += 1;
+        const outer = [pkg, ...typeStack].filter(Boolean).join('.') || pkg;
+        // Named the way every other nested type here is named -- with a dot --
+        // so the scope walk finds its way back out to the enclosing class. A
+        // bare call inside the body reaches the OUTER class's methods, and
+        // spelling this `Outer$1` the way javac does hid that path: the walk
+        // splits on dots, so `Outer$1` climbed straight past Outer to the
+        // package. A digit is not a legal Java identifier, so nothing real
+        // collides with it.
+        const fqn = `${outer}.${anonymousCount}`;
+        const id = addSymbol({
+          name: `${anonymousCount}`,
+          fqn,
+          kind: 'class',
+          container_fqn: outer || null,
+          type_name: null,
+          signature: `new ${superName}() { ... }`,
+          arity: null,
+          supertypes: superName ? [superName] : [],
+          modifiers: ['anonymous'],
+          annotations: [],
+          ...pos(node),
+        });
+        // The arguments belong to the constructor call, not to the body.
+        if (args) walk(args, typeStack, scopeId);
+        walk(body, [...typeStack, `${anonymousCount}`], id);
+        return;
       }
     }
 

@@ -122,10 +122,39 @@ export function resolveJava(db) {
     }
   }
 
+  /**
+   * A member of an anonymous class is reachable only from inside that class,
+   * or through the type it extends -- never by name from elsewhere in the
+   * project. Letting `new Runnable() { void helper() {} }` put `helper` into
+   * the by-name index makes every unrelated `helper()` in the repository look
+   * resolvable, and takes names that were PROVEN to live outside it and makes
+   * them look local. guava lost 0.3 points to exactly that.
+   */
+  const anonymousTypes = new Set(
+    [...types.entries()]
+      .filter(([, t]) => {
+        try {
+          return JSON.parse(t.modifiers || '[]').includes('anonymous');
+        } catch {
+          return false;
+        }
+      })
+      .map(([fqn]) => fqn),
+  );
+  const inAnonymous = (fqn) => {
+    for (let scope = fqn; scope; ) {
+      if (anonymousTypes.has(scope)) return true;
+      const cut = scope.lastIndexOf('.');
+      scope = cut === -1 ? null : scope.slice(0, cut);
+    }
+    return false;
+  };
+
   const methodsByName = new Map(); // "findAll" -> [symbol rows]
   for (const list of methodsByContainer.values()) {
     for (const m of list) {
       if (m.isExternal) continue;
+      if (inAnonymous(m.container_fqn)) continue;
       if (!methodsByName.has(m.name)) methodsByName.set(m.name, []);
       methodsByName.get(m.name).push(m);
     }
@@ -890,7 +919,10 @@ export function resolveJava(db) {
   // here. A classpath signature must stay out of it: reading java.util.List
   // must not make `size` look like something this repository defines.
   const declaredNames = new Set();
-  for (const row of symbolById.values()) if (!row.isExternal) declaredNames.add(row.name);
+  for (const row of symbolById.values()) {
+    if (row.isExternal || inAnonymous(row.container_fqn)) continue;
+    declaredNames.add(row.name);
+  }
 
   const insertNotInProject = (refId) => {
     insertRow.run(refId, 'external:not-in-project', 1, null);
