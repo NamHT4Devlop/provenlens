@@ -54,7 +54,7 @@ export function resolveJava(db) {
   const types = new Map(); // fqn -> { fqn, symbol_id, kind, supertypes, file_id }
   for (const row of db
     .prepare(
-      `SELECT t.fqn, t.symbol_id, t.kind, t.supertypes, s.file_id,
+      `SELECT t.fqn, t.symbol_id, t.kind, t.supertypes, s.file_id, s.modifiers,
               f.external AS isExternal, f.owner AS extOwner
          FROM types t
          JOIN symbols s ON s.id = t.symbol_id
@@ -63,6 +63,32 @@ export function resolveJava(db) {
     )
     .all()) {
     types.set(row.fqn, { ...row, supertypes: JSON.parse(row.supertypes || '[]') });
+  }
+
+  /**
+   * The type variables in scope at a declaration: its own, and every one it
+   * is nested inside. `class Outer<T> { class Inner<U> }` puts both T and U in
+   * scope for Inner.
+   */
+  const typeVarsByFqn = new Map();
+  for (const [fqn, t] of types) {
+    let modifiers = [];
+    try {
+      modifiers = JSON.parse(t.modifiers || '[]');
+    } catch {
+      modifiers = [];
+    }
+    const own = modifiers.filter((m) => String(m).startsWith('tp:')).map((m) => m.slice(3));
+    if (own.length) typeVarsByFqn.set(fqn, new Set(own));
+  }
+  function isTypeVariable(name, enclosing) {
+    if (name.includes('.') || !/^[A-Za-z_$][\w$]*$/.test(name)) return false;
+    for (let scope = enclosing; scope; ) {
+      if (typeVarsByFqn.get(scope)?.has(name)) return true;
+      const dot = scope.lastIndexOf('.');
+      scope = dot === -1 ? null : scope.slice(0, dot);
+    }
+    return false;
   }
 
   const bySimpleName = new Map(); // "DonationService" -> [fqn, ...]
@@ -145,6 +171,11 @@ export function resolveJava(db) {
    */
   function resolveTypeName(name, fileId, enclosing = null) {
     if (!name) return null;
+    // A name the enclosing declaration introduced as a type variable is not a
+    // class, however many classes share the spelling. Checked before anything
+    // else, because a repository large enough has a real `C` somewhere and
+    // finding it does not fail to resolve -- it resolves WRONG.
+    if (enclosing && isTypeVariable(name, enclosing)) return null;
     if (types.has(name)) return name;
 
     const simple = name.includes('.') ? name.split('.').pop() : name;

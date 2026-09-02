@@ -111,6 +111,30 @@ function text(node, src) {
 }
 
 /** Pulls raw supertype names out of extends/implements clauses. */
+/**
+ * `class Box<T, C extends Comparable<C>>` declares T and C as NAMES, not as
+ * types. A repository large enough contains a real class called C, and letting
+ * a type variable find it does not fail to resolve -- it resolves WRONG, and
+ * every call on that receiver is then blamed on a class the code never
+ * mentioned. quarkus had 118 of those.
+ *
+ * Recorded as `tp:C` on the declaring symbol's modifiers, which already carry
+ * this kind of fact and need no schema change to hold one more.
+ */
+function readTypeParams(node, src) {
+  const params = firstOfType(node, 'type_parameters');
+  if (!params) return [];
+  const out = [];
+  for (let i = 0; i < params.namedChildCount; i++) {
+    const p = params.namedChild(i);
+    if (p?.type !== 'type_parameter') continue;
+    const id = firstOfType(p, 'type_identifier') ?? p.namedChild(0);
+    const name = id ? text(id, src) : null;
+    if (name) out.push(`tp:${name}`);
+  }
+  return out;
+}
+
 function readSupertypes(node, src) {
   const out = [];
   for (const clause of ['superclass', 'super_interfaces', 'extends_interfaces', 'interfaces']) {
@@ -270,6 +294,8 @@ export function extractJava(tree, src) {
       const nextStack = [...typeStack, simpleName];
       const fqn = [pkg, ...nextStack].filter(Boolean).join('.');
       const { modifiers, annotations } = readModifiers(node, src);
+      // The type variables this declaration introduces travel with it.
+      modifiers.push(...readTypeParams(node, src));
 
       const id = addSymbol({
         name: simpleName,
