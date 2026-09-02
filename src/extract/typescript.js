@@ -376,7 +376,82 @@ export function extractTypeScript(tree, src, ctx = {}) {
     return [...new Set(out)];
   }
 
-  function readParams(paramsNode, ownerTmpId, containerFqn, extra = {}) {
+  /**
+   * Types a JavaScript file declares in a comment.
+   *
+   * `@param {Context} context` is not a hint -- TypeScript reads it as the
+   * declaration for a .js file, and whole codebases are written that way.
+   * svelte is one: `context.visit` is called 297 times on a parameter whose
+   * only type is a JSDoc line, and every one was unresolvable for want of
+   * reading a comment the compiler already reads.
+   *
+   * Returns { params: Map(name -> type), returns } from the doc comment
+   * immediately preceding a node, or nulls when there is none.
+   */
+  /**
+   * `/** @import { Context } from '../types' *\/` -- a real import that
+   * happens to be written in a comment, which is how TypeScript 5.5 lets a
+   * .js file name a type it does not otherwise mention. svelte declares its
+   * whole compiler vocabulary this way, so without reading these the JSDoc
+   * types above resolve to nothing at all.
+   *
+   * Also the older inline form, `{import('./types').Context}`, which is what
+   * the same codebases wrote before the tag existed.
+   */
+  function readJsdocImports(root) {
+    const scan = (n, depth) => {
+      if (depth > 2) return;
+      for (let i = 0; i < n.namedChildCount; i++) {
+        const c = n.namedChild(i);
+        if (!c) continue;
+        if (c.type === 'comment') {
+          const raw = text(c, src);
+          if (!raw.startsWith('/*')) continue;
+          for (const m of raw.matchAll(/@import\s+\{([^}]+)\}\s+from\s+['"]([^'"]+)['"]/g)) {
+            for (const part of m[1].split(',')) {
+              const [orig, alias] = part.split(/\s+as\s+/).map((t) => t.trim());
+              if (!orig) continue;
+              imports.push({
+                fqn: m[2], simple: alias || orig, orig,
+                is_wildcard: 0, is_static: 0, kind: 'import',
+              });
+            }
+          }
+          for (const m of raw.matchAll(/import\(['"]([^'"]+)['"]\)\.([A-Za-z_$][\w$]*)/g)) {
+            imports.push({
+              fqn: m[1], simple: m[2], orig: m[2],
+              is_wildcard: 0, is_static: 0, kind: 'import',
+            });
+          }
+          continue;
+        }
+        if (['export_statement', 'statement_block', 'program'].includes(c.type)) scan(c, depth + 1);
+      }
+    };
+    scan(root, 0);
+  }
+
+  function jsdocFor(node) {
+    let prev = node.previousNamedSibling;
+    // `export function f()` puts the comment before the export statement.
+    if (!prev && node.parent?.type === 'export_statement') {
+      prev = node.parent.previousNamedSibling;
+    }
+    if (prev?.type !== 'comment') return { params: null, returns: null };
+    const raw = text(prev, src);
+    if (!raw.startsWith('/**')) return { params: null, returns: null };
+
+    const params = new Map();
+    // `@param {Foo} name` and `@param {Foo} [name]` for an optional one.
+    for (const m of raw.matchAll(/@param\s+\{([^}]+)\}\s+\[?([A-Za-z_$][\w$]*)/g)) {
+      const type = normalizeType(m[1].replace(/^\.\.\./, '').trim());
+      if (type) params.set(m[2], { type, args: elementOf(m[1].trim()) });
+    }
+    const ret = /@returns?\s+\{([^}]+)\}/.exec(raw);
+    return { params: params.size ? params : null, returns: ret ? normalizeType(ret[1].trim()) : null };
+  }
+
+  function readParams(paramsNode, ownerTmpId, containerFqn, extra = {}, doc = null) {
     const params = [];
     if (!paramsNode) return params;
 
@@ -395,7 +470,10 @@ export function extractTypeScript(tree, src, ctx = {}) {
         : (childByField(p, 'pattern') ?? firstOfType(p, 'identifier'));
       const name = patt ? text(patt, src) : null;
       const ann = isPlain ? null : (firstOfType(p, 'type_annotation') ?? childByField(p, 'type'));
-      const typeName = isPlain ? null : typeFromAnnotation(p, src);
+      // An annotation in the source beats a comment; the comment is what a
+      // .js file has instead of one, never in addition to it.
+      const fromDoc = name ? (doc?.params?.get(name) ?? null) : null;
+      const typeName = (isPlain ? null : typeFromAnnotation(p, src)) ?? fromDoc?.type ?? null;
       params.push({ name, type: typeName });
 
       if (name && ownerTmpId != null) {
@@ -403,7 +481,7 @@ export function extractTypeScript(tree, src, ctx = {}) {
           scopeTmpId: ownerTmpId,
           name,
           type_name: typeName,
-          type_args: ann ? elementOf(text(ann, src)) : null,
+          type_args: (ann ? elementOf(text(ann, src)) : null) ?? fromDoc?.args ?? null,
           ...extra,
         });
       }
@@ -511,7 +589,9 @@ export function extractTypeScript(tree, src, ctx = {}) {
       const simpleName = text(nameNode, src);
       const containerFqn = typeStack[typeStack.length - 1] ?? modulePath;
       const isCtor = simpleName === 'constructor';
-      const ret = typeFromAnnotation(node, src) ?? inferredReturn(childByField(node, 'body'), src);
+      const doc = jsdocFor(node);
+      const ret =
+        typeFromAnnotation(node, src) ?? doc.returns ?? inferredReturn(childByField(node, 'body'), src);
 
       const decorators = pendingDecorators;
       pendingDecorators = [];
@@ -533,7 +613,7 @@ export function extractTypeScript(tree, src, ctx = {}) {
         refs.push({ fromTmpId: id, name: d.name, receiver: null, arity: null, str_args: d.strArgs, line: d.line, kind: 'annotation' });
       }
 
-      const params = readParams(childByField(node, 'parameters'), id, containerFqn);
+      const params = readParams(childByField(node, 'parameters'), id, containerFqn, {}, doc);
       symbols[id].arity = params.length;
       symbols[id].signature =
         `${simpleName}(${params.map((p) => `${p.name}${p.type ? `: ${p.type}` : ''}`).join(', ')})` +
@@ -574,7 +654,9 @@ export function extractTypeScript(tree, src, ctx = {}) {
       const nameNode = childByField(node, 'name');
       if (!nameNode) return;
       const simpleName = text(nameNode, src);
-      const ret = typeFromAnnotation(node, src) ?? inferredReturn(childByField(node, 'body'), src);
+      const doc = jsdocFor(node);
+      const ret =
+        typeFromAnnotation(node, src) ?? doc.returns ?? inferredReturn(childByField(node, 'body'), src);
 
       const id = addSymbol({
         name: simpleName,
@@ -591,7 +673,7 @@ export function extractTypeScript(tree, src, ctx = {}) {
         ...pos(node),
       });
 
-      const params = readParams(childByField(node, 'parameters'), id, null);
+      const params = readParams(childByField(node, 'parameters'), id, null, {}, doc);
       symbols[id].arity = params.length;
       symbols[id].signature = `${simpleName}(${params
         .map((p) => `${p.name}${p.type ? `: ${p.type}` : ''}`)
@@ -830,6 +912,7 @@ export function extractTypeScript(tree, src, ctx = {}) {
     end_byte: tree.rootNode.endIndex,
   });
 
+  readJsdocImports(tree.rootNode);
   walk(tree.rootNode, [], fileScope, false);
   readCommonJs(tree.rootNode, src, modulePath, symbols, addSymbol, pos);
 
