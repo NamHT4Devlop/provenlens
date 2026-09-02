@@ -260,6 +260,13 @@ export function resolveJava(db) {
 
     // This project's own types answer first: a classpath signature exists to
     // prove a call leaves the project, never to outvote a type it declares.
+    // `java.lang` is imported into every file by the language itself, and that
+    // outranks the search below -- which is not a scope rule at all, only
+    // "some class somewhere in this project shares the name". spring-boot has
+    // a nested class called `System`; without this, every
+    // `System.getProperty` in the repository resolved to it.
+    if (types.has(`java.lang.${simple}`)) return `java.lang.${simple}`;
+
     const mine = (bySimpleName.get(simple) ?? []).filter((fqn) => !types.get(fqn)?.isExternal);
     if (mine.length === 1) return mine[0];
     if (mine.length > 1) return null;

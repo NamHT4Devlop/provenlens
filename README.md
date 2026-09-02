@@ -614,6 +614,19 @@ through a callback. This is now the largest remaining bucket by a wide margin �
 misses, against 62 for the next reason down — and it is a long tail rather than one missing rule,
 which is why the fixes above bought whole points and the next ones will not.
 
+**A JDK class the project shadows.** spring-boot declares a nested class called `System`, and 368
+`System.getProperty` calls across the repository resolve to it rather than to `java.lang.System`.
+The precedence is now right — the language's implicit import outranks "some class somewhere shares
+the name" — but it only fires once `java.lang.System` is in the index, and it is not: javap is
+asked about the types the code *declares*, and `System` appears only as the receiver of a static
+call.
+
+Widening that question was tried and reverted. Reading every capitalised receiver as a java.lang
+candidate competes for the same capped budget as the imports that actually need reading, and the
+imports are worth more: jenkins lost 350 proven library calls, which became 321 misses and 39
+guesses. Four arrangements of that budget were measured and none was better everywhere. The bug is
+real, the fix is not this.
+
 **A receiver nothing declares at all.** A method parameter in a dynamically typed language names no
 type anywhere, so `def deliver(recipient)` gives the resolver the name and nothing else. That is why
 the naming convention exists, why it is capped at 0.5, and why it is struck out of the floor. It is
