@@ -694,9 +694,17 @@ export function resolveJava(db) {
       for (const t of typeChain(scope)) {
         const fieldType = fieldsByContainer.get(t.fqn)?.get(raw);
         if (!fieldType) continue;
-        const hit = resolveTypeName(fieldType, ref.file_id, enclosing);
+        // Resolved where the field is DECLARED, not where it is used. A
+        // subclass inherits `Invocation invocation` without importing
+        // Invocation -- it never names the type at all -- so asking the
+        // calling file's imports for it finds nothing, and the receiver goes
+        // untyped. dubbo's test hierarchy is built this way throughout.
+        const declaring = t.file_id ?? ref.file_id;
+        const hit =
+          resolveTypeName(fieldType, declaring, t.fqn) ??
+          resolveTypeName(fieldType, ref.file_id, enclosing);
         if (hit) return hit;
-        const owner = externalOwner(fieldType, ref.file_id);
+        const owner = externalOwner(fieldType, declaring) ?? externalOwner(fieldType, ref.file_id);
         return owner ? { external: owner } : null;
       }
     }
