@@ -853,6 +853,23 @@ describe('JVM signatures read with javap', () => {
     );
   });
 
+  test('a method that declares a throws clause is still a member', { skip: !haveJavap }, async () => {
+    const { readSignatures } = await import('../src/jvm.js');
+    const [future] = readSignatures(['java.util.concurrent.Future'], '');
+    assert.ok(future, 'javap should describe java.util.concurrent.Future');
+
+    // javap prints `V get() throws InterruptedException, ExecutionException`.
+    // The member match anchors on the closing paren, so the trailing clause
+    // used to hide the method outright -- and with it 130 Future.get() calls
+    // in netty alone. Roughly a fifth of the JDK's methods declare one.
+    const get = future.members.filter((m) => m.name === 'get');
+    assert.ok(get.length >= 1, `expected get(), saw ${future.members.map((m) => m.name)}`);
+    assert.ok(
+      get.some((m) => m.arity === 0),
+      'the no-argument overload is the one a chain walks through',
+    );
+  });
+
   test('a name the classpath does not have is simply absent', { skip: !haveJavap }, async () => {
     const { readSignatures } = await import('../src/jvm.js');
     const found = readSignatures(['java.util.List', 'com.example.NotAThing'], '');
@@ -977,5 +994,71 @@ describe('the MCP entry the installer writes', () => {
     const stat = statSync(entry.command);
     assert.ok(stat.mode & 0o111, 'the bin must be executable');
     assert.match(readFileSync(entry.command, 'utf8').split('\n')[0], /^#!.*\bnode\b/);
+  });
+});
+
+describe('a default export is a name the module actually declares', () => {
+  test('an importer may alias it to anything and still land on the class', async () => {
+    // `export default class` names the class, not the export, so asking a
+    // module for `default` found nothing and the link fell through to the
+    // by-name search. That guess is right whenever the alias happens to match
+    // the class name, which is why it hid: in jest the alias is `Worker` and
+    // the class is `ChildProcessWorker`, and 31 calls landed on an unrelated
+    // `Worker` in another package.
+    const project = await tempProject({
+      'src/child-process-worker.ts': [
+        'export default class ChildProcessWorker {',
+        '  send(msg: string) { return msg; }',
+        '}',
+      ].join('\n'),
+      'src/decoy.ts': ['export class Worker {', '  unrelated() { return 1; }', '}'].join('\n'),
+      'src/run.ts': [
+        "import Worker from './child-process-worker';",
+        'export function run() {',
+        '  const worker = new Worker();',
+        "  return worker.send('hello');",
+        '}',
+      ].join('\n'),
+    });
+    try {
+      const [hit] = searchSymbols(project.db, 'send', { limit: 5 });
+      assert.ok(hit, 'the method exists');
+      const callers = callersOf(project.db, hit.id).map((c) => c.fqn);
+      assert.ok(
+        callers.some((f) => f.includes('run')),
+        `run() should call ChildProcessWorker.send, saw ${JSON.stringify(callers)}`,
+      );
+      // And the decoy must not have been credited with the call.
+      const [decoy] = searchSymbols(project.db, 'unrelated', { limit: 5 });
+      assert.equal(callersOf(project.db, decoy.id).length, 0);
+    } finally {
+      project.cleanup();
+    }
+  });
+
+  test('a module named in a type position is read as the import it is', async () => {
+    // `let ts: typeof import('typescript')` is how a file lazily requires a
+    // module. Stored as its own literal text it names no type at all, and the
+    // by-name search answers with whatever shares the name.
+    const project = await tempProject({
+      'src/compiler.ts': ['export function transpile(code: string) {', '  return code;', '}'].join('\n'),
+      'src/lazy.ts': [
+        "let compiler: typeof import('./compiler');",
+        'export function go() {',
+        "  compiler = require('./compiler');",
+        "  return compiler.transpile('x');",
+        '}',
+      ].join('\n'),
+    });
+    try {
+      const [hit] = searchSymbols(project.db, 'transpile', { limit: 5 });
+      const callers = callersOf(project.db, hit.id).map((c) => c.fqn);
+      assert.ok(
+        callers.some((f) => f.includes('go')),
+        `go() should call transpile, saw ${JSON.stringify(callers)}`,
+      );
+    } finally {
+      project.cleanup();
+    }
   });
 });

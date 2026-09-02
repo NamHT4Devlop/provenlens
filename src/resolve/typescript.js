@@ -310,12 +310,14 @@ export function resolveTypeScript(db, root) {
     if (local) return local;
 
     // `require('./view')` asks the module for its whole value, and CommonJS
-    // says that value is whatever `module.exports =` named.
+    // says that value is whatever `module.exports =` named. ESM says it with
+    // `export default`, which names the class rather than the export, so the
+    // declaration has to carry the mark.
     if (name === '*' || name === 'default') {
-      const cjs = (symbolsByModule.get(module) ?? []).find((s) =>
-        (s.modifiers ?? '').includes('cjs-default'),
+      const marked = (symbolsByModule.get(module) ?? []).find((s) =>
+        /\b(cjs|esm)-default\b/.test(s.modifiers ?? ''),
       );
-      if (cjs) return cjs;
+      if (marked) return marked;
     }
 
     const file = moduleToFile.get(module);

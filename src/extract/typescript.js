@@ -121,6 +121,43 @@ function readDecorator(node, src) {
   };
 }
 
+/**
+ * A module named in a type position: `let ts: typeof import('typescript')`,
+ * `let Worker: typeof import('../ChildProcessWorker').default`. It is how a
+ * file lazily requires a module it means to reset or feature-detect, and the
+ * annotation is a real import -- the path is right there in it.
+ *
+ * Left unread, the annotation is stored as its own literal text, no type of
+ * that name exists, and the by-name search answers with whatever unrelated
+ * class happens to share it: jest-worker's barrel exports a `Worker`, and 31
+ * calls on a `ChildProcessWorker` landed on it.
+ *
+ * `typeof` is the whole distinction. With it the local holds the exported
+ * *value*, so the import belongs under the local's own name and the local has
+ * no type until something constructs one. Without it the local's *type* is
+ * that export, and the member names it.
+ */
+function importInTypePosition(raw, varName) {
+  const m = /^(typeof\s+)?import\(\s*['"]([^'"]+)['"]\s*\)(?:\.([A-Za-z_$][\w$]*))?$/.exec(
+    (raw ?? '').trim(),
+  );
+  if (!m) return null;
+  const [, isTypeof, fqn, member] = m;
+  if (!isTypeof) {
+    // `import('./types').Context` -- the older JSDoc spelling, in real code.
+    return member ? { import: { fqn, simple: member, orig: member, is_wildcard: 0 }, typeName: member } : null;
+  }
+  return {
+    import: {
+      fqn,
+      simple: varName,
+      orig: member ?? '*',
+      is_wildcard: member ? 0 : 1,
+    },
+    typeName: null,
+  };
+}
+
 function typeFromAnnotation(node, src) {
   const ann = firstOfType(node, 'type_annotation') ?? childByField(node, 'type');
   if (!ann) return null;
@@ -700,6 +737,11 @@ export function extractTypeScript(tree, src, ctx = {}) {
         const varName = text(nameNode, src);
         // `const x: Foo = ...` beats inference; otherwise `new Foo()` types it.
         let typeName = declaredType;
+        const asImport = importInTypePosition(declaredType, varName);
+        if (asImport) {
+          imports.push({ ...asImport.import, is_static: 0, kind: 'import' });
+          typeName = asImport.typeName;
+        }
         if (!typeName && value?.type === 'new_expression') {
           const ctor = childByField(value, 'constructor');
           if (ctor) typeName = bareType(text(ctor, src));
@@ -922,8 +964,39 @@ export function extractTypeScript(tree, src, ctx = {}) {
   readJsdocImports(tree.rootNode);
   walk(tree.rootNode, [], fileScope, false);
   readCommonJs(tree.rootNode, src, modulePath, symbols, addSymbol, pos);
+  markEsmDefault(tree.rootNode, src, modulePath, symbols);
 
   return { package: modulePath, imports, symbols, refs, locals };
+}
+
+/**
+ * `export default class ChildProcessWorker {}` -- the symbol is named for the
+ * class, and nothing recorded that the module also exports it as `default`.
+ *
+ * An importer writes `import Worker from './ChildProcessWorker'`, which asks
+ * for `default` and found nothing, so the link fell through to the by-name
+ * search and was answered by whatever else in the project is called `Worker`.
+ * The alias usually happens to match the class name, which is why this hid:
+ * the guess was right often enough to look like a rule.
+ *
+ * Run after the walk, like the CommonJS pass, so the symbol already exists.
+ */
+function markEsmDefault(root, src, modulePath, symbols) {
+  for (let i = 0; i < root.namedChildCount; i++) {
+    const node = root.namedChild(i);
+    if (node?.type !== 'export_statement') continue;
+    // `export default` writes an anonymous `default` token; `export { x as
+    // default }` is a re-export and is read elsewhere.
+    if (!/^export\s+default\b/.test(text(node, src))) continue;
+    const decl = childByField(node, 'declaration') ?? childByField(node, 'value');
+    const nameNode = decl ? childByField(decl, 'name') : null;
+    const name = nameNode ? text(nameNode, src) : decl?.type === 'identifier' ? text(decl, src) : null;
+    if (!name) continue;
+    const owner = symbols.find(
+      (sym) => sym.name === name && sym.container_fqn === modulePath && ['class', 'function'].includes(sym.kind),
+    );
+    if (owner) owner.modifiers = [...new Set([...(owner.modifiers ?? []), 'export', 'esm-default'])];
+  }
 }
 
 /**

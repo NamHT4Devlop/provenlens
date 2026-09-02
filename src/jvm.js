@@ -57,7 +57,14 @@ const MAX_JARS = 4000;
  * Constructors and fields are skipped: a chain is carried by return types.
  */
 function readMember(line) {
-  const text = line.trim().replace(/;$/, '');
+  const text = line
+    .trim()
+    .replace(/;$/, '')
+    // `V get() throws InterruptedException, ExecutionException` -- the match
+    // below anchors on the closing paren, so a throws clause hid every method
+    // that declares one. That is not a rare shape: Future.get, Thread.sleep,
+    // Class.forName, InputStream.read and AutoCloseable.close all have it.
+    .replace(/\)\s+throws\s+[\w$.,\s]+$/, ')');
   if (!text || text.startsWith('static {') || text.includes(' class ') || text.includes(' interface ')) {
     return null;
   }
