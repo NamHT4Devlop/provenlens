@@ -380,29 +380,29 @@ a dependency tree is not what separates these repositories from 90%.
 | devise | Rails engine, Ruby | **94.4%** | 85.0% |
 | google/guava | Java, Maven | **94.4%** | **93.7%** |
 | vuejs/core | TS pnpm workspace, 527 files | **93.9%** | 86.8% |
-| spring-framework | Gradle multi-module, 9901 files | **93.5%** | **92.0%** |
+| spring-framework | Gradle multi-module, 9901 files | **93.6%** | **92.0%** |
 | apache/dubbo | Maven multi-module, 4190 files | **93.1%** | **91.6%** |
 | date-fns | JS, monorepo | **92.9%** | 83.5% |
-| jenkins | Java, Maven | **92.5%** | **90.4%** |
+| jenkins | Java, Maven | **92.6%** | **90.5%** |
 | apache/kafka | Gradle multi-module, 6196 files | **92.4%** | **91.1%** |
 | express | plain JS, 141 files | **91.4%** | **91.1%** |
-| java-design-patterns | Java, 1991 files | **91.4%** | 89.6% |
+| java-design-patterns | Java, 1991 files | **91.5%** | 89.7% |
 | immich | NestJS + Svelte monorepo | **91.6%** | 85.6% |
 | nest | TS, 1904 files | **91.3%** | 87.3% |
-| puma | Ruby | **89.1%** | 77.8% |
-| micronaut-core | Java, Gradle | **88.7%** | 86.1% |
-| sinatra | Ruby, 147 files | **88.5%** | 81.3% |
+| puma | Ruby | **89.1%** | 77.9% |
+| micronaut-core | Java, Gradle | **88.7%** | 86.2% |
+| sinatra | Ruby, 147 files | **88.5%** | 81.4% |
 | typeorm | TS, 3575 files | **88.7%** | 83.3% |
-| spring-cloud-aws | Java, 816 files | **88.4%** | 87.1% |
-| rubygems.org | Rails, 1392 files | **88.1%** | 80.4% |
-| mastodon | Rails + TS, 4199 files | **87.6%** | 80.1% |
+| spring-cloud-aws | Java, 816 files | **88.4%** | 87.2% |
+| rubygems.org | Rails, 1392 files | **88.2%** | 80.4% |
+| mastodon | Rails + TS, 4199 files | **87.6%** | 80.2% |
 | halo | Java + TS, 2228 files | **87.6%** | 85.4% |
 | prettier | JS + TS, 5762 files | **88.1%** | 68.5% |
 | storybook | TS monorepo | **87.4%** | 74.9% |
 | medusa | TS monorepo | **87.3%** | 74.2% |
 | fastlane | Ruby, 1340 files | **86.7%** | 77.4% |
 | sidekiq | Ruby | **85.9%** | 79.7% |
-| quarkus | Java, Maven multi-module | **85.1%** | 82.0% |
+| quarkus | Java, Maven multi-module | **85.3%** | 82.1% |
 | jekyll | Ruby, 171 files | **84.5%** | 75.0% |
 | solidus | Rails, 2329 files | **83.5%** | 74.8% |
 | svelte | JS + TS monorepo | **87.9%** | 75.1% |
@@ -411,7 +411,7 @@ a dependency tree is not what separates these repositories from 90%.
 | trpc | TS monorepo | **80.4%** | 74.3% |
 | discourse | Rails, 14358 files | **78.7%** | 72.7% |
 | zod | TS pnpm workspace | **75.7%** | 62.1% |
-| rails | Rails framework | **74.8%** | 62.5% |
+| rails | Rails framework | **74.8%** | 62.6% |
 | axios | JS, 242 files | **67.6%** | 56.9% |
 
 **Twelve of the forty-three clear 90% on both columns**, and which twelve is the most useful thing
