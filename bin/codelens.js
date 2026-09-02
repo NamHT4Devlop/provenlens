@@ -353,8 +353,17 @@ program
       return;
     }
 
+    // A handler is also registered under `ANY <path>` so a caller whose verb
+    // could not be read still reaches it. That duplicate exists to be joined
+    // against, not to be read: listing it would show every route twice.
+    const realVerbs = new Set(
+      rows.filter((r) => !r.key.startsWith('ANY ')).map((r) => r.key.slice(r.key.indexOf(' ') + 1)),
+    );
     const byKey = new Map();
     for (const r of rows) {
+      if (r.role === 'provider' && r.key.startsWith('ANY ') && realVerbs.has(r.key.slice(4))) {
+        continue;
+      }
       if (!byKey.has(r.key)) byKey.set(r.key, { providers: [], consumers: [] });
       byKey.get(r.key)[r.role === 'provider' ? 'providers' : 'consumers'].push(r);
     }

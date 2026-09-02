@@ -137,6 +137,22 @@ export default {
         line: ref.line,
         detail: `${ref.name} ${key}`,
       });
+      // A caller whose verb could not be read still reaches this handler if
+      // the path matches, so the handler answers under ANY as well. Without
+      // it a route served by GET and called through a client the verb could
+      // not be recovered from stays unwired, which reads as "nobody calls
+      // this" -- the one wrong answer this plugin must not give.
+      if (method !== 'ANY') {
+        const anyKey = key.replace(/^\S+/, 'ANY');
+        ctx.emit({
+          role: 'provider',
+          key: anyKey,
+          symbolId: ref.from_symbol_id,
+          fileId: ref.file_id,
+          line: ref.line,
+          detail: `${ref.name} ${key}`,
+        });
+      }
     }
 
     // --- Express: `app.get('/orders/:id', handler)` ---
@@ -202,6 +218,20 @@ export default {
       }
     }
 
+    // `webClient.get().uri("/orders")` says GET one hop before it says where.
+    // Reading only the call that carries the string files every WebClient and
+    // WebTestClient request under ANY, which then matches no provider at all.
+    const refById = new Map();
+    for (const ref of ctx.refs('1 = 1')) refById.set(ref.id, ref);
+    const verbFromChain = (ref, depth = 0) => {
+      if (!ref || depth > 4) return null;
+      const name = String(ref.name || '').toLowerCase();
+      if (['get', 'post', 'put', 'delete', 'patch', 'head', 'options'].includes(name)) {
+        return name.toUpperCase();
+      }
+      return verbFromChain(refById.get(ref.receiver_ref_id), depth + 1);
+    };
+
     // --- consumers: a client that names a path ---
     for (const ref of ctx.refs("r.str_args IS NOT NULL AND r.kind = 'call'")) {
       if (ref.from_symbol_id == null) continue;
@@ -215,13 +245,21 @@ export default {
           : /^patch/i.test(ref.name) ? 'PATCH'
           : ref.name === 'put' ? 'PUT'
           : ref.name === 'delete' ? 'DELETE'
-          : 'ANY';
+          : ref.name === 'uri' || ref.name === 'exchange'
+            ? (verbFromChain(refById.get(ref.receiver_ref_id)) ?? 'ANY')
+            : 'ANY';
       } else if (
         ['javascript', 'typescript', 'tsx'].includes(ref.lang) &&
         TS_CLIENT.has(ref.name) &&
         (ref.receiver == null ? ref.name === 'fetch' : TS_CLIENT_RECEIVERS.test(ref.receiver))
       ) {
-        method = ref.name === 'fetch' || ref.name === 'request' ? 'ANY' : ref.name.toUpperCase();
+        // `fetch(url)` with no options is a GET; the standard says so.
+        method =
+          ref.name === 'fetch'
+            ? 'GET'
+            : ref.name === 'request'
+              ? (verbFromChain(refById.get(ref.receiver_ref_id)) ?? 'ANY')
+              : ref.name.toUpperCase();
       }
       if (!method) continue;
       // A path is what this is about; anything else is some other string.
