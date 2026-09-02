@@ -1049,6 +1049,11 @@ export function resolveTypeScript(db, root) {
       }
       const inherited = externalAncestor(type);
       if (inherited) insertExternal(ref.id, inherited);
+      // A receiver typed `Promise`, `Error` or `Map` is the runtime's, whatever
+      // the index thinks it found. Calling a member of one is a call into the
+      // language, not a miss in this repository -- reporting 21 of those in
+      // prettier as unresolved blamed the repo for the standard library.
+      else if (JS_GLOBALS.has(type.name)) insertRuntime(ref.id, type.name);
       else if (!callablesByName.has(ref.name)) insertNotInProject(ref.id);
       else insertUnresolved(ref.id, `no-such-member-on:${type.name}`);
       continue;
