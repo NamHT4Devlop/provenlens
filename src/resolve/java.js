@@ -614,9 +614,23 @@ export function resolveJava(db) {
     if (raw === 'super') {
       const t = types.get(enclosing);
       const first = t?.supertypes?.[0];
-      if (!first) return null;
+      // Every class extends something, and Java writes it down only when it
+      // is not the default. `super.toString()` in an enum reaches
+      // java.lang.Enum; in a plain class, java.lang.Object. Returning null
+      // instead sent the call to the by-name fallback, where it became one
+      // more ambiguous guess about a method the JDK owns.
+      if (!first) {
+        const implicit =
+          t?.kind === 'enum'
+            ? 'java.lang.Enum'
+            : t?.kind === 'record'
+              ? 'java.lang.Record'
+              : 'java.lang.Object';
+        return types.has(implicit) ? implicit : { external: 'java.lang' };
+      }
       return (
-        resolveTypeName(first, t.file_id) ?? { external: externalOwner(first, t.file_id) ?? first }
+        resolveTypeName(first, t.file_id, enclosing) ??
+        { external: externalOwner(first, t.file_id) ?? first }
       );
     }
 
