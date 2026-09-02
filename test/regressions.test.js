@@ -1062,3 +1062,66 @@ describe('a default export is a name the module actually declares', () => {
     }
   });
 });
+
+describe('an intersection type says more than either half alone', () => {
+  test('a member on the right half is found, not blamed on the left', async () => {
+    // `let api: DirectusClient<unknown> & RestClient<unknown>`. The generic
+    // strip cut at the first `<` and took the rest of the type with it, so the
+    // receiver read as `DirectusClient` alone and 187 directus calls on
+    // `request` -- which lives on the other half -- were reported as missing
+    // from a type that never had it.
+    const project = await tempProject({
+      'src/client.ts': [
+        'export interface ClientBase { url: string; }',
+        'export interface RestClient { request(path: string): string; }',
+      ].join('\n'),
+      'src/use.ts': [
+        "import type { ClientBase, RestClient } from './client';",
+        'let api: ClientBase & RestClient;',
+        'export function go() {',
+        "  return api.request('/things');",
+        '}',
+      ].join('\n'),
+    });
+    try {
+      const [hit] = searchSymbols(project.db, 'request', { limit: 5 });
+      assert.ok(hit, 'the method exists');
+      const callers = callersOf(project.db, hit.id).map((c) => c.fqn);
+      assert.ok(
+        callers.some((f) => f.includes('go')),
+        `go() should call RestClient.request, saw ${JSON.stringify(callers)}`,
+      );
+    } finally {
+      project.cleanup();
+    }
+  });
+
+  test('a union is still refused rather than answered with its left half', async () => {
+    const project = await tempProject({
+      'src/two.ts': [
+        'export class Left { act() { return 1; } }',
+        'export class Right { act() { return 2; } }',
+      ].join('\n'),
+      'src/use.ts': [
+        "import { Left, Right } from './two';",
+        'let either: Left<string> | Right;',
+        'export function go() { return either.act(); }',
+      ].join('\n'),
+    });
+    try {
+      const [left] = searchSymbols(project.db, 'act', { limit: 5 });
+      // Neither side may be credited: the source does not say which it is.
+      const credited = searchSymbols(project.db, 'act', { limit: 5 }).filter(
+        (s) => callersOf(project.db, s.id).length > 0,
+      );
+      assert.equal(
+        credited.length,
+        0,
+        `a union names no single receiver, saw ${JSON.stringify(credited.map((c) => c.fqn))}`,
+      );
+      assert.ok(left, 'the fixture still indexes');
+    } finally {
+      project.cleanup();
+    }
+  });
+});

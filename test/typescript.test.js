@@ -32,7 +32,19 @@ describe('type normalisation', () => {
 
   test('refuses to guess at a union of two real types', () => {
     assert.equal(normalizeType('Donation | Invoice'), null);
-    assert.equal(normalizeType('Donation & Serializable'), null);
+    // The generic strip used to cut at the first `<`, taking the rest of the
+    // type with it -- so a union the check above should have refused was
+    // answered with its left operand instead.
+    assert.equal(normalizeType('Donation<Id> | Invoice'), null);
+  });
+
+  test('keeps an intersection, which says more than either half alone', () => {
+    // A union is an ambiguity; an intersection is not. `A & B` says the value
+    // has every member of both, so the resolver is given both to look through.
+    assert.equal(normalizeType('Donation & Serializable'), 'Donation&Serializable');
+    assert.equal(normalizeType('DirectusClient<unknown> & RestClient<unknown>'), 'DirectusClient&RestClient');
+    // Anything that is not a plain name on either side is still a refusal.
+    assert.equal(normalizeType('{ a: number } & B'), null);
   });
 
   test('reads an optional as the type it is optional of', () => {

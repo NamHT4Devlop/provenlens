@@ -345,7 +345,32 @@ export function resolveTypeScript(db, root) {
    */
   function resolveTypeName(name, fileId, module) {
     if (!name) return null;
+    // A chain hands this an already-resolved type as often as a name: the
+    // regex below coerced one to a string harmlessly, but nothing else here
+    // can, so say plainly which of the two arrived.
+    if (typeof name !== 'string') return name.fqn ? name : null;
     if (/\[\]$/.test(name)) return undefined;
+
+    // `DirectusClient<unknown> & RestClient<unknown>`. An intersection is not
+    // an ambiguity: TypeScript says the value has every one of these, which is
+    // more than any single name states. Modelled as a type inheriting from all
+    // of them, so the member walk already in place looks through each in turn
+    // -- and 187 directus calls stop being blamed on the half that lacks them.
+    if (name.includes('&')) {
+      const parts = name.split('&').filter(Boolean);
+      if (!parts.some((p) => resolveTypeName(p, fileId, module))) return null;
+      return {
+        fqn: `&(${parts.join('&')})@${module ?? ''}`,
+        name,
+        kind: 'interface',
+        symbol_id: null,
+        file_id: fileId,
+        module,
+        isExternal: 0,
+        extOwner: null,
+        supertypes: parts,
+      };
+    }
     // Already a fully qualified name -- the inference pass stores those, having
     // resolved them where they were written.
     if (types.has(name)) return types.get(name);

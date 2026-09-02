@@ -365,7 +365,7 @@ specifiers that have no types, four of which are path aliases), and the miss sha
 either: **3939 of 4029 misses, 97.8%, are `complex-receiver-chain`** — a chained expression whose
 receiver the resolver cannot type, which no amount of installing fixes.
 
-nest, typeorm and axios have their `node_modules` present and read **90.9%, 88.2% and 67.6%**. So
+nest, typeorm and axios have their `node_modules` present and read **90.9%, 88.2% and 76.1%**. So
 a dependency tree is not what separates these repositories from 90%.
 
 | Repo | Stack | In-repo resolution | Floor if every assumption were wrong |
@@ -374,45 +374,45 @@ a dependency tree is not what separates these repositories from 90%.
 | mall | Spring Boot + MyBatis, 630 files | **99.4%** | **99.3%** |
 | mybatis spring-boot-starter | MyBatis, 154 files | **98.5%** | **98.5%** |
 | TheAlgorithms/Java | plain Java, 1588 files | **98.0%** | **97.5%** |
-| nx | TS monorepo, 5305 files | **95.5%** | 89.4% |
+| nx | TS monorepo, 5305 files | **95.6%** | 89.6% |
 | camel-spring-boot-examples | ~50 Camel examples, 325 files | **95.2%** | **94.7%** |
 | mybatis jpetstore | MyBatis + Flyway, 43 files | **95.1%** | **95.1%** |
 | devise | Rails engine, Ruby | **94.4%** | 85.0% |
-| google/guava | Java, Maven | **94.4%** | **93.7%** |
+| google/guava | Java, Maven | **94.5%** | **93.8%** |
 | vuejs/core | TS pnpm workspace, 527 files | **93.9%** | 86.8% |
 | spring-framework | Gradle multi-module, 9901 files | **93.6%** | **92.0%** |
 | apache/dubbo | Maven multi-module, 4190 files | **93.1%** | **91.6%** |
 | date-fns | JS, monorepo | **92.9%** | 83.5% |
-| jenkins | Java, Maven | **92.6%** | **90.5%** |
-| apache/kafka | Gradle multi-module, 6196 files | **92.4%** | **91.1%** |
+| jenkins | Java, Maven | **92.7%** | **90.6%** |
+| apache/kafka | Gradle multi-module, 6196 files | **92.4%** | **91.2%** |
 | express | plain JS, 141 files | **91.4%** | **91.1%** |
-| java-design-patterns | Java, 1991 files | **91.5%** | 89.7% |
-| immich | NestJS + Svelte monorepo | **91.6%** | 85.6% |
+| java-design-patterns | Java, 1991 files | **91.5%** | 89.8% |
+| immich | NestJS + Svelte monorepo | **91.6%** | 85.5% |
 | nest | TS, 1904 files | **91.3%** | 87.3% |
 | puma | Ruby | **89.1%** | 77.9% |
 | micronaut-core | Java, Gradle | **88.7%** | 86.2% |
 | sinatra | Ruby, 147 files | **88.5%** | 81.4% |
 | typeorm | TS, 3575 files | **88.7%** | 83.3% |
-| spring-cloud-aws | Java, 816 files | **88.4%** | 87.2% |
+| spring-cloud-aws | Java, 816 files | **88.5%** | 87.2% |
 | rubygems.org | Rails, 1392 files | **88.2%** | 80.4% |
-| mastodon | Rails + TS, 4199 files | **87.6%** | 80.2% |
-| halo | Java + TS, 2228 files | **87.6%** | 85.4% |
-| prettier | JS + TS, 5762 files | **88.1%** | 68.5% |
-| storybook | TS monorepo | **87.4%** | 74.9% |
-| medusa | TS monorepo | **87.3%** | 74.2% |
+| mastodon | Rails + TS, 4199 files | **87.6%** | 80.1% |
+| halo | Java + TS, 2228 files | **87.6%** | 85.5% |
+| prettier | JS + TS, 5762 files | **89.3%** | 70.7% |
+| storybook | TS monorepo | **87.5%** | 75.0% |
+| medusa | TS monorepo | **87.5%** | 74.4% |
 | fastlane | Ruby, 1340 files | **86.7%** | 77.4% |
 | sidekiq | Ruby | **85.9%** | 79.7% |
 | quarkus | Java, Maven multi-module | **85.2%** | 82.2% |
 | jekyll | Ruby, 171 files | **84.5%** | 75.0% |
 | solidus | Rails, 2329 files | **83.5%** | 74.8% |
-| svelte | JS + TS monorepo | **87.9%** | 75.1% |
+| svelte | JS + TS monorepo | **88.0%** | 75.2% |
 | redmine | Rails app | **81.4%** | 72.7% |
-| astro | TS monorepo | **80.9%** | 68.8% |
+| astro | TS monorepo | **81.4%** | 69.5% |
 | trpc | TS monorepo | **80.4%** | 74.3% |
-| discourse | Rails, 14358 files | **78.7%** | 72.7% |
+| discourse | Rails, 14358 files | **78.7%** | 72.8% |
+| axios | JS, 242 files | **76.1%** | 69.1% |
 | zod | TS pnpm workspace | **75.7%** | 62.1% |
 | rails | Rails framework | **74.8%** | 62.6% |
-| axios | JS, 242 files | **67.6%** | 56.9% |
 
 **Twelve of the forty-three clear 90% on both columns**, and which twelve is the most useful thing
 the table says. Several rows moved *down* on the way there and were kept: an import naming a library
@@ -428,13 +428,15 @@ declares the receiver's type**:
 - Types declared by a **dependency** — Reactor in halo, the Spring test harness in
   spring-cloud-aws, TypeORM's own generics. These declarations *are* now read, and reading them is
   most of what these rows are made of: halo went from 77.0% to 87.6%, typeorm from 71.8% to 88.2%,
-  immich from 68.5% to 91.4%, trpc from 60.1% to 80.1%.
+  immich from 68.5% to 91.6%, trpc from 60.1% to 80.4%.
   What is left is the part reading cannot fix: a signature like `Flux<T>.map(Function<T,R>)`
   answers with type *variables*, and substituting them properly is a different job from reading
   them.
 - Types declared **nowhere** — Ruby, and JavaScript callbacks. `axios` is the clearest case in the
   table: its tests are written as `startHTTPServer((req, res) => res.end(...))`, and nothing in
-  JavaScript ever says what `res` is. 67.6% is the honest reading of that, not a defect.
+  JavaScript ever says what `res` is. 76.1% is the honest reading of that, not a defect. It read
+  67.6% until `export default` was read as an export rather than guessed at by name, which is worth
+  saying plainly: two thirds of what looked like the language's fault was the reader's.
 
 **Two numbers, and the second is the one that keeps the first honest.** The floor assumes every
 judgement the resolver made without a declaration behind it was wrong — both directions. Calls
@@ -445,8 +447,8 @@ a call flatters the headline exactly as much as one that excuses it, and countin
 made the self-audit a half-audit. `bench` prints the guessed links so the gap is inspectable.
 
 Read the two columns together. spring-petclinic is 99.7% on one guessed link in the whole repo.
-axios is 67.6% on a floor of 56.9% — plain JS annotates nothing, so a tenth of what it *does* link
-rests on a convention rather than a declaration. mastodon and rubygems.org sit near 88% with floors
+axios is 76.1% on a floor of 69.1% — plain JS annotates nothing, so a fifteenth of what it *does*
+link rests on a convention rather than a declaration. mastodon and rubygems.org sit near 88% with floors
 near 80%, which is what Rails looks like when half the receivers are named after their model and
 nothing else says so.
 
@@ -485,7 +487,7 @@ What actually blocks the remaining twenty-four is not fixable by engineering:
   54,459 of them in rails alone, meaning a receiver that cannot be typed and several methods
   sharing the name. Choosing between them is guessing, and a guess would raise the headline while
   lowering the floor. The language never wrote the declaration.
-- **A callback parameter in JavaScript has no type anywhere.** axios ends the table at 67.6%
+- **A callback parameter in JavaScript has no type anywhere.** axios reads 76.1% rather than higher
   because its tests are written `startHTTPServer((req, res) => res.end(...))`.
 - **Type-level computation is not a call graph.** zod and trpc compute their types with conditional
   and mapped types; `z.string().optional()` has a type that exists only in the checker.
@@ -631,6 +633,19 @@ java.lang is a closed, stable API; asking about all of it costs one javap batch.
 84.4% → 84.9% (floor 83.5% → 84.0%), the mistaken `.System` bucket 368 → 0, and across all 43
 repositories nothing else moved except quarkus, whose headline fell 0.1 while its floor rose 0.1 —
 guesses turning into proofs, which is the trade this project is built to take.
+
+**A union of two real types, refused rather than answered.** `render: StoryRender<TRenderer> |
+CsfDocsRender<TRenderer> | MdxDocsRender<TRenderer>` is storybook saying the value is one of three,
+and `render?.teardown?.()` may be reaching any of them. The generic strip used to cut at the first
+`<` and take the rest of the type with it, so the union was silently answered with its left
+operand: a link that looks proven and was chosen by position. Stripping the brackets in balance
+instead lets the refusal already written here actually fire. It costs storybook 0.1 and immich's
+floor 0.1, and both are worth paying.
+
+An intersection is the opposite case and is now resolved rather than refused. `DirectusClient<
+unknown> & RestClient<unknown>` says the value has every member of both, which is *more* than
+either name states alone, so it is modelled as a type inheriting from all of them and the member
+walk looks through each in turn: directus 77.7% → 78.3%, floor 68.0% → 68.5%.
 
 **A receiver nothing declares at all.** A method parameter in a dynamically typed language names no
 type anywhere, so `def deliver(recipient)` gives the resolver the name and nothing else. That is why
@@ -947,7 +962,7 @@ attributed to the right library. If a resolver later drops an internal call, a t
   and gives up rather than guess elsewhere.
 - **A callback parameter in JavaScript** is the sharpest form of that. `startHTTPServer((req, res)
   => res.end(...))` says nothing about `res` anywhere, and neither does the helper it is passed to.
-  Reported as a miss rather than guessed, which is most of why axios reads 67.6%.
+  Reported as a miss rather than guessed, which is most of what axios still misses at 76.1%.
 - **Node object-modules** — `var app = module.exports = {}` then `app.set = function(){}` — are not
   modelled, so their members look external. Modelling them is correct in principle: express really
   does define `res.send`. It is left out because without a way to type the `req`/`res` parameters

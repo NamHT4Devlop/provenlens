@@ -44,18 +44,26 @@ function firstOfType(node, type) {
  * Array, not a Donation, and dropping the brackets makes `store.push(...)`
  * resolve to a member of the element type, which is wrong.
  */
+/** Types with no members at all, so no call can be reaching one of them. */
+const EMPTY_TYPES = new Set(['undefined', 'null', 'void', 'never']);
+
 /**
  * `Table | undefined` -> `Table`. An optional is still that type wherever a
  * member is read from it, which is precisely why TypeScript makes the author
  * write `table!` or guard it first before doing so. A union of two *real*
  * types still says too little to pick one, and returns null.
+ *
+ * `void` and `never` narrow for the same reason `undefined` does, and nothing
+ * weaker: neither has a single member, so a call written on the union can only
+ * be reaching the other side. `Promise<void> | void` is how astro spells a
+ * hook that may or may not be async, and it is the commonest such union there.
  */
 function narrowNullable(raw) {
   if (!raw.includes('|')) return raw;
   const kept = raw
     .split('|')
     .map((part) => part.trim())
-    .filter((part) => part && part !== 'undefined' && part !== 'null');
+    .filter((part) => part && !EMPTY_TYPES.has(part));
   return kept.length === 1 ? kept[0] : null;
 }
 
@@ -67,14 +75,48 @@ export function normalizeType(raw) {
   const arrayGeneric = /^(?:Array|ReadonlyArray)\s*<\s*([\w$.]+)\s*>$/.exec(t);
   if (arrayGeneric) t = `${arrayGeneric[1]}[]`;
   const isArray = /\[\s*\]\s*$/.test(t);
-  const lt = t.indexOf('<');
-  if (lt !== -1) t = t.slice(0, lt);
+  t = stripGenerics(t);
   t = t.replace(/\[\s*\]/g, '').trim();
   t = narrowNullable(t) ?? t;
-  // A union of real types, or an intersection, tells us too little to pick one.
-  if (/[|&]/.test(t)) return null;
+  // A union of real types tells us too little to pick one. An intersection
+  // tells us a great deal -- the value has every one of these -- so it is kept
+  // and taken apart at resolve time.
+  if (/\|/.test(t)) return null;
+  if (/&/.test(t)) {
+    const parts = t.split('&').map((p) => p.trim()).filter(Boolean);
+    return parts.length > 1 && parts.every((p) => /^[\w$.]+$/.test(p)) ? parts.join('&') : null;
+  }
   if (!t) return null;
   return isArray ? `${t}[]` : t;
+}
+
+/**
+ * Removes every `<...>` group, matching brackets rather than cutting at the
+ * first one.
+ *
+ * Cutting truncated the rest of the type with it, and the rest is where the
+ * operator lives: `Foo<X> | Bar` became `Foo`, and a union that should have
+ * been refused was answered with its left operand instead. `DirectusClient<
+ * unknown> & RestClient<unknown>` became `DirectusClient`, and 187 calls on
+ * members that live on the other half were reported as missing from it.
+ */
+function stripGenerics(raw) {
+  let out = '';
+  let depth = 0;
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i];
+    // The `>` of an arrow closes nothing: `Array<() => void>` is one generic
+    // argument, and counting its arrow as a bracket ended the group early and
+    // let `void` leak out beside the name.
+    if (c === '>' && raw[i - 1] === '=') {
+      if (!depth) out += c;
+      continue;
+    }
+    if (c === '<') depth++;
+    else if (c === '>') depth = Math.max(0, depth - 1);
+    else if (!depth) out += c;
+  }
+  return out.trim();
 }
 
 /**
