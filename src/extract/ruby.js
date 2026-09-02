@@ -349,6 +349,25 @@ export function extractRuby(tree, src, ctx = {}) {
   }
 
   function walk(node, nest, scopeId, inClassBody, classScopeId) {
+    // `super` with no arguments and no parentheses is a call -- to the method
+    // of the same name, one step up the ancestor chain. tree-sitter gives it
+    // its own node type rather than a `call`, so it was invisible: 467 of
+    // them in discourse, every one a link the graph simply did not have.
+    if (node.type === 'super' && scopeId != null) {
+      const owner = symbols[scopeId];
+      if (owner && ['method', 'class_method'].includes(owner.kind)) {
+        refs.push({
+          fromTmpId: scopeId,
+          name: owner.name,
+          receiver: 'super',
+          arity: null,
+          line: node.startPosition.row + 1,
+          kind: 'call',
+        });
+      }
+      return;
+    }
+
     if (node.type === 'class' || node.type === 'module') {
       const nameNode = childByField(node, 'name');
       if (!nameNode) return;

@@ -232,6 +232,25 @@ export function resolveRuby(db) {
       }
     }
 
+    // `super` means the method of this name one step further up. Answering
+    // with the enclosing class would find the method we are standing in and
+    // link it to itself.
+    if (raw === 'super') {
+      for (const t of typeChain(enclosing).slice(1)) {
+        if ((membersByContainer.get(t.fqn) ?? []).some((m) => m.name === ref.name)) {
+          return { type: t.fqn, via: 'super' };
+        }
+      }
+      // No ancestor in this repository declares it, so `super` leaves the
+      // repository -- Ruby always has one more ancestor, and eventually
+      // Object. Named outright rather than returned as "unknown", because
+      // unknown falls through to a by-name search that can find the same
+      // method name on an unrelated class and report a miss against it.
+      // 24 of devise's 31 super calls landed there.
+      const outside = enclosing ? externalAncestor(enclosing) : null;
+      return { external: outside ?? 'ancestor' };
+    }
+
     if (!raw || raw === 'self') {
       const isSingleton = JSON.parse(fromSymbol?.modifiers || '[]').includes('singleton');
       return { type: enclosing, via: 'self-chain', classMethod: isSingleton && !!raw };
