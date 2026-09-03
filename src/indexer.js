@@ -141,13 +141,24 @@ export async function indexProject(db, root, { full = false, onProgress } = {}) 
 
       const parser = await getParser(lang);
       let result;
+      let tree;
       try {
-        result = extractor(parser.parse(source), source, { path: rel, lang });
+        tree = parser.parse(source);
+        result = extractor(tree, source, { path: rel, lang });
       } catch {
         // One file the grammar cannot take is one file missing from the graph,
         // which is a far better outcome than no graph.
         stats.unparsable++;
         continue;
+      } finally {
+        // The tree lives in tree-sitter's WebAssembly heap, which the garbage
+        // collector cannot see and never reclaims. Left undeleted it reached
+        // 1.1 GB over 6,000 files and aborted the runtime outright somewhere
+        // in JetBrainsRuntime's 53,577 -- not an exception any file could
+        // survive, but a dead WASM module that took the whole run with it.
+        // Every record the extractor returns is plain data read out of the
+        // tree, so the tree is finished with the moment it returns.
+        tree?.delete();
       }
 
       const fileId = Number(

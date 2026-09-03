@@ -1170,3 +1170,43 @@ describe('a call the language provides is not a miss in this repository', () => 
     }
   });
 });
+
+describe('a parse tree lives in WebAssembly, which the collector cannot reach', () => {
+  test('every tree the indexer parses is freed before the next file', async () => {
+    // tree-sitter allocates each tree inside its own WASM heap. Nothing in JS
+    // holds a reference the garbage collector could act on, so a tree left
+    // undeleted is leaked for the life of the process: 6,000 java files reached
+    // 1.1 GB against 151 MB once freed, and somewhere inside JetBrainsRuntime's
+    // 53,577 the heap ran out and aborted the runtime -- a dead WASM module
+    // that took the whole run with it, reported far from the file that did it.
+    const { getParser } = await import('../src/lang.js');
+    const parser = await getParser('java');
+    const seen = [];
+    const real = parser.parse.bind(parser);
+    parser.parse = (src) => {
+      const tree = real(src);
+      seen.push(tree);
+      return tree;
+    };
+    try {
+      const project = await tempProject({
+        'a/A.java': 'package a;\npublic class A { void f() { new B().g(); } }\n',
+        'a/B.java': 'package a;\npublic class B { void g() {} }\n',
+        'a/C.java': 'package a;\npublic class C { void h() { new A().f(); } }\n',
+      });
+      try {
+        assert.equal(seen.length, 3, 'the fixture should have been parsed');
+        for (const tree of seen) {
+          assert.throws(
+            () => tree.rootNode.type,
+            'a tree still readable after indexing is a tree still holding WASM memory',
+          );
+        }
+      } finally {
+        project.cleanup();
+      }
+    } finally {
+      parser.parse = real;
+    }
+  });
+});
