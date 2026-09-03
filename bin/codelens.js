@@ -1,4 +1,12 @@
 #!/usr/bin/env -S node --no-warnings
+import { ensureHeadroom } from '../src/heap.js';
+
+// V8's own cap is what a large repository dies against, and only a fresh
+// process can raise it. The modules below are hoisted and have already been
+// evaluated by the time this runs -- that costs a re-import in the child and
+// is worth it, because the alternative is indexing against a 4 GB ceiling.
+ensureHeadroom();
+
 import { Command } from 'commander';
 import { resolve, join } from 'node:path';
 import { existsSync, rmSync } from 'node:fs';
