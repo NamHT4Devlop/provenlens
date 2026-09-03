@@ -991,7 +991,7 @@ it automatically.
 yarn test
 ```
 
-198 tests across five fixture suites plus regression, security and multi-repo coverage:
+217 tests across five fixture suites plus regression, security and multi-repo coverage:
 
 | Fixture | Simulates | The chain grep cannot follow |
 |---|---|---|
@@ -1024,6 +1024,12 @@ attributed to the right library. If a resolver later drops an internal call, a t
   does define `res.send`. It is left out because without a way to type the `req`/`res` parameters
   that receive them it turns ~900 express calls from proven-library into unresolvable, taking the
   repo from 91% to 29%. Half of that change is worse than none.
+- **Resolution is an in-memory algorithm, and very large repositories cost real memory.** A chained
+  call is answered by looking up the ref its receiver came from, so every ref stays resident.
+  google-cloud-ruby — 31,023 Ruby files, 4.0M call sites — needs 7.3 GB, past V8's ~4 GB default
+  cap. `init`, `index` and `sync` now re-exec with half of physical memory (clamped to 4–16 GB), so
+  the ceiling is the machine rather than V8; on a small machine a repository that size will still
+  not fit. Two of 5,000 repositories reached it.
 - **The Ruby inflector** is simple and does not handle irregulars (`people`/`person`).
 - **Annotation-style MyBatis** (`@Select` on the method) needs no binding — the SQL is already in
   the method.
