@@ -337,7 +337,63 @@ itself, so they stay correct for any library you add without an update here.
 
 And proof **always runs before** assumption: if it can be proven, it is never guessed.
 
-### Measured on real repositories
+### Measured across five thousand repositories
+
+The forty-three below were chosen one at a time and read closely. That is how the bugs were found,
+and it is also how the table came to be unrepresentative: nearly every one of them is a large
+framework, and large is the hard case.
+
+So the same measurement was run over **5,000 repositories cloned from GitHub** — 1,250 per language,
+sampled across star bands from 200 upward, cloned shallow, indexed, and deleted. 4,981 completed:
+**136.5 million call sites across 2.6 million files**. Discarding the 499 too small to say anything
+(under 200 call sites — a two-file package reading 100% is not evidence), 4,482 remain.
+
+| Language | Repos | Median | Mean | Weighted by call sites | Clear 90% |
+|---|---:|---:|---:|---:|---:|
+| java | 1141 | **95.9%** | 94.1% | 89.9% | **83%** |
+| ruby | 1149 | **94.6%** | 92.7% | 83.0% | **71%** |
+| typescript | 1143 | **92.3%** | 88.8% | 84.5% | 59% |
+| javascript | 1049 | **88.7%** | 82.1% | 72.0% | 48% |
+| **all** | **4482** | **94.0%** | 89.6% | 83.9% | **66%** |
+
+**The median repository reads 94.0%, and two in three clear 90%.** The weighted column is the honest
+counterweight: bigger repositories are harder, and weighting by call sites pulls the same population
+down to 83.9%.
+
+Size is the variable, and it is monotonic:
+
+| Call sites | Repos | Median | Clear 90% |
+|---|---:|---:|---:|
+| 200 – 1,000 | 1024 | **98.9%** | 83% |
+| 1,000 – 5,000 | 1413 | 96.0% | 74% |
+| 5,000 – 20,000 | 1047 | 91.9% | 59% |
+| 20,000 – 100,000 | 691 | 88.7% | 44% |
+| 100,000+ | 307 | **86.7%** | 39% |
+
+Only **6.8%** of the 5,000 sit in that last band — and the forty-three below are drawn almost
+entirely from it. The table is not a typical sample. It is close to a worst case, which is what makes
+it useful for finding bugs and misleading as a summary. Both are now stated.
+
+This prediction was written down before the run and was wrong in both halves: that the average would
+*fall*, and that Ruby would be what pulled it down. Ruby came second at a 94.6% median. The reasoning
+behind the prediction — that Ruby declares no receiver types — is still true, and still explains
+Ruby's weighted 83.0%. It just does not describe the median Ruby repository, which is small enough
+that most of its receivers are local and named where they are made.
+
+The scale paid for itself twice, on defects no curated set could reach:
+
+- **A parse tree leaked into WebAssembly.** 1,121 MB over 6,000 files against 151 MB freed, and an
+  Emscripten abort somewhere inside JetBrainsRuntime's 53,577 — surfacing as `table index is out of
+  bounds` at the *next* parser the run asked for, because the `try` around the parse swallowed it.
+  Found on the fortieth repository of the pilot batch.
+- **V8's 4 GB heap cap.** The resolver is deliberately in-memory, and google-cloud-ruby's 31,023 Ruby
+  files need 7.3 GB. Two repositories in 5,000 hit it, and they were only distinguishable from the
+  eight that merely ran long because a signal exit is 128+n rather than 0.
+
+Eight repositories exceeded a ten-minute budget and one clone failed; those are harness limits, not
+results. Eight more were skipped above 1.5 GB, all of them asset monorepos.
+
+### The forty-three read closely
 
 Forty-three repositories, none of them chosen for its score. They were added in four rounds, each
 named in advance, and each round pulled the median down: the first eleven sat at 91.4%, and all
