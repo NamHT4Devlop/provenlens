@@ -64,11 +64,39 @@ jobs:
           node-version: 24
       - name: Install from the lockfile, refusing to update it
         run: yarn install --frozen-lockfile
-      # This can turn red without anybody touching the code, when a new advisory
-      # lands against a pin. That is the point, and it is why it is its own job:
-      # a red mark here is not the PR author's mistake to fix.
+      # A finding here can turn red without anybody touching the code, when a new
+      # advisory lands against a pin. That is the point, and it is why this is
+      # its own job: a red mark is not the PR author's mistake to fix.
+      #
+      # A registry that times out is not a finding, though, and failing on it
+      # tells a contributor they broke something they did not touch. The first
+      # run of this workflow did exactly that -- ESOCKETTIMEDOUT reaching
+      # registry.yarnpkg.com -- so the two are told apart rather than sharing an
+      # exit code.
       - name: yarn audit
-        run: yarn audit
+        run: |
+          for attempt in 1 2 3; do
+            if out=$(yarn audit --json 2>&1); then
+              echo "no known vulnerabilities"; exit 0
+            fi
+            if printf '%s' "$out" | grep -qE 'ESOCKETTIMEDOUT|ETIMEDOUT|ENOTFOUND|ECONNRESET|EAI_AGAIN|503|502'; then
+              echo "attempt $attempt: the registry did not answer, retrying"
+              sleep $((attempt * 10)); continue
+            fi
+            echo "$out" | grep -E '"type":"auditAdvisory"' \
+              | node -e '
+                  let raw = ""; process.stdin.on("data", (d) => (raw += d)).on("end", () => {
+                    for (const line of raw.split("\n").filter(Boolean)) {
+                      try {
+                        const a = JSON.parse(line).data.advisory;
+                        console.log(`::error::${a.severity} in ${a.module_name}: ${a.title} (${a.url})`);
+                      } catch {}
+                    }
+                  });
+                '
+            echo "::error::yarn audit reported vulnerabilities"; exit 1
+          done
+          echo "::warning::the advisory registry was unreachable after three attempts; nothing was checked"
 
   no-network-egress:
     name: Nothing in the source can reach the network

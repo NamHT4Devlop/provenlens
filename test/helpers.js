@@ -8,11 +8,31 @@ import { searchSymbols } from '../src/query.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
+/**
+ * One database per call, not one per fixture.
+ *
+ * `node --test` runs test files in parallel processes, and three of them build
+ * the `java` fixture. Sharing a path meant one process deleting a database
+ * another had open, mid-run: SQLITE_IOERR_FSTAT, a `disk I/O error` with no
+ * hint of a second process in it. Linux happened to survive the race and macOS
+ * did not, which is how a runner added for coverage found a real defect on its
+ * first run.
+ */
+let dbSeq = 0;
+const created = new Set();
+process.on('exit', () => {
+  for (const path of created) {
+    for (const suffix of ['', '-wal', '-shm']) rmSync(`${path}${suffix}`, { force: true });
+  }
+});
+
 /** Indexes a fixture into a throwaway DB and returns handles for assertions. */
 export async function buildIndex(fixture) {
   const root = join(HERE, '..', '__fixtures__', fixture);
-  const dbPath = join(HERE, '..', '__fixtures__', `.test-${fixture}.db`);
+  const slug = fixture.replace(/[^a-zA-Z0-9]+/g, '_') || 'root';
+  const dbPath = join(HERE, '..', '__fixtures__', `.test-${slug}-${process.pid}-${dbSeq++}.db`);
   for (const suffix of ['', '-wal', '-shm']) rmSync(`${dbPath}${suffix}`, { force: true });
+  created.add(dbPath);
 
   const db = openDb(dbPath, { create: true });
   const stats = await indexProject(db, root, { full: true });
