@@ -1,0 +1,48 @@
+# Every check in this repository answers one question, and the job name is that
+# question. What you read in the PR checklist is what failed.
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Read-only: this workflow verifies, it never writes to the repository.
+permissions:
+  contents: read
+
+# A new push supersedes the run it interrupted. Nobody reads the old one.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  suite:
+    name: Test suite · Node ${{ matrix.node }} · ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 22 is the floor the package declares: node:sqlite arrives there.
+          - { os: ubuntu-latest, node: 22, label: Linux }
+          # 24 is what development runs on.
+          - { os: ubuntu-latest, node: 24, label: Linux }
+          # macOS is where this tool is written and used, and it is the only
+          # runner with a JDK layout that differs -- the javap tests skip
+          # themselves when there is no JDK, so a runner without one still
+          # tells the truth about everything else.
+          - { os: macos-latest, node: 24, label: macOS }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      # --frozen-lockfile: the four pins in yarn.lock are the supply-chain
+      # boundary. A resolution that differs from the lockfile is a failure, not
+      # something to quietly accept.
+      - name: Install from the lockfile, refusing to update it
+        run: yarn install --frozen-lockfile
+      - name: Run the test suite
+        run: yarn test

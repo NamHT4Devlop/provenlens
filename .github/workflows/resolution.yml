@@ -1,0 +1,69 @@
+# The test suite proves the resolver behaves on fixtures. This proves it still
+# works on a real repository -- this one -- and states the number out loud.
+name: Resolution
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: resolution-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # 93.6% at the time of writing. The gap is room for honest change, not for
+  # rot: a change that costs three points is one a reviewer should see argued.
+  FLOOR: 90.0
+
+jobs:
+  self-index:
+    name: codelens still indexes itself above 90%
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install from the lockfile, refusing to update it
+        run: yarn install --frozen-lockfile
+
+      # A clean checkout must be indexable. This repository deliberately carries
+      # the .gitignore negation that once crashed indexing, so building the
+      # index here is itself a regression test.
+      - name: Build the index on a clean checkout
+        run: node bin/codelens.js init .
+
+      - name: Read the resolution back and hold it to the floor
+        run: |
+          node bin/codelens.js status | tee status.txt
+          got=$(sed -n 's/^resolution: *\([0-9.]*\)%.*/\1/p' status.txt | head -1)
+          if [ -z "$got" ]; then
+            echo "::error::status printed no resolution line -- the index did not build"
+            exit 1
+          fi
+          echo "resolution ${got}%, floor ${FLOOR}%"
+          awk -v got="$got" -v floor="$FLOOR" 'BEGIN {
+            if (got + 0 < floor + 0) {
+              printf "::error::resolution fell to %s%%, below the %s%% floor\n", got, floor
+              exit 1
+            }
+            printf "::notice::resolution %s%%, floor %s%%\n", got, floor
+          }'
+
+      # Every command a reader of the README might run, on a real index. A
+      # command that throws is a bug even when no test covers it.
+      - name: Every command runs against that index
+        run: |
+          for cmd in status doctor dead cycles hotspots routes export; do
+            echo "--- codelens $cmd"
+            node bin/codelens.js "$cmd" > /dev/null || { echo "::error::codelens $cmd failed"; exit 1; }
+          done
+          node bin/codelens.js query indexProject > /dev/null
+          node bin/codelens.js explore indexProject > /dev/null
+          node bin/codelens.js callers indexProject > /dev/null
+          node bin/codelens.js impact indexProject > /dev/null

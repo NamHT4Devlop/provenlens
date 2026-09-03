@@ -3,6 +3,13 @@ node_modules/
 !__fixtures__/**/node_modules/
 !__fixtures__/**/node_modules/**
 .codelens/
+# Written beside the code this tool reads, and ignored globally on the author's
+# machine -- which is why they have to be named here too, or the first person
+# to clone this repository is the one who commits them.
+namht-sessions/
+knowledge-base/
+.env
+.env.*
 __fixtures__/.test-*.db*
 __fixtures__/*/.codelens/
 *.log

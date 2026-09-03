@@ -1,0 +1,116 @@
+# This tool reads whole codebases and runs entirely offline. Both of those are
+# promises, and these jobs are what keeps them checkable by someone who has not
+# read the source.
+name: Security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # A lockfile does not change, but the advisories against it do. Monday 06:00 UTC.
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  codeql:
+    name: CodeQL · JavaScript
+    runs-on: ubuntu-latest
+    # CodeQL is free on public repositories; on a private one without Advanced
+    # Security it cannot upload and would fail for a reason no PR author can fix.
+    if: github.event.repository.private == false
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+          queries: security-and-quality
+      - uses: github/codeql-action/analyze@v3
+        with:
+          category: /language:javascript-typescript
+
+  dependencies-added:
+    name: Dependencies this PR adds
+    runs-on: ubuntu-latest
+    # Only a pull request adds anything; and the dependency graph this reads is
+    # a public-repository feature.
+    if: github.event_name == 'pull_request' && github.event.repository.private == false
+    steps:
+      - uses: actions/checkout@v4
+      # Four runtime dependencies and no dev dependencies is a deliberate
+      # position, not an accident. A PR that adds a fifth should have to say so.
+      - uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: low
+          comment-summary-in-pr: on-failure
+
+  known-vulnerabilities:
+    name: Known vulnerabilities in the lockfile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install from the lockfile, refusing to update it
+        run: yarn install --frozen-lockfile
+      # This can turn red without anybody touching the code, when a new advisory
+      # lands against a pin. That is the point, and it is why it is its own job:
+      # a red mark here is not the PR author's mistake to fix.
+      - name: yarn audit
+        run: yarn audit
+
+  no-network-egress:
+    name: Nothing in the source can reach the network
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The README promises "no API calls, no telemetry, no network egress of
+      # any kind". A promise nobody checks decays into a slogan, so these are
+      # the four things that would have to become false for it to break.
+      - name: No outbound client is imported
+        run: |
+          hits=$(grep -rnE "\b(import|require)\b.*['\"](node:)?(https|net|dgram|tls|http2)['\"]|['\"](axios|node-fetch|undici|got|superagent|phin)['\"]" src bin || true)
+          if [ -n "$hits" ]; then
+            echo "::error::an outbound network client was imported"; echo "$hits"; exit 1
+          fi
+      - name: node:http appears only in the local server
+        run: |
+          files=$(grep -rlE "['\"]node:http['\"]" src bin || true)
+          if [ "$files" != "src/server.js" ]; then
+            echo "::error::node:http is for the localhost server alone, found in: ${files:-nothing}"
+            exit 1
+          fi
+      - name: That server listens on loopback and nowhere else
+        run: |
+          grep -q "server.listen(port, '127.0.0.1'" src/server.js \
+            || { echo "::error::the server no longer binds 127.0.0.1 explicitly"; exit 1; }
+          if grep -rn "0\.0\.0\.0" src bin; then
+            echo "::error::something binds every interface"; exit 1
+          fi
+      # The grammars are WASM files on disk and node:sqlite ships inside Node.
+      # Four dependencies, none of them a network client, and no build step.
+      - name: Still four dependencies and no build step
+        run: |
+          node -e '
+            const p = require("./package.json");
+            const deps = Object.keys(p.dependencies ?? {});
+            const dev = Object.keys(p.devDependencies ?? {});
+            if (dev.length) { console.error("::error::devDependencies appeared: " + dev); process.exit(1); }
+            if (deps.length > 4) { console.error("::error::dependencies grew to " + deps.length + ": " + deps); process.exit(1); }
+            if (p.scripts?.postinstall || p.scripts?.prepare) {
+              console.error("::error::an install hook appeared; this package has no build step");
+              process.exit(1);
+            }
+            console.log("dependencies: " + deps.join(", "));
+          '

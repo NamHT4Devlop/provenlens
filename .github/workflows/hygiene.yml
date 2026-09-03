@@ -1,0 +1,66 @@
+# This tool writes an index, a session log and a knowledge base beside the code
+# it reads. None of that belongs in anyone's repository, least of all its own.
+name: Repository hygiene
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hygiene-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  no-generated-files:
+    name: No index, session or vendor directory is committed
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check what is tracked
+        run: |
+          # Kept as one list so the message can name what it found. These are
+          # ignored globally on the author's machine, which is exactly why they
+          # would go unnoticed in a contributor's PR.
+          patterns='^\.codelens/|^namht-sessions/|^knowledge-base/|^node_modules/|(^|/)\.DS_Store$|\.db(-wal|-shm)?$|^\.env'
+          found=$(git ls-files | grep -E "$patterns" || true)
+          if [ -n "$found" ]; then
+            echo "::error::generated or local-only files are tracked"
+            echo "$found"
+            exit 1
+          fi
+          echo "nothing generated is tracked"
+
+  gitignore-still-covers-them:
+    name: .gitignore still covers what this tool writes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The author's machine ignores these globally, so a .gitignore that stopped
+      # covering them would look fine there and leak on every other clone.
+      - name: Each path this tool writes is ignored
+        run: |
+          fail=0
+          for path in .codelens/index.db namht-sessions/x.md knowledge-base/x.md; do
+            mkdir -p "$(dirname "$path")" && touch "$path"
+            if ! git check-ignore -q "$path"; then
+              echo "::error::$path is not ignored by this repository's .gitignore"
+              fail=1
+            fi
+          done
+          exit $fail
+
+  license-and-readme-present:
+    name: LICENSE and README are present
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          for f in LICENSE README.md; do
+            [ -s "$f" ] || { echo "::error::$f is missing or empty"; exit 1; }
+          done
+          echo "LICENSE and README present"
