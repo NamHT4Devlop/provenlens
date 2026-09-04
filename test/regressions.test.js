@@ -1418,5 +1418,11 @@ describe('the action this repository ships', () => {
     // Failing is opt-in: a call graph is evidence for a reviewer, and a repo
     // should turn it into a gate on purpose rather than by installing it.
     assert.match(raw, /fail-if-untested:[\s\S]{0,400}?default: 'false'/, 'gating is opt-in');
+
+    // npm symlinks a local path unless told otherwise, and a symlinked package
+    // resolves its dependencies from the source directory -- which on a runner
+    // has none. It passed locally for the one reason it must not be trusted:
+    // the developer's checkout already had node_modules.
+    assert.match(raw, /npm install[^\n]*--install-links/, 'the package is copied, not linked');
   });
 });

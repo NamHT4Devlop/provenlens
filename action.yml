@@ -46,7 +46,13 @@ runs:
 
     - name: Install provenlens
       shell: bash
-      run: npm install --no-audit --no-fund --silent "${{ github.action_path }}"
+      # --install-links copies the package instead of symlinking it. Without it
+      # npm links a local path, and the binary then resolves `commander` from
+      # the action's own directory -- which on a runner has no node_modules,
+      # because nothing installed the action's dependencies there. It works on
+      # a developer's machine for the one reason it must not be trusted: the
+      # source checkout happens to have node_modules already.
+      run: npm install --no-audit --no-fund --silent --install-links "${{ github.action_path }}"
       working-directory: ${{ runner.temp }}
 
     - name: Index and report
