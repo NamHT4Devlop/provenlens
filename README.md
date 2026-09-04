@@ -408,7 +408,7 @@ behind the prediction — that Ruby declares no receiver types — is still true
 Ruby's weighted 83.0%. It just does not describe the median Ruby repository, which is small enough
 that most of its receivers are local and named where they are made.
 
-The scale paid for itself twice, on defects no curated set could reach:
+The scale paid for itself three times over, on defects no curated set could reach:
 
 - **A parse tree leaked into WebAssembly.** 1,121 MB over 6,000 files against 151 MB freed, and an
   Emscripten abort somewhere inside JetBrainsRuntime's 53,577 — surfacing as `table index is out of
@@ -417,6 +417,11 @@ The scale paid for itself twice, on defects no curated set could reach:
 - **V8's 4 GB heap cap.** The resolver is deliberately in-memory, and google-cloud-ruby's 31,023 Ruby
   files need 7.3 GB. Two repositories in 5,000 hit it, and they were only distinguishable from the
   eight that merely ran long because a signal exit is 128+n rather than 0.
+- **A file whose name lied about its contents.** shaka-player carries 113 MPEG-2 transport streams
+  named `.ts`, and 49 MB of video handed to the TypeScript grammar built an error tree the size of
+  the video: 898 source files had not finished indexing after ten minutes, 83% of it inside
+  tree-sitter's `ts_node__child`. A NUL byte in the first 8000 characters — git's own test — now
+  refuses them, and the repository indexes in 6.2 seconds.
 
 Eight repositories exceeded a ten-minute budget and one clone failed; those are harness limits, not
 results. Eight more were skipped above 1.5 GB, all of them asset monorepos.
@@ -1019,7 +1024,7 @@ it automatically.
 yarn test
 ```
 
-217 tests across five fixture suites plus regression, security and multi-repo coverage:
+219 tests across five fixture suites plus regression, security and multi-repo coverage:
 
 | Fixture | Simulates | The chain grep cannot follow |
 |---|---|---|
