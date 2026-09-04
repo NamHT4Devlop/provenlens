@@ -20,7 +20,7 @@ jobs:
     name: No index, session or vendor directory is committed
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Check what is tracked
         run: |
           # Kept as one list so the message can name what it found. These are
@@ -39,7 +39,7 @@ jobs:
     name: .gitignore still covers what this tool writes
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # The author's machine ignores these globally, so a .gitignore that stopped
       # covering them would look fine there and leak on every other clone.
       - name: Each path this tool writes is ignored
@@ -58,7 +58,7 @@ jobs:
     name: LICENSE and README are present
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: |
           for f in LICENSE README.md; do
             [ -s "$f" ] || { echo "::error::$f is missing or empty"; exit 1; }

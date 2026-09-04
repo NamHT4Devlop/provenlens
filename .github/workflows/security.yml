@@ -30,12 +30,12 @@ jobs:
       contents: read
       security-events: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: github/codeql-action/init@v3
+      - uses: actions/checkout@v7
+      - uses: github/codeql-action/init@v4
         with:
           languages: javascript-typescript
           queries: security-and-quality
-      - uses: github/codeql-action/analyze@v3
+      - uses: github/codeql-action/analyze@v4
         with:
           category: /language:javascript-typescript
 
@@ -46,10 +46,10 @@ jobs:
     # a public-repository feature.
     if: github.event_name == 'pull_request' && github.event.repository.private == false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Four runtime dependencies and no dev dependencies is a deliberate
       # position, not an accident. A PR that adds a fifth should have to say so.
-      - uses: actions/dependency-review-action@v4
+      - uses: actions/dependency-review-action@v5
         with:
           fail-on-severity: low
           comment-summary-in-pr: on-failure
@@ -58,8 +58,8 @@ jobs:
     name: Known vulnerabilities in the lockfile
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
       - name: Install from the lockfile, refusing to update it
@@ -102,7 +102,7 @@ jobs:
     name: Nothing in the source can reach the network
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # The README promises "no API calls, no telemetry, no network egress of
       # any kind". A promise nobody checks decays into a slogan, so these are
       # the four things that would have to become false for it to break.
