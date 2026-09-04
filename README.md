@@ -14,6 +14,34 @@ and file reads.
 It runs **100% offline**. No API calls, no telemetry, no network egress of any kind, and **nothing
 to compile** — `node:sqlite` ships inside Node 22+, and the grammars are WASM.
 
+## What is different about this one
+
+Indexing code into a call graph is old work — ctags has done a version of it since 1992. The three
+things below are what this particular attempt is for, and each of them is a position you can hold
+against it.
+
+**It tells you how much of its own answer it is unsure about.** Every measurement comes as two
+numbers: what resolved, and what would be left if *every* judgement made without a declaration
+behind it turned out to be wrong. A link that rests on a naming convention is struck out of the
+second number, so an assumption cannot flatter the score without showing up as a gap. The median
+repository reads **94.0% with the first number**; the benchmark table below sits far lower because
+it is deliberately made of hard cases.
+
+**A lower number is allowed to be the right answer.** `StoryRender<T> | CsfDocsRender<T> |
+MdxDocsRender<T>` names three types and the call could be reaching any of them, so the graph
+refuses rather than picking the first — and gives up coverage doing it. Several changes in this
+history moved the score *down* and were kept, each one recorded in the table of experiments that
+did not work, with the number it cost.
+
+**The claims are measured, on 5,000 repositories.** 136.5 million call sites, four languages,
+cloned and indexed and thrown away. It is also how the two worst defects here were found: a parse
+tree leaking into a WebAssembly heap, and V8's 4 GB ceiling. Neither was reachable from a curated
+set.
+
+None of that makes it better than the alternatives at finding a caller. It makes it answerable
+about when it is guessing, which is the property that matters when the thing reading the output is
+an agent that cannot tell.
+
 ---
 
 ## Setup
@@ -1007,6 +1035,27 @@ empty / syntactically broken / Vietnamese-and-emoji files.
 
 The tests assert that the Java and Ruby fixtures have **zero misses**, and that everything else is
 attributed to the right library. If a resolver later drops an internal call, a test goes red.
+
+## Prior art
+
+None of the ideas here are new, and it is worth saying where they come from rather than leaving a
+reader to wonder.
+
+| | What it does | Where this differs |
+|---|---|---|
+| **ctags** (1992), **cscope** | Index symbols; cscope answers "who calls this" | Both index names. Neither resolves a *receiver's type*, which is where most of the work below goes |
+| **LSP** call hierarchy | Exact, from a real compiler frontend | A language server needs the project to build, and answers one file at a time. This runs on a checkout that may not compile, across four languages at once |
+| **Kythe**, **Sourcegraph**, **Glean** | Cross-repository code graphs at scale | Those are services with infrastructure behind them. This is a SQLite file in the repository, offline, with no build step |
+| **codegraph** | The same shape of problem — a call graph for AI agents | Solves it with a Rust kernel and a compiled TypeScript CLI, and reports telemetry. This is plain JavaScript on WASM grammars, four dependencies, and nothing leaves the machine — a Security check asserts that on every push |
+| **tree-sitter** | The parsers | Not an alternative; this is built on it |
+
+The command vocabulary is deliberately the field's own. `callers`, `callees`, `index`, `query` and
+`status` mean here what they have meant since cscope, and renaming them to be different would cost
+a reader more than it gained.
+
+What is not borrowed is the accounting: two numbers rather than one, guesses struck out of the
+floor, and a table of the changes that were reverted for raising the first number while lowering
+the second.
 
 ## Known limits
 
