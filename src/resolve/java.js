@@ -39,6 +39,7 @@ const JAVA_RUNTIME = new Set([
   'whenComplete', 'join', 'complete', 'completeExceptionally',
 ]);
 
+// (temporary line to verify the review workflow; this branch is thrown away)
 export function resolveJava(db) {
   // ---- load the world into memory (personal-scale repos fit comfortably) ----
 
