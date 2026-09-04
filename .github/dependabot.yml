@@ -14,18 +14,24 @@ updates:
       time: '06:00'
       timezone: Asia/Ho_Chi_Minh
     open-pull-requests-limit: 3
-    # One pull request rather than four, so the test suite and the resolution
-    # gate run once against the set that would actually be installed together.
+    # Two groups, not one. The first Dependabot run proved why: it put
+    # `ignore` 7.0.6 -> 7.0.8, which is fine, in the same pull request as
+    # web-tree-sitter 0.25 -> 0.27, which collapses the entire suite. A safe
+    # update should not wait behind an impossible one.
     groups:
+      # web-tree-sitter and tree-sitter-wasms share an ABI and move together or
+      # not at all: 0.27 does not load the 0.1.x grammars. Still opened rather
+      # than pinned shut, because the tests and the resolution gate are what
+      # should decide it -- and on the first attempt they did, on all three
+      # runners. Grouped so the two are always tried as a pair.
+      tree-sitter:
+        patterns: ['web-tree-sitter', 'tree-sitter-wasms']
       dependencies:
         patterns: ['*']
+        exclude-patterns: ['web-tree-sitter', 'tree-sitter-wasms']
     commit-message:
       prefix: 'deps'
     labels: ['dependencies']
-    # web-tree-sitter and tree-sitter-wasms share an ABI: 0.26 does not load the
-    # 0.1.x grammars, which is why both are pinned where they are. A major bump
-    # is still opened rather than hidden, because the tests and the resolution
-    # gate are what should decide it -- not a rule written once and forgotten.
 
   # A compromised action runs with this repository's token. Tags move, so
   # keeping them current is the cheap half of that problem; pinning each action
