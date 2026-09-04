@@ -423,7 +423,6 @@ export function formatWhy(explained) {
 
   // The verdict is the whole point: one number for what would survive if every
   // judgement made without a declaration behind it turned out to be wrong.
-  const solid = (t) => (t.proof ?? 0) + (t.binding ?? 0) + (t.inferred ?? 0);
   const soft = (t) => (t.guess ?? 0) + (t.assumed ?? 0);
   const linked = callers.length + callees.length;
   const guessed = soft(counts.callers) + soft(counts.callees);
