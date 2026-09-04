@@ -125,3 +125,17 @@ printf '%s' "$out" | node -e '
     for (const rule of r.rules) console.log("  " + rule.type);
   });
 '
+
+# Secret scanning is refused on a private repository outside a paid plan and
+# becomes free the moment the repository is public -- the same threshold this
+# script already waits for, so it is turned on here rather than left on a
+# settings page nobody revisits. Push protection is the half that matters:
+# scanning tells you a key was committed, protection stops the commit.
+for feature in secret_scanning secret_scanning_push_protection; do
+  if gh api -X PATCH "repos/$REPO" \
+       -f "security_and_analysis[$feature][status]=enabled" >/dev/null 2>&1; then
+    echo "$feature enabled"
+  else
+    echo "$feature not available on this repository yet"
+  fi
+done
