@@ -1,0 +1,46 @@
+# What `yarn audit` and dependency review cannot do: raise the version.
+# Those two say a pin has become dangerous; this opens the pull request that
+# fixes it, and the checks on that PR decide whether the new version is usable.
+version: 2
+
+updates:
+  # The four runtime dependencies. There are no dev dependencies, and the
+  # Security workflow fails if that changes.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '06:00'
+      timezone: Asia/Ho_Chi_Minh
+    open-pull-requests-limit: 3
+    # One pull request rather than four, so the test suite and the resolution
+    # gate run once against the set that would actually be installed together.
+    groups:
+      dependencies:
+        patterns: ['*']
+    commit-message:
+      prefix: 'deps'
+    labels: ['dependencies']
+    # web-tree-sitter and tree-sitter-wasms share an ABI: 0.26 does not load the
+    # 0.1.x grammars, which is why both are pinned where they are. A major bump
+    # is still opened rather than hidden, because the tests and the resolution
+    # gate are what should decide it -- not a rule written once and forgotten.
+
+  # A compromised action runs with this repository's token. Tags move, so
+  # keeping them current is the cheap half of that problem; pinning each action
+  # to a commit SHA is the thorough half, and is a decision to take separately.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '06:00'
+      timezone: Asia/Ho_Chi_Minh
+    open-pull-requests-limit: 3
+    groups:
+      actions:
+        patterns: ['*']
+    commit-message:
+      prefix: 'ci'
+    labels: ['dependencies', 'github-actions']
