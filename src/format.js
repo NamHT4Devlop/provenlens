@@ -377,3 +377,73 @@ export function formatPath(db, fromId, toId, result) {
   out.push('', `${result.length} hop(s).`);
   return out.join('\n');
 }
+
+/**
+ * The evidence account for one symbol, as prose a reader can act on.
+ *
+ * Ordered strongest evidence first, because the useful question is never "what
+ * is connected" -- the other commands answer that -- but "which of these would
+ * I be wrong to rely on".
+ */
+export function formatWhy(explained) {
+  if (!explained) return 'No such symbol.';
+  const { symbol, callers, callees, unresolved, counts } = explained;
+
+  const out = [`# Why the graph says this about ${symbol.fqn}`, `${symbol.file}:${symbol.line}`, ''];
+
+  // A receiver is the expression as written, and for a chained call that can be
+  // a whole multi-line query. One line, bounded, so the shape stays readable.
+  const oneLine = (text, max = 60) => {
+    const flat = String(text).replace(/\s+/g, ' ').trim();
+    return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+  };
+
+  const section = (title, rows, empty) => {
+    if (!rows.length) return void out.push(title, `  ${empty}`, '');
+    out.push(title);
+    const order = { proof: 0, binding: 1, inferred: 2, guess: 3, assumed: 2, miss: 4 };
+    for (const r of [...rows].sort((a, b) => (order[a.tier] ?? 9) - (order[b.tier] ?? 9))) {
+      // A link carries the file it was written in; an unresolved call is inside
+      // the symbol being explained, so only its line is worth repeating.
+      const where = r.fqn ? `  ${r.file}:${r.line}` : r.line ? `  ${symbol.file}:${r.line}` : '';
+      const what = r.fqn ?? oneLine(`${r.receiver ? `${r.receiver}.` : ''}${r.name}`);
+      out.push(`  ${r.tier === 'guess' || r.tier === 'assumed' ? '~' : '·'} ${what}`);
+      out.push(`      ${r.label}${where}`);
+    }
+    out.push('');
+  };
+
+  section('## What reaches it', callers, 'Nothing calls this — a leaf, or an entry point.');
+  section('## What it reaches', callees, 'It calls nothing that is indexed.');
+  section(
+    '## Calls it makes that are not edges',
+    unresolved,
+    'Every call it makes became an edge.',
+  );
+
+  // The verdict is the whole point: one number for what would survive if every
+  // judgement made without a declaration behind it turned out to be wrong.
+  const soft = (t) => (t.guess ?? 0) + (t.assumed ?? 0);
+  const linked = callers.length + callees.length;
+  const guessed = soft(counts.callers) + soft(counts.callees);
+  const misses = counts.calls.miss ?? 0;
+
+  out.push('## Verdict');
+  if (!linked && !unresolved.length) {
+    out.push('  Nothing is known about this symbol either way.');
+  } else {
+    // Precise rather than flattering: `self-chain` is an inference, not a
+    // declaration, and calling it one here would be the exact overstatement
+    // this command exists to prevent.
+    out.push(
+      `  ${linked - guessed} of ${linked} link(s) would survive the floor; ` +
+        `${guessed} rest on a convention and are struck out of it.`,
+    );
+    if (misses) {
+      out.push(`  ${misses} call(s) it makes are unresolved — the graph is incomplete here.`);
+    }
+    const provenOut = counts.calls.proof ?? 0;
+    if (provenOut) out.push(`  ${provenOut} call(s) provably leave this repository.`);
+  }
+  return out.join('\n');
+}

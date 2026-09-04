@@ -1339,3 +1339,90 @@ describe('a repository you clone to read must not get to run anything', () => {
     }
   });
 });
+
+describe('why: the evidence behind one symbol', () => {
+  test('a guessed link is counted apart from a proven one', async () => {
+    const { explainSymbol, GUESSED_VIA } = await import('../src/why.js');
+    const { formatWhy } = await import('../src/format.js');
+    const project = await tempProject({
+      'src/a.ts': [
+        'export class Store {',
+        '  save(x: string) { return x; }',
+        '}',
+      ].join('\n'),
+      'src/b.ts': [
+        "import { Store } from './a';",
+        'export function run() {',
+        '  const store = new Store();',
+        "  return store.save('x');",
+        '}',
+      ].join('\n'),
+    });
+    try {
+      const [hit] = searchSymbols(project.db, 'save', { limit: 3 });
+      const why = explainSymbol(project.db, hit.id);
+      assert.ok(why, 'the symbol is explainable');
+      assert.equal(why.callers.length, 1, 'run() reaches save()');
+      // A receiver typed by `new Store()` is a declaration, not a convention.
+      assert.equal(why.callers[0].tier, 'proof', `saw ${why.callers[0].via}`);
+      assert.equal(why.counts.callers.guess, undefined, 'nothing here is guessed');
+
+      const text = formatWhy(why);
+      assert.match(text, /would survive the floor/);
+      assert.ok(!text.includes('  ~ '), 'no link is marked as a guess');
+
+      // The list the floor uses and the list this command reports must be the
+      // same list, or a symbol's account and the repository's number disagree.
+      const bench = readFileSync(join(HERE, '..', 'scripts', 'bench.js'), 'utf8');
+      for (const via of GUESSED_VIA) {
+        assert.ok(bench.includes(`'${via}'`), `bench must strike ${via} off the floor too`);
+      }
+    } finally {
+      project.cleanup();
+    }
+  });
+
+  test('an unknown symbol explains nothing rather than guessing', async () => {
+    const { explainSymbol } = await import('../src/why.js');
+    const { formatWhy } = await import('../src/format.js');
+    const project = await tempProject({ 'src/a.ts': 'export function only() { return 1; }\n' });
+    try {
+      assert.equal(explainSymbol(project.db, 999999), null);
+      assert.equal(formatWhy(null), 'No such symbol.');
+    } finally {
+      project.cleanup();
+    }
+  });
+});
+
+describe('the action this repository ships', () => {
+  test('action.yml declares what a consumer needs and asks for no secrets', () => {
+    // A composite action is only as good as its contract, and a fork's pull
+    // request gets no secrets: an action that needs one works for the author
+    // and for nobody else. This asserts the shape that avoids it.
+    const raw = readFileSync(join(HERE, '..', 'action.yml'), 'utf8');
+
+    assert.match(raw, /using:\s*composite/, 'composite, so no build artefact to publish');
+    for (const input of ['paths', 'depth', 'fail-if-untested']) {
+      assert.match(raw, new RegExp(`^\\s{2}${input}:`, 'm'), `input ${input} is declared`);
+    }
+    for (const output of ['report', 'reached', 'tests']) {
+      assert.match(raw, new RegExp(`^\\s{2}${output}:`, 'm'), `output ${output} is declared`);
+    }
+    assert.ok(!/\$\{\{\s*secrets\./.test(raw), 'no secret is read, so fork PRs work');
+
+    // The merge-base, not the base tip. Diffing against the tip reports every
+    // file the base branch moved on since, which is not this pull request.
+    assert.match(raw, /git merge-base/, 'the diff is taken against the merge-base');
+
+    // Failing is opt-in: a call graph is evidence for a reviewer, and a repo
+    // should turn it into a gate on purpose rather than by installing it.
+    assert.match(raw, /fail-if-untested:[\s\S]{0,400}?default: 'false'/, 'gating is opt-in');
+
+    // npm symlinks a local path unless told otherwise, and a symlinked package
+    // resolves its dependencies from the source directory -- which on a runner
+    // has none. It passed locally for the one reason it must not be trusted:
+    // the developer's checkout already had node_modules.
+    assert.match(raw, /npm install[^\n]*--install-links/, 'the package is copied, not linked');
+  });
+});

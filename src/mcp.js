@@ -7,10 +7,11 @@
 import { resolve, join } from 'node:path';
 import { existsSync } from 'node:fs';
 import { openProject } from './db.js';
+import { explainSymbol } from './why.js';
 import { dbPathFor, discoverProjects } from './project.js';
 import { indexProject } from './indexer.js';
 import { watchProject } from './watch.js';
-import { formatExplore, formatImpact, formatAffected } from './format.js';
+import { formatExplore, formatImpact, formatAffected, formatWhy } from './format.js';
 import { searchSymbols, projectStats } from './query.js';
 
 const projects = new Map(); // root -> { db, watcher }
@@ -76,6 +77,25 @@ const TOOLS = [
     },
   },
   {
+    name: 'provenlens_why',
+    description:
+      'How much of what the graph says about a symbol rests on a declaration, and how much on a ' +
+      'convention. Use this before acting on a link that matters: an edge drawn from a declaration ' +
+      'and an edge drawn from a naming convention look identical in every other answer, and only ' +
+      'one of them is safe to rely on. Also lists the calls the symbol makes that never resolved.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        symbol: { type: 'string', description: 'Symbol name or Type#method.' },
+        projectPath: {
+          type: 'string',
+          description: 'Path inside the project to query. Required when the server has no default.',
+        },
+      },
+      required: ['symbol'],
+    },
+  },
+  {
     name: 'provenlens_impact',
     description:
       'Blast radius for a symbol: every caller that transitively reaches it, by depth. ' +
@@ -133,6 +153,15 @@ async function callTool(name, args, defaultRoot) {
       }
       return sections.length ? sections.join('\n\n---\n\n') : `No symbol matches "${args.query}".`;
     }
+    case 'provenlens_why': {
+      const all = await useProjects(args.projectPath, defaultRoot);
+      for (const { db } of all) {
+        const [hit] = searchSymbols(db, args.symbol, { limit: 1 });
+        if (hit) return formatWhy(explainSymbol(db, hit.id));
+      }
+      return `No symbol matches "${args.symbol}".`;
+    }
+
     case 'provenlens_impact': {
       const all = await useProjects(args.projectPath, defaultRoot);
       for (const { root, db } of all) {

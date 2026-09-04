@@ -1,0 +1,120 @@
+name: provenlens blast radius
+description: >-
+  Report what a pull request's changed files reach, and which tests already
+  cover them, from a real call graph rather than a text search.
+author: NamHT4Devlop
+branding:
+  icon: git-branch
+  color: blue
+
+inputs:
+  paths:
+    description: >-
+      Newline-separated changed files. Defaults to the pull request's diff
+      against its base, which is what you want almost always.
+    required: false
+    default: ''
+  depth:
+    description: How far to follow callers outward from a changed symbol.
+    required: false
+    default: '4'
+  fail-if-untested:
+    description: >-
+      Fail the job when the change touches production code no existing test
+      reaches. Off by default: a call graph is evidence for a reviewer, and
+      turning it into a gate is a decision a repository should make on purpose.
+    required: false
+    default: 'false'
+
+outputs:
+  report:
+    description: The Markdown report, for a caller that wants to post it as a comment.
+    value: ${{ steps.run.outputs.report }}
+  reached:
+    description: How many symbols the change can reach.
+    value: ${{ steps.run.outputs.reached }}
+  tests:
+    description: How many existing tests already cover them.
+    value: ${{ steps.run.outputs.tests }}
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v7
+      with:
+        node-version: 24
+
+    - name: Install provenlens
+      shell: bash
+      # --install-links copies the package instead of symlinking it. Without it
+      # npm links a local path, and the binary then resolves `commander` from
+      # the action's own directory -- which on a runner has no node_modules,
+      # because nothing installed the action's dependencies there. It works on
+      # a developer's machine for the one reason it must not be trusted: the
+      # source checkout happens to have node_modules already.
+      run: npm install --no-audit --no-fund --silent --install-links "${{ github.action_path }}"
+      working-directory: ${{ runner.temp }}
+
+    - name: Index and report
+      id: run
+      shell: bash
+      env:
+        # A fork's pull request gets a read-only token and no secrets. Nothing
+        # here needs either: the report goes to the job summary, which every
+        # run can write, and posting it as a comment is left to the caller.
+        PL_PATHS: ${{ inputs.paths }}
+        PL_DEPTH: ${{ inputs.depth }}
+        PL_FAIL: ${{ inputs.fail-if-untested }}
+        PL_BASE: ${{ github.event.pull_request.base.sha }}
+        PL_HEAD: ${{ github.event.pull_request.head.sha }}
+      run: |
+        set -euo pipefail
+        BIN="${{ runner.temp }}/node_modules/.bin/provenlens"
+
+        if [ -n "$PL_PATHS" ]; then
+          printf '%s\n' "$PL_PATHS" > changed.txt
+        elif [ -n "${PL_BASE:-}" ]; then
+          # The merge-base, not the base tip: a diff against the tip reports
+          # every file the base branch moved on since, which is not this PR.
+          git fetch --quiet --depth=200 origin "$PL_BASE" "$PL_HEAD" 2>/dev/null || true
+          git diff --name-only "$(git merge-base "$PL_BASE" "$PL_HEAD")" "$PL_HEAD" > changed.txt
+        else
+          git diff --name-only HEAD~1 HEAD > changed.txt
+        fi
+
+        if [ ! -s changed.txt ]; then
+          echo "no changed files to analyse" >> "$GITHUB_STEP_SUMMARY"
+          { echo "reached=0"; echo "tests=0"; echo "report="; } >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        "$BIN" init . > /dev/null
+        set +e
+        REPORT=$("$BIN" affected --depth "$PL_DEPTH" $( [ "$PL_FAIL" = "true" ] && echo --fail-if-untested ) < changed.txt)
+        STATUS=$?
+        set -e
+
+        JSON=$("$BIN" affected --depth "$PL_DEPTH" --json < changed.txt || true)
+        REACHED=$(printf '%s' "$JSON" | node -e 'let r="";process.stdin.on("data",d=>r+=d).on("end",()=>{try{process.stdout.write(String(JSON.parse(r).reached.length))}catch{process.stdout.write("0")}})')
+        TESTS=$(printf '%s' "$JSON" | node -e 'let r="";process.stdin.on("data",d=>r+=d).on("end",()=>{try{process.stdout.write(String(JSON.parse(r).tests.length))}catch{process.stdout.write("0")}})')
+
+        {
+          echo "## provenlens: what this change reaches"
+          echo
+          echo "\`$(wc -l < changed.txt | tr -d ' ')\` changed file(s) · **$REACHED** symbol(s) reachable · **$TESTS** test(s) already cover them"
+          echo
+          echo '```'
+          printf '%s\n' "$REPORT"
+          echo '```'
+        } > report.md
+
+        cat report.md >> "$GITHUB_STEP_SUMMARY"
+        {
+          echo "reached=$REACHED"
+          echo "tests=$TESTS"
+          echo "report<<PROVENLENS_EOF"
+          cat report.md
+          echo "PROVENLENS_EOF"
+        } >> "$GITHUB_OUTPUT"
+
+        exit $STATUS

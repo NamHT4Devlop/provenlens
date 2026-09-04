@@ -756,6 +756,7 @@ a convention. No amount of engineering turns that into a declaration, because Ru
 | `provenlens node <name>` | One symbol in full, with callers and callees |
 | `provenlens callers <name>` / `callees <name>` | One direction of the relationship |
 | `provenlens impact <name>` | Blast radius |
+| `provenlens why <name>` | **Which of this symbol's links rest on a declaration, and which on a convention** — plus the calls it makes that never resolved |
 | `provenlens hotspots` | **What the most other code depends on** — read this before changing anything |
 | `provenlens dead [--public]` | Methods nothing reaches, with framework entry points and template-named symbols already ruled out |
 | `provenlens cycles` | Files that depend on each other, directly or the long way round |
@@ -944,7 +945,8 @@ It prints the change before writing and always keeps a `.bak`. Targets are `clau
 claude mcp add provenlens -- node ~/AI-TOOL/provenlens/bin/provenlens.js mcp
 ```
 
-Four tools: `provenlens_explore`, `provenlens_impact`, `provenlens_affected`, `provenlens_status`. Each
+Five tools: `provenlens_explore`, `provenlens_why`, `provenlens_impact`, `provenlens_affected`,
+`provenlens_status`. Each
 takes a `projectPath`, so **one server serves every repository** — and a `projectPath` naming a
 folder of checkouts serves them **all at once**, each answer labelled with the repository it came
 from. Indexes stay current through the file watcher.
@@ -1024,7 +1026,7 @@ it automatically.
 yarn test
 ```
 
-221 tests across five fixture suites plus regression, security and multi-repo coverage:
+224 tests across five fixture suites plus regression, security and multi-repo coverage:
 
 | Fixture | Simulates | The chain grep cannot follow |
 |---|---|---|
@@ -1040,6 +1042,25 @@ empty / syntactically broken / Vietnamese-and-emoji files.
 
 The tests assert that the Java and Ruby fixtures have **zero misses**, and that everything else is
 attributed to the right library. If a resolver later drops an internal call, a test goes red.
+
+## In continuous integration
+
+The blast radius of a pull request, from the call graph rather than a text search:
+
+```yaml
+- uses: actions/checkout@v7
+  with: { fetch-depth: 0 }   # the merge-base has to be in the clone
+- uses: NamHT4Devlop/provenlens@v1
+```
+
+It writes to the job summary, which every run can write — including a pull
+request from a fork, which gets a read-only token and no secrets. Nothing here
+reads one. A repository that wants the report as a comment posts it itself from
+the `report` output, where the permission to do so is its own decision.
+
+`fail-if-untested` is off by default. A change that no existing test reaches is
+worth *seeing*; whether that should stop a merge is a judgement a repository
+makes on purpose, not one it inherits by installing an action.
 
 ## Prior art
 
