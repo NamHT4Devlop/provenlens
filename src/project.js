@@ -117,6 +117,13 @@ export function walkFiles(root, accept, { maxBytes = 2_000_000 } = {}) {
       return;
     }
     for (const entry of entries) {
+      // A symlink is skipped whatever it points at. `x.js -> ~/.ssh/id_rsa` in
+      // a repository you cloned to read would otherwise be indexed and served
+      // back as source. Dirent already answers false to both isFile() and
+      // isDirectory() for one, so this line changes nothing today -- it is
+      // here so that the rule survives the day someone makes the walk follow
+      // links for a monorepo and does not notice what else that opens.
+      if (entry.isSymbolicLink()) continue;
       const abs = join(dir, entry.name);
       const rel = relative(root, abs).split(sep).join('/');
       if (!rel || ig.ignores(entry.isDirectory() ? `${rel}/` : rel)) continue;
