@@ -25,13 +25,17 @@ const SIGNALS = { SIGHUP: 1, SIGINT: 2, SIGQUIT: 3, SIGKILL: 9, SIGTERM: 15, SIG
  * when the caller has already chosen a limit, and skipped silently if the
  * re-exec cannot be done, since a smaller heap still indexes most projects.
  */
-export function ensureHeadroom(argv = process.argv) {
+export function ensureHeadroom(argv = process.argv, { indexing } = {}) {
   if (process.env[GUARD]) return false;
   // Only the commands that build an index need the room, and only they can
   // afford the re-exec. `mcp` is a server: re-running it would leave the outer
   // process blocked on a child that never exits, which is how the test suite
   // caught this. Every other command reads a database that is already built.
-  if (!INDEXING.has(argv[2])) return false;
+  //
+  // `argv` is re-executed verbatim, so a caller whose arguments are not
+  // commands -- the benchmark script takes a path -- says so through `indexing`
+  // rather than by rewriting argv, which would drop the real arguments.
+  if (!(indexing ?? INDEXING.has(argv[2]))) return false;
   const chosen = [...process.execArgv, process.env.NODE_OPTIONS ?? ''].join(' ');
   if (chosen.includes('max-old-space-size')) return false;
 

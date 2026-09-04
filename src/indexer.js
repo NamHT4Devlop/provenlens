@@ -2,6 +2,8 @@ import { readFileSync } from 'node:fs';
 
 /** Above this a file is generated, not written, and can exhaust the WASM heap. */
 const MAX_PARSE_BYTES = 2 * 1024 * 1024;
+/** How far in to look for the NUL that means "this is not text". git uses 8000. */
+const BINARY_SNIFF_CHARS = 8000;
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { getParser, langForPath } from './lang.js';
@@ -135,6 +137,21 @@ export async function indexProject(db, root, { full = false, onProgress } = {}) 
       // run and left no index at all. A cap is the only defence, and 2 MB is
       // far above any file written by hand.
       if (source.length > MAX_PARSE_BYTES) {
+        stats.unparsable++;
+        continue;
+      }
+
+      // An extension is a claim about a file, not a fact about it. `.ts` is
+      // TypeScript and it is also MPEG-2 transport stream: shaka-player ships
+      // 113 video segments named `.ts`, and handing 49 MB of them to the
+      // TypeScript grammar turned a 900-file repository into a run that had
+      // not finished after ten minutes -- 83% of it inside tree-sitter's
+      // `ts_node__child`, walking an error tree the size of the video.
+      //
+      // A NUL byte near the start is how git tells binary from text, and it is
+      // the right test here for the same reason: no source file in any of the
+      // four languages contains one.
+      if (source.lastIndexOf('\u0000', BINARY_SNIFF_CHARS) !== -1) {
         stats.unparsable++;
         continue;
       }

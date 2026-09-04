@@ -10,7 +10,7 @@
  * symbol out, because a wrong answer here is a deleted function or a refactor
  * aimed at the wrong file.
  */
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { readFileSync, readdirSync, openSync, fstatSync, closeSync } from 'node:fs';
 import { join, extname } from 'node:path';
 import { isTestPath } from './query.js';
 
@@ -56,9 +56,17 @@ function namesInTemplates(root, { maxFiles = 3000 } = {}) {
       }
       if (!NAME_BEARING.has(extname(e.name).toLowerCase())) continue;
       try {
-        if (statSync(full).size > MAX_TEMPLATE_BYTES) continue;
-        for (const w of readFileSync(full, 'utf8').match(/[A-Za-z_$][\w$]*/g) ?? []) {
-          words.add(w);
+        // Size and contents read through one descriptor: `statSync` then
+        // `readFileSync` names the path twice, and the size that decided the
+        // file was small enough belonged to whatever was there the first time.
+        const fd = openSync(full, 'r');
+        try {
+          if (fstatSync(fd).size > MAX_TEMPLATE_BYTES) continue;
+          for (const w of readFileSync(fd, 'utf8').match(/[A-Za-z_$][\w$]*/g) ?? []) {
+            words.add(w);
+          }
+        } finally {
+          closeSync(fd);
         }
         seen++;
       } catch {
