@@ -1,0 +1,31 @@
+# The action this repository ships, used on this repository. A tool for reading
+# pull requests that is never pointed at one is a tool nobody has tried.
+name: Blast radius
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: blast-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  reach:
+    name: What this pull request reaches
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The action diffs against the merge-base, which has to be in the
+          # clone for `git merge-base` to find it.
+          fetch-depth: 0
+      # `./` is this repository's own action.yml. A published consumer would
+      # write `NamHT4Devlop/provenlens@v1` instead.
+      - uses: ./
+        # Evidence for a reviewer, not a gate: a change with no test reaching it
+        # is worth seeing, and worth deciding about case by case.
+        with:
+          fail-if-untested: 'false'

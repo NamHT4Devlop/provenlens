@@ -1394,3 +1394,29 @@ describe('why: the evidence behind one symbol', () => {
     }
   });
 });
+
+describe('the action this repository ships', () => {
+  test('action.yml declares what a consumer needs and asks for no secrets', () => {
+    // A composite action is only as good as its contract, and a fork's pull
+    // request gets no secrets: an action that needs one works for the author
+    // and for nobody else. This asserts the shape that avoids it.
+    const raw = readFileSync(join(HERE, '..', 'action.yml'), 'utf8');
+
+    assert.match(raw, /using:\s*composite/, 'composite, so no build artefact to publish');
+    for (const input of ['paths', 'depth', 'fail-if-untested']) {
+      assert.match(raw, new RegExp(`^\\s{2}${input}:`, 'm'), `input ${input} is declared`);
+    }
+    for (const output of ['report', 'reached', 'tests']) {
+      assert.match(raw, new RegExp(`^\\s{2}${output}:`, 'm'), `output ${output} is declared`);
+    }
+    assert.ok(!/\$\{\{\s*secrets\./.test(raw), 'no secret is read, so fork PRs work');
+
+    // The merge-base, not the base tip. Diffing against the tip reports every
+    // file the base branch moved on since, which is not this pull request.
+    assert.match(raw, /git merge-base/, 'the diff is taken against the merge-base');
+
+    // Failing is opt-in: a call graph is evidence for a reviewer, and a repo
+    // should turn it into a gate on purpose rather than by installing it.
+    assert.match(raw, /fail-if-untested:[\s\S]{0,400}?default: 'false'/, 'gating is opt-in');
+  });
+});
