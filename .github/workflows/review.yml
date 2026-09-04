@@ -1,0 +1,170 @@
+# Two kinds of review. The rules below are the ones this repository can check
+# for itself and does not need judgement for; Claude is asked about the rest.
+name: Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: review-${{ github.event.pull_request.number || github.event.issue.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  resolver-change-has-a-test:
+    name: A change to the resolver comes with a test
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+      # Every correctness fix in this repository's history has a test that failed
+      # before it. That is not a style preference: the resolver's output is a
+      # percentage, and a percentage moves for reasons nobody can see in a diff.
+      # Scoped to the three directories where behaviour actually lives, so a
+      # refactor or a docs change is not caught by it.
+      - name: Check the diff
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          changed=$(gh pr diff "$PR" --name-only)
+          behaviour=$(printf '%s\n' "$changed" | grep -E '^src/(extract|resolve|bindings)/' || true)
+          tests=$(printf '%s\n' "$changed" | grep -E '^test/' || true)
+          if [ -z "$behaviour" ]; then
+            echo "no resolver, extractor or binding file changed"; exit 0
+          fi
+          echo "changed under src/{extract,resolve,bindings}:"; printf '  %s\n' $behaviour
+          if [ -n "$tests" ]; then
+            echo "and test/ changed too:"; printf '  %s\n' $tests; exit 0
+          fi
+          if gh pr view "$PR" --json labels --jq '.labels[].name' | grep -qx 'no-behaviour-change'; then
+            echo "::warning::resolver files changed with no test, allowed by the no-behaviour-change label"
+            exit 0
+          fi
+          echo "::error::this PR changes how calls resolve but adds no test. Every fix here has a test that failed before it. If the change really cannot alter behaviour, label the PR 'no-behaviour-change'."
+          exit 1
+
+  readme-test-count:
+    name: The README's test count matches the suite
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install from the lockfile, refusing to update it
+        run: yarn install --frozen-lockfile
+      # The README said 198 for some time while the suite said 217. A number in
+      # prose rots silently; this is the cheapest place to notice.
+      - name: Compare
+        run: |
+          actual=$(yarn test 2>&1 | sed -n 's/^ℹ pass \([0-9]*\)$/\1/p' | head -1)
+          claimed=$(grep -oE "^[0-9]+ tests across" README.md | grep -oE "^[0-9]+" | head -1)
+          echo "suite: ${actual:-none}   README: ${claimed:-none}"
+          [ -n "$actual" ]  || { echo "::error::could not read the suite's pass count"; exit 1; }
+          [ -n "$claimed" ] || { echo "::error::README no longer states a test count"; exit 1; }
+          [ "$actual" = "$claimed" ] || {
+            echo "::error file=README.md::README says $claimed tests, the suite runs $actual"
+            exit 1
+          }
+
+  claude:
+    name: Claude reviews this pull request
+    runs-on: ubuntu-latest
+    # A pull request from a fork gets no secrets, by design, so this cannot run
+    # on one automatically. A maintainer asks for it there by commenting
+    # @claude, which is the second trigger below.
+    if: >-
+      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
+      || (github.event_name == 'issue_comment' && github.event.issue.pull_request != null
+          && contains(github.event.comment.body, '@claude'))
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      # Absent the key this job would fail on every PR for a reason no author
+      # can fix, so it says what is missing and stops.
+      - name: Skip cleanly when no key is configured
+        id: gate
+        env:
+          KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "::notice::ANTHROPIC_API_KEY is not set, so no review was requested. Add it under Settings → Secrets and variables → Actions."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Review
+        if: steps.gate.outputs.run == 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          track_progress: true
+          # Written against what this repository actually holds itself to.
+          # A generic "check quality, security, performance" prompt returns
+          # generic findings, and the cost of those is that real ones stop
+          # being read.
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+
+            codelens builds a call graph for Java, Ruby, TypeScript and JavaScript.
+            Its output is a percentage, so a change can look correct in a diff and
+            still be wrong in a way only measurement shows. Review with that in mind.
+
+            Read README.md first — "Reading the numbers honestly" states the rules
+            this project is judged by. Then review the diff against them:
+
+            1. **Proof before assumption.** A link resolved from a declaration is a
+               proof. A link resolved from a name, a convention or a lone match is a
+               guess, and every guess must be excluded from the floor
+               (`name-convention`, `unique-name`, `method-missing`). A change that
+               resolves more calls by guessing, without booking them as guesses,
+               is the most damaging thing that can land here. Say so plainly.
+
+            2. **A lower number can be the right answer.** Refusing to answer where
+               the source does not say — a union of two real types, a receiver
+               nothing declares — is correct even though it costs coverage. Do not
+               ask for those refusals to be relaxed.
+
+            3. **Evidence for any claim about the numbers.** If the PR says a repo
+               moved, look for the measurement. "Should improve resolution" without
+               a before and after is a claim, not a result.
+
+            4. **The test that failed first.** Every correctness fix here has one.
+               If a test was added, ask whether it actually fails without the fix —
+               a test that passes either way documents nothing.
+
+            5. **What the project refuses to become.** Four runtime dependencies,
+               no dev dependencies, no build step, no network egress, and nothing
+               written into the user's repository beyond `.codelens/`. A PR that
+               changes any of those is making a decision, not an improvement, and
+               should be discussed rather than merged quietly.
+
+            6. **Ordinary correctness**, in the parts a percentage will not reveal:
+               resource lifetimes (tree-sitter trees live in a WASM heap the
+               collector cannot reach and must be freed), SQLite transactions that
+               must roll back on failure, unbounded memory over large inputs, and
+               path handling that differs between macOS and Linux.
+
+            Comment inline where the problem is. Keep the top-level comment to what
+            a maintainer needs in order to decide. If the diff is fine, say that
+            briefly rather than manufacturing findings.
+          claude_args: |
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"
