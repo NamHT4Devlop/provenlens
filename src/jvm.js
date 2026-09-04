@@ -123,12 +123,28 @@ function splitGeneric(raw) {
  * class it could read. A name javap does not know is simply absent -- that is
  * the answer for a dependency the project never downloaded.
  */
-export function readSignatures(fqns, classpath) {
-  if (!fqns.length) return [];
-  const args = classpath ? ['-cp', classpath, ...fqns] : [...fqns];
+/**
+ * The only shape a class name may have before it is handed to javap.
+ *
+ * Every name here started life in this repository's own source -- an import,
+ * a type annotation -- and tree-sitter's error recovery can hand back a "type"
+ * whose text is whatever sat between two braces. A value beginning with `-`
+ * would reach javap as a flag, and `-J-javaagent:x.jar` is a flag that runs
+ * code. A repository you clone to read should not get to do that. Anything
+ * that is not a dotted Java identifier is dropped before the spawn, not after.
+ */
+export const JAVA_CLASS_NAME = /^[A-Za-z_$][\w$]*(\.[A-Za-z_$][\w$]*)*$/;
+
+export function readSignatures(fqns, classpath, { run = execFileSync } = {}) {
+  const safe = fqns.filter((n) => typeof n === 'string' && n.length <= 512 && JAVA_CLASS_NAME.test(n));
+  if (!safe.length) return [];
+  const args = classpath ? ['-cp', classpath, ...safe] : [...safe];
   let out;
   try {
-    out = execFileSync('javap', args, {
+    // `run` is injectable so a test can see what javap is asked to do. A test
+    // that only looked at the result could not tell "refused before the spawn"
+    // from "spawned, failed, swallowed" -- both return nothing.
+    out = run('javap', args, {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
       maxBuffer: 64 * 1024 * 1024,

@@ -645,12 +645,19 @@ export async function startServer(
 
   if (openBrowser) {
     const { spawn } = await import('node:child_process');
-    const opener = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
+    // `start` is a builtin of cmd.exe, not a program, so it has to be reached
+    // through cmd; the empty string is the window title `start` would
+    // otherwise read the URL as. The URL is ours -- a port and a token this
+    // process minted -- so no shell ever interpolates anything of a user's.
+    const [opener, prefix] =
+      process.platform === 'darwin' ? ['open', []]
+      : process.platform === 'win32' ? ['cmd', ['/c', 'start', '']]
+      : ['xdg-open', []];
     // Command arguments are visible to `ps`, so the token rides along only
     // when it was minted this run and no browser can have stored it yet. A
     // reused token is already in the browser's storage, and if this happens to
     // be a fresh browser instead, the full URL above is one copy-paste away.
-    spawn(opener, [minted ? address : home], { stdio: 'ignore', detached: true }).unref();
+    spawn(opener, [...prefix, minted ? address : home], { stdio: 'ignore', detached: true }).unref();
   }
 
   const close = () => {

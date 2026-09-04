@@ -1273,3 +1273,69 @@ describe('the heap re-exec runs the arguments it was given', () => {
     }
   });
 });
+
+describe('a repository you clone to read must not get to run anything', () => {
+  test('only a dotted Java identifier reaches javap', async () => {
+    // Every name here came out of the repository's own source, and tree-sitter's
+    // error recovery can hand back a "type" whose text is whatever sat between
+    // two braces. A value beginning with `-` reaches javap as a flag, and
+    // `-J-javaagent:x.jar` is a flag that runs code.
+    //
+    // The spawn is observed directly. Checking only the return value could not
+    // tell "refused before the spawn" from "spawned, failed, swallowed": both
+    // come back empty, and the first version of this test passed with the
+    // filter deleted.
+    const { JAVA_CLASS_NAME, readSignatures } = await import('../src/jvm.js');
+    for (const ok of ['java.util.List', 'Foo$Bar', 'a.b.C_1', 'Outer.Inner', '$']) {
+      assert.ok(JAVA_CLASS_NAME.test(ok), `${ok} is a class name`);
+    }
+    for (const bad of ['-J-javaagent:/tmp/x.jar', '-cp', '--illegal', 'a b', 'Foo<Bar>', '../x', 'java..util', '', '.Foo', 'Foo.']) {
+      assert.ok(!JAVA_CLASS_NAME.test(bad), `${bad} must be refused`);
+    }
+
+    const calls = [];
+    const run = (cmd, args) => { calls.push({ cmd, args }); return ''; };
+
+    readSignatures(['-J-javaagent:/tmp/x.jar', '-cp', '../x'], '', { run });
+    assert.equal(calls.length, 0, 'nothing valid to ask about, so javap is never started');
+
+    readSignatures(['java.util.List', '-J-javaagent:/tmp/x.jar', 'Foo$Bar'], '/some/classpath.jar', { run });
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0].args, ['-cp', '/some/classpath.jar', 'java.util.List', 'Foo$Bar']);
+    assert.ok(
+      !calls[0].args.some((a) => a.startsWith('-J')),
+      'the flag never reaches argv, even beside names that are fine',
+    );
+  });
+
+  test('a symlink inside the repository is not read, whatever it points at', async () => {
+    const { symlinkSync } = await import('node:fs');
+    const outside = mkdtempSync(join(tmpdir(), 'provenlens-secret-'));
+    const secret = join(outside, 'id_rsa');
+    writeFileSync(secret, 'function PRIVATE_KEY_MATERIAL_DO_NOT_INDEX() {}\n');
+
+    const root = mkdtempSync(join(tmpdir(), 'provenlens-symlink-'));
+    mkdirSync(join(root, 'src'), { recursive: true });
+    writeFileSync(join(root, 'src', 'real.js'), 'export function real() { return 1; }\n');
+    // `x.js -> ~/.ssh/id_rsa` is the shape; the target here just has to be
+    // outside the repository and recognisable.
+    symlinkSync(secret, join(root, 'src', 'leak.js'));
+
+    const db = openDb(join(root, 'index.db'), { create: true });
+    try {
+      await indexProject(db, root, { full: true });
+      const paths = db.prepare('SELECT path FROM files WHERE external = 0').all().map((r) => r.path);
+      assert.ok(paths.includes('src/real.js'), 'the real file is indexed');
+      assert.ok(!paths.includes('src/leak.js'), `the symlink must not be, saw ${JSON.stringify(paths)}`);
+      assert.equal(
+        searchSymbols(db, 'PRIVATE_KEY_MATERIAL_DO_NOT_INDEX', { limit: 3 }).length,
+        0,
+        'nothing behind the link may enter the index',
+      );
+    } finally {
+      db.close();
+      rmSync(root, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+});
