@@ -461,7 +461,7 @@ export async function startServer(
           // above -- so they are seeded from the bindings themselves.
           const endpoints = project.db
             .prepare(
-              `SELECT DISTINCT b.symbol_id, ${SYMBOL_COLS.replace(/\bs\./g, 's.')}
+              `SELECT DISTINCT b.symbol_id, ${SYMBOL_COLS}
                  FROM bindings b
                  JOIN symbols s ON s.id = b.symbol_id
                  JOIN files f   ON f.id = s.file_id

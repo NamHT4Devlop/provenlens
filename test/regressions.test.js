@@ -1210,3 +1210,66 @@ describe('a parse tree lives in WebAssembly, which the collector cannot reach', 
     }
   });
 });
+
+describe('an extension is a claim about a file, not a fact about it', () => {
+  test('a binary file named .ts is not fed to the TypeScript grammar', async () => {
+    // shaka-player ships 113 MPEG-2 transport stream segments named `.ts`.
+    // Handing 49 MB of video to the TypeScript parser turned a 900-file
+    // repository into a run that had not finished after ten minutes, with 83%
+    // of the time inside tree-sitter's `ts_node__child` walking an error tree
+    // the size of the video. It also filled the index with symbols read out of
+    // the noise. A NUL byte near the start is how git tells binary from text.
+    const mpegTs = Buffer.alloc(4096);
+    for (let i = 0; i < mpegTs.length; i += 188) mpegTs[i] = 0x47; // TS sync byte
+    const root = mkdtempSync(join(tmpdir(), 'provenlens-binary-'));
+    mkdirSync(join(root, 'src'), { recursive: true });
+    writeFileSync(join(root, 'src', 'video.ts'), mpegTs);
+    writeFileSync(
+      join(root, 'src', 'real.ts'),
+      'export function decode(input: string) { return input; }\n',
+    );
+
+    const db = openDb(join(root, 'index.db'), { create: true });
+    try {
+      const stats = await indexProject(db, root, { full: true });
+      assert.equal(stats.unparsable, 1, 'the video is the one file refused');
+
+      const indexed = db
+        .prepare('SELECT path FROM files WHERE external = 0 AND lang IS NOT NULL')
+        .all()
+        .map((r) => r.path);
+      assert.deepEqual(indexed, ['src/real.ts'], `saw ${JSON.stringify(indexed)}`);
+
+      // And the real file beside it is still read.
+      assert.ok(searchSymbols(db, 'decode', { limit: 3 }).length, 'decode should be indexed');
+    } finally {
+      db.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('the heap re-exec runs the arguments it was given', () => {
+  test('a caller whose arguments are not commands says so without rewriting argv', async () => {
+    // `ensureHeadroom` re-executes argv verbatim. The benchmark script takes a
+    // path rather than a command name, and supplying one by rewriting argv
+    // dropped the path: the child indexed nothing and reported 0 files at
+    // 0.0%, which reads as a broken repository rather than a broken harness.
+    const { ensureHeadroom } = await import('../src/heap.js');
+    const argv = ['/usr/bin/node', '/tmp/bench.js', '/some/repo'];
+
+    // Without the flag a path is not a command, so nothing happens.
+    assert.equal(ensureHeadroom(argv), false);
+
+    // With it, the decision is taken but the guard still short-circuits under
+    // test, so this asserts the signature rather than spawning a child.
+    const prev = process.env.PROVENLENS_HEAP_SET;
+    process.env.PROVENLENS_HEAP_SET = '4096';
+    try {
+      assert.equal(ensureHeadroom(argv, { indexing: true }), false, 'the guard wins');
+    } finally {
+      if (prev === undefined) delete process.env.PROVENLENS_HEAP_SET;
+      else process.env.PROVENLENS_HEAP_SET = prev;
+    }
+  });
+});

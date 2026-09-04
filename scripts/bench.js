@@ -7,6 +7,18 @@
  * The number that matters is IN-REPO RESOLUTION. Raw "resolved %" is dominated
  * by calls into libraries, which no amount of work on this tool can link.
  */
+import { ensureHeadroom } from '../src/heap.js';
+
+// The CLI gives an indexing run half the machine's memory. This script measures
+// what the CLI does, so it has to ask for the same, or the harness has a lower
+// ceiling than the tool it is measuring -- two of the 5,000 repositories were
+// recorded as failures of provenlens when they were failures of this file.
+// `ensureHeadroom` decides from the command name in argv and this script takes
+// a path instead, so it is told directly -- argv is re-executed verbatim, and
+// rewriting it to carry a command name would drop the path. It does not return
+// when it re-execs.
+ensureHeadroom(process.argv, { indexing: true });
+
 import { openDb } from '../src/db.js';
 import { indexProject } from '../src/indexer.js';
 import { projectStats } from '../src/query.js';
