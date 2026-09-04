@@ -24,12 +24,12 @@ async function useProjects(pathArg, defaultRoot) {
   const start = pathArg ? resolve(pathArg) : defaultRoot;
   if (!start) {
     throw new Error(
-      'No project. Pass projectPath pointing at a directory that has been `codelens init`-ed.',
+      'No project. Pass projectPath pointing at a directory that has been `provenlens init`-ed.',
     );
   }
   const roots = discoverProjects(start);
   if (!roots.length) {
-    throw new Error(`No .codelens/ index at or under ${start}. Run \`codelens init\` there.`);
+    throw new Error(`No .provenlens/ index at or under ${start}. Run \`provenlens init\` there.`);
   }
   return Promise.all(roots.map(openOne));
 }
@@ -46,10 +46,10 @@ async function openOne(root) {
     try {
       await indexProject(db, root, { full: false });
     } catch (err) {
-      process.stderr.write(`codelens: initial sync failed: ${err.message}\n`);
+      process.stderr.write(`provenlens: initial sync failed: ${err.message}\n`);
     }
     entry.watcher = watchProject(db, root, {
-      onSync: (stats) => process.stderr.write(`codelens: reindexed ${stats.parsed} file(s)\n`),
+      onSync: (stats) => process.stderr.write(`provenlens: reindexed ${stats.parsed} file(s)\n`),
     });
   }
   return { root, db: entry.db };
@@ -57,7 +57,7 @@ async function openOne(root) {
 
 const TOOLS = [
   {
-    name: 'codelens_explore',
+    name: 'provenlens_explore',
     description:
       'Explore an area of the codebase in one call: returns the matching symbols\' verbatim ' +
       'line-numbered source, who calls them, what they call, and their blast radius. ' +
@@ -76,7 +76,7 @@ const TOOLS = [
     },
   },
   {
-    name: 'codelens_impact',
+    name: 'provenlens_impact',
     description:
       'Blast radius for a symbol: every caller that transitively reaches it, by depth. ' +
       'Use before changing or deleting a method to see what breaks.',
@@ -90,7 +90,7 @@ const TOOLS = [
     },
   },
   {
-    name: 'codelens_affected',
+    name: 'provenlens_affected',
     description:
       'Given the files a change touches, return the symbols in them, everything that ' +
       'transitively reaches those symbols, and the existing tests that already cover them. ' +
@@ -110,7 +110,7 @@ const TOOLS = [
     },
   },
   {
-    name: 'codelens_status',
+    name: 'provenlens_status',
     description: 'Index coverage: files, symbols, edges and how many call sites resolved.',
     inputSchema: {
       type: 'object',
@@ -121,7 +121,7 @@ const TOOLS = [
 
 async function callTool(name, args, defaultRoot) {
   switch (name) {
-    case 'codelens_explore': {
+    case 'provenlens_explore': {
       const all = await useProjects(args.projectPath, defaultRoot);
       // In a workspace, only the repositories that actually match speak, each
       // under its own name, so one answer covers every service at once.
@@ -133,7 +133,7 @@ async function callTool(name, args, defaultRoot) {
       }
       return sections.length ? sections.join('\n\n---\n\n') : `No symbol matches "${args.query}".`;
     }
-    case 'codelens_impact': {
+    case 'provenlens_impact': {
       const all = await useProjects(args.projectPath, defaultRoot);
       for (const { root, db } of all) {
         const matches = searchSymbols(db, args.symbol, { limit: 5 });
@@ -143,7 +143,7 @@ async function callTool(name, args, defaultRoot) {
       }
       return `No symbol matches "${args.symbol}".`;
     }
-    case 'codelens_affected': {
+    case 'provenlens_affected': {
       const all = await useProjects(args.projectPath, defaultRoot);
       if (!(args.files ?? []).length) return 'No files given.';
       // Each file belongs to exactly one repository; group and answer per repo.
@@ -165,10 +165,10 @@ async function callTool(name, args, defaultRoot) {
       }
       return sections.join('\n\n---\n\n');
     }
-    case 'codelens_status': {
+    case 'provenlens_status': {
       const all = await useProjects(args.projectPath, defaultRoot);
       if (all.length > 1) {
-        return (await Promise.all(all.map((p) => callTool('codelens_status', { ...args, projectPath: p.root }, defaultRoot)))).join('\n\n');
+        return (await Promise.all(all.map((p) => callTool('provenlens_status', { ...args, projectPath: p.root }, defaultRoot)))).join('\n\n');
       }
       const { root, db } = all[0];
       const s = projectStats(db);
@@ -236,7 +236,7 @@ export async function startMcpServer(pathArg) {
             reply(id, {
               protocolVersion: params?.protocolVersion ?? '2024-11-05',
               capabilities: { tools: {} },
-              serverInfo: { name: 'codelens', version: '0.1.0' },
+              serverInfo: { name: 'provenlens', version: '0.1.0' },
             });
             break;
           case 'notifications/initialized':
@@ -262,7 +262,7 @@ export async function startMcpServer(pathArg) {
   });
 
   process.stderr.write(
-    `codelens MCP ready${defaultRoot ? ` (default project: ${defaultRoot})` : ' (pass projectPath)'}\n`,
+    `provenlens MCP ready${defaultRoot ? ` (default project: ${defaultRoot})` : ' (pass projectPath)'}\n`,
   );
 
   await new Promise(() => {}); // run until the client closes stdin

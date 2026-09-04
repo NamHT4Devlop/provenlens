@@ -55,7 +55,7 @@ describe('doctor', () => {
 describe('workspace tsconfig', () => {
   test('reads the paths a workspace declares, anchored to its own directory', async () => {
     const { readTsconfigScopes } = await import('../src/resolve/typescript.js');
-    const root = mkdtempSync(join(tmpdir(), 'codelens-tsc-'));
+    const root = mkdtempSync(join(tmpdir(), 'provenlens-tsc-'));
     try {
       // No tsconfig at the top at all, which is how immich is laid out: the
       // aliases live in server/tsconfig.json and used to resolve to nothing.
@@ -77,7 +77,7 @@ describe('workspace tsconfig', () => {
 
 describe('workspace layout', () => {
   test('finds a node_modules that a workspace package keeps beside itself', () => {
-    const root = mkdtempSync(join(tmpdir(), 'codelens-ws-'));
+    const root = mkdtempSync(join(tmpdir(), 'provenlens-ws-'));
     try {
       mkdirSync(join(root, 'node_modules'), { recursive: true });
       mkdirSync(join(root, 'packages', 'ui', 'node_modules'), { recursive: true });

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>codelens</title>
+<title>provenlens</title>
 <style>
   /*
    * Palettes come from the editor themes people have read code in for years.
@@ -143,7 +143,7 @@
 <div id="empty">Loading the workspace…</div>
 
 <header>
-  <div class="brand">codelens<span id="root"></span></div>
+  <div class="brand">provenlens<span id="root"></span></div>
   <div class="search">
     <input id="q" placeholder="Search nodes — or trace a chain with A -> B" autocomplete="off" spellcheck="false">
     <div id="suggest"></div>
@@ -264,7 +264,7 @@ function applyTheme(name) {
     '--ui-font',
     theme.font ?? '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
   );
-  try { localStorage.setItem('codelens.theme', name); } catch { /* private mode */ }
+  try { localStorage.setItem('provenlens.theme', name); } catch { /* private mode */ }
   // Swatches and the canvas hold colours of their own; CSS variables miss them.
   renderFilters();
   renderRepos();
@@ -341,7 +341,7 @@ resize();
  *
  * It travels as a header, so it stays out of anything that logs URLs.
  */
-const TOKEN_KEY = 'codelens.token';
+const TOKEN_KEY = 'provenlens.token';
 let TOKEN = '';
 try { TOKEN = localStorage.getItem(TOKEN_KEY) ?? ''; } catch { /* private mode */ }
 
@@ -357,7 +357,7 @@ if (tokenInUrl) {
 async function api(path, params) {
   const url = new URL(path, location.origin);
   for (const [k, v] of Object.entries(params ?? {})) url.searchParams.set(k, v);
-  const res = await fetch(url, { headers: { 'x-codelens-token': TOKEN } });
+  const res = await fetch(url, { headers: { 'x-provenlens-token': TOKEN } });
   if (res.status === 403) { needsToken(); throw new Error('needs token'); }
   if (!res.ok) throw new Error((await res.json()).error ?? res.statusText);
   return res.json();
@@ -375,7 +375,7 @@ function needsToken() {
   tokenAsked = true;
   try { localStorage.removeItem(TOKEN_KEY); } catch { /* private mode */ }
   $('empty').innerHTML =
-    '<div><b>codelens needs the token it printed at startup.</b><br>' +
+    '<div><b>provenlens needs the token it printed at startup.</b><br>' +
     'Open the <code>?token=…</code> URL from your terminal once — it is saved for ' +
     esc(location.origin) + ', so after that this address alone is enough.</div>';
   $('empty').style.display = 'grid';
@@ -764,7 +764,7 @@ $('zoomOut').onclick = () => { view.k = Math.max(0.15, view.k / 1.3); };
 $('fit').onclick = fit;
 $('png').onclick = () => {
   const a = document.createElement('a');
-  a.download = 'codelens-graph.png';
+  a.download = 'provenlens-graph.png';
   a.href = cv.toDataURL('image/png');
   a.click();
 };
@@ -915,7 +915,7 @@ $('theme').innerHTML = Object.entries(THEMES)
   .join('');
 
 let savedTheme = 'solarized-dark';
-try { savedTheme = localStorage.getItem('codelens.theme') || savedTheme; } catch { /* ignore */ }
+try { savedTheme = localStorage.getItem('provenlens.theme') || savedTheme; } catch { /* ignore */ }
 $('theme').value = THEMES[savedTheme] ? savedTheme : 'solarized-dark';
 applyTheme($('theme').value);
 $('theme').addEventListener('change', (e) => applyTheme(e.target.value));
@@ -942,11 +942,11 @@ $('theme').addEventListener('change', (e) => applyTheme(e.target.value));
     from = null;
     grip.classList.remove('dragging');
     // A width chosen once should not have to be chosen again on reload.
-    try { localStorage.setItem('codelens.panelWidth', String(width())); } catch { /* ignore */ }
+    try { localStorage.setItem('provenlens.panelWidth', String(width())); } catch { /* ignore */ }
   });
 
   try {
-    const saved = Number(localStorage.getItem('codelens.panelWidth'));
+    const saved = Number(localStorage.getItem('provenlens.panelWidth'));
     if (saved >= 320) document.documentElement.style.setProperty('--panel-w', saved + 'px');
   } catch { /* ignore */ }
 })();

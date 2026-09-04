@@ -19,7 +19,7 @@ let stateDir;
 before(async () => {
   // The token now persists to disk, so the tests get their own state directory
   // rather than reading -- or worse, replacing -- the one the real UI uses.
-  stateDir = mkdtempSync(join(tmpdir(), 'codelens-state-'));
+  stateDir = mkdtempSync(join(tmpdir(), 'provenlens-state-'));
   process.env.XDG_STATE_HOME = stateDir;
 
   // Self-contained: the server needs an index, so build one rather than
@@ -36,7 +36,7 @@ after(() => {
   rmSync(stateDir, { recursive: true, force: true });
   delete process.env.XDG_STATE_HOME;
   for (const s of ['', '-wal', '-shm']) {
-    rmSync(join(FIXTURE, '.codelens', `index.db${s}`), { force: true });
+    rmSync(join(FIXTURE, '.provenlens', `index.db${s}`), { force: true });
   }
 });
 
@@ -52,7 +52,7 @@ function ask(path, { token = handle.token, host } = {}) {
         port: handle.server.address().port,
         path,
         headers: {
-          ...(token ? { 'x-codelens-token': token } : {}),
+          ...(token ? { 'x-provenlens-token': token } : {}),
           ...(host ? { Host: host } : {}),
         },
       },
@@ -123,7 +123,7 @@ describe('the API is gated by the startup token', () => {
   test('the shell it serves carries no token and no data', async () => {
     const html = await (await ask('/', { token: null })).text();
     assert.ok(!html.includes(handle.token), 'the page must not embed the token');
-    assert.ok(!html.includes('__CODELENS_TOKEN__'), 'no placeholder should survive');
+    assert.ok(!html.includes('__PROVENLENS_TOKEN__'), 'no placeholder should survive');
     // A fixture symbol name would be the giveaway that data leaked into it.
     assert.ok(!html.includes('OrderService'), 'the shell must hold no repository data');
   });
@@ -159,7 +159,7 @@ describe('the token survives a restart', () => {
             host: '127.0.0.1',
             port: rotated.server.address().port,
             path: '/api/overview',
-            headers: { 'x-codelens-token': previous },
+            headers: { 'x-provenlens-token': previous },
           },
           (res) => done(res.statusCode),
         );
@@ -176,7 +176,7 @@ describe('the token survives a restart', () => {
 describe('responses are hardened', () => {
   test('the page asks for its token by header, not from an injected constant', async () => {
     const html = await (await ask('/')).text();
-    assert.match(html, /x-codelens-token/, 'fetches must present the token as a header');
+    assert.match(html, /x-provenlens-token/, 'fetches must present the token as a header');
     assert.match(html, /localStorage/, 'the token must be kept for the next visit');
   });
 

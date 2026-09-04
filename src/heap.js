@@ -5,7 +5,7 @@ import { spawnSync } from 'node:child_process';
 const MIN_MB = 4096;
 /** Above this the win is theoretical and the swapping is not. */
 const MAX_MB = 16384;
-const GUARD = 'CODELENS_HEAP_SET';
+const GUARD = 'PROVENLENS_HEAP_SET';
 /** The commands that hold a whole project in memory. */
 const INDEXING = new Set(['init', 'index', 'sync']);
 /** Enough of them to keep the shell's 128+n convention meaningful. */

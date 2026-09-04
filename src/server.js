@@ -64,7 +64,7 @@ function hostAllowed(req) {
 export function tokenFile() {
   return join(
     process.env.XDG_STATE_HOME || join(homedir(), '.local', 'state'),
-    'codelens',
+    'provenlens',
     'ui-token',
   );
 }
@@ -281,7 +281,7 @@ export async function startServer(
 
   if (!roots.length) {
     throw new Error(
-      'no indexed project found. Run `codelens init` in a repository, or point serve at a folder containing several.',
+      'no indexed project found. Run `provenlens init` in a repository, or point serve at a folder containing several.',
     );
   }
 
@@ -346,9 +346,9 @@ export async function startServer(
       return send(200, page, 'text/html; charset=utf-8');
     }
 
-    const presented = url.searchParams.get('token') ?? req.headers['x-codelens-token'];
+    const presented = url.searchParams.get('token') ?? req.headers['x-provenlens-token'];
     if (!sameToken(presented, token)) {
-      return send(403, { error: 'codelens: this request needs the token printed at startup.' });
+      return send(403, { error: 'provenlens: this request needs the token printed at startup.' });
     }
 
     try {
@@ -618,7 +618,7 @@ export async function startServer(
     } catch (err) {
       // The message can name absolute paths on this machine; the operator gets
       // it on stderr, the browser gets only the fact that something broke.
-      process.stderr.write(`codelens serve: ${err.message}\n`);
+      process.stderr.write(`provenlens serve: ${err.message}\n`);
       send(500, { error: 'internal error — details on the server console' });
     }
   });
@@ -632,7 +632,7 @@ export async function startServer(
   const actual = server.address().port;
   const home = `http://127.0.0.1:${actual}/`;
   const address = `${home}?token=${token}`;
-  console.log(`codelens UI on ${address}`);
+  console.log(`provenlens UI on ${address}`);
   // The first visit hands the page its token; after that the bare address is
   // enough, which is the one worth bookmarking.
   console.log(`bookmark:   ${home}`);

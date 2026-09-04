@@ -24,7 +24,7 @@ if (!root) {
 }
 
 // Kept out of the repository being measured, so nothing is written into it.
-const dbPath = join(mkdtempSync(join(tmpdir(), 'codelens-bench-')), 'index.db');
+const dbPath = join(mkdtempSync(join(tmpdir(), 'provenlens-bench-')), 'index.db');
 
 const db = openDb(dbPath, { create: true });
 const started = Date.now();

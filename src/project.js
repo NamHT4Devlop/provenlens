@@ -3,12 +3,12 @@ import { join, resolve, relative, sep } from 'node:path';
 import ignore from 'ignore';
 import { langForPath } from './lang.js';
 
-export const INDEX_DIR = '.codelens';
+export const INDEX_DIR = '.provenlens';
 export const DB_FILE = 'index.db';
 
 const ALWAYS_IGNORE = [
   '.git',
-  '.codelens',
+  '.provenlens',
   'node_modules',
   'vendor/bundle',
   'target',
@@ -199,10 +199,10 @@ export function acquireIndexLock(root) {
       }
       if (alive) {
         const error = new Error(
-          `another codelens index is running on this project (pid ${holder}). ` +
+          `another provenlens index is running on this project (pid ${holder}). ` +
             `Wait for it, or remove ${lockPath} if that process is gone.`,
         );
-        error.code = 'CODELENS_LOCKED';
+        error.code = 'PROVENLENS_LOCKED';
         throw error;
       }
       rmSync(lockPath, { force: true });

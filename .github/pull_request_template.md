@@ -39,5 +39,5 @@
   - [ ] adds a dev dependency (there are none)
   - [ ] adds a build or install step (there is none)
   - [ ] reaches the network at runtime (nothing does)
-  - [ ] writes outside `.codelens/` in the user's repository
+  - [ ] writes outside `.provenlens/` in the user's repository
 -->

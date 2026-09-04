@@ -1,4 +1,4 @@
-# codelens
+# provenlens
 
 A personal code knowledge graph for **Java, Ruby, TypeScript and JavaScript** — plus a
 **string-binding** layer that connects the places a call graph structurally cannot see
@@ -6,7 +6,7 @@ A personal code knowledge graph for **Java, Ruby, TypeScript and JavaScript** �
 
 ## TL;DR
 
-codelens pre-indexes a codebase into a graph of symbols and who-calls-what, stored in SQLite, so
+provenlens pre-indexes a codebase into a graph of symbols and who-calls-what, stored in SQLite, so
 an AI agent can ask **one question** and get everything: the real source with line numbers, what
 calls this, what this calls, and what breaks if you change it — instead of a dozen rounds of grep
 and file reads.
@@ -50,7 +50,7 @@ an agent that cannot tell.
 
 | | Why |
 |---|---|
-| **Node.js 22 or newer** | codelens uses `node:sqlite`, which only exists from Node 22. Nothing else is needed — no compiler, no native modules, no database server. |
+| **Node.js 22 or newer** | provenlens uses `node:sqlite`, which only exists from Node 22. Nothing else is needed — no compiler, no native modules, no database server. |
 | **Yarn 1.22 (Classic)** | The package manager this project is set up for; `packageManager` in `package.json` pins it. |
 | A shell on macOS or Linux | Windows works under WSL. |
 
@@ -70,11 +70,11 @@ npm install -g yarn
 ### 2. Get the code and install dependencies
 
 ```bash
-git clone git@github.com:NamHT4Devlop/codelens.git ~/AI-TOOL/codelens
+git clone git@github.com:NamHT4Devlop/provenlens.git ~/AI-TOOL/provenlens
 ```
 
 ```bash
-cd ~/AI-TOOL/codelens && yarn install
+cd ~/AI-TOOL/provenlens && yarn install
 ```
 
 That pulls exactly four packages: `commander`, `ignore`, `web-tree-sitter` and
@@ -83,10 +83,10 @@ and each is pinned to an exact version (no `^`, no `~`), so a fresh install toda
 same bytes it resolved to when the benchmarks below were measured. `yarn audit` reports 0
 vulnerabilities across all four.
 
-### 3. Put `codelens` on your PATH
+### 3. Put `provenlens` on your PATH
 
 ```bash
-ln -sf ~/AI-TOOL/codelens/bin/codelens.js ~/.local/bin/codelens
+ln -sf ~/AI-TOOL/provenlens/bin/provenlens.js ~/.local/bin/provenlens
 ```
 
 Use a symlink rather than `yarn link` or `npm link`. Both install into the bin directory of *the
@@ -102,7 +102,7 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc
 Verify:
 
 ```bash
-codelens --version
+provenlens --version
 ```
 
 ### 4. Index your first repository
@@ -110,24 +110,24 @@ codelens --version
 Every repository must be indexed once before any other command works:
 
 ```bash
-cd /path/to/your/repo && codelens init .
+cd /path/to/your/repo && provenlens init .
 ```
 
 You should see something like this — the last line is the resolver reporting how much of the call
 graph it managed to connect:
 
 ```
-created .codelens/ in /path/to/your/repo
+created .provenlens/ in /path/to/your/repo
 indexed 2 file(s), 6 symbol(s)
 java: 1 direct, 0 via impl, 0 by name, 0 missed, 0 library (100.0% of in-repo calls linked)
 ```
 
-The index lives in `.codelens/` at the repo root. It is a **cache** — safe to delete, rebuilt on
-demand, and it should never be committed. Add `.codelens/` to your global gitignore so it can
+The index lives in `.provenlens/` at the repo root. It is a **cache** — safe to delete, rebuilt on
+demand, and it should never be committed. Add `.provenlens/` to your global gitignore so it can
 never land in a team repository:
 
 ```bash
-echo '.codelens/' >> "$(git config --global core.excludesfile || echo ~/.config/git/ignore)"
+echo '.provenlens/' >> "$(git config --global core.excludesfile || echo ~/.config/git/ignore)"
 ```
 
 That appends to whichever file git is actually configured to read; `git config --global
@@ -136,14 +136,14 @@ core.excludesfile` on its own tells you which one that is.
 ### 5. Ask it something
 
 ```bash
-codelens explore "OwnerController"
+provenlens explore "OwnerController"
 ```
 
 `explore` is the one command worth remembering — it returns the real source with line numbers, the
 call paths in and out, framework bindings, and the blast radius, all in a single response:
 
 ````
-# codelens explore: "OwnerController"
+# provenlens explore: "OwnerController"
 
 12 matches, showing 3. Others: ...OwnerController#findOwner, ...OwnerController#processCreationForm
 
@@ -161,7 +161,7 @@ src/main/java/org/springframework/samples/petclinic/owner/OwnerController.java:4
 The narrower questions have their own commands:
 
 ```bash
-codelens callers "wrap"
+provenlens callers "wrap"
 ```
 
 ```
@@ -174,7 +174,7 @@ src/Formatter.java:3
 
 ### 5b. Optional — install the project's dependencies
 
-codelens reads type declarations from a project's dependencies, so a call chain
+provenlens reads type declarations from a project's dependencies, so a call chain
 can be typed *through* a library instead of stopping at one. Nothing is required
 for this; it simply uses what is already on disk.
 
@@ -191,7 +191,7 @@ coverage, and is never the target of an edge — a call landing there is a **lib
 the declaration** rather than assumed from a name.
 
 ```bash
-codelens status
+provenlens status
 ```
 
 ```
@@ -203,25 +203,25 @@ dependencies read: 15 package(s); 285 declaration file(s), 312 jvm type(s)
 The index does not update itself unless you ask it to. Three options, cheapest first:
 
 ```bash
-codelens sync
+provenlens sync
 ```
 
 ```bash
-codelens sync -w
+provenlens sync -w
 ```
 
 ```bash
-codelens index
+provenlens index
 ```
 
 `sync` reparses only the files whose contents changed, `-w` keeps watching in the background, and
-`index` rebuilds everything from scratch. `codelens serve` and the MCP server each run a watcher of
+`index` rebuilds everything from scratch. `provenlens serve` and the MCP server each run a watcher of
 their own, so if you use either of those you rarely need to sync by hand.
 
 ### 7. Check the index is healthy
 
 ```bash
-codelens status
+provenlens status
 ```
 
 ```
@@ -242,24 +242,24 @@ by language:
 ### 8. Optional — the web UI
 
 ```bash
-codelens serve --open
+provenlens serve --open
 ```
 
 It prints two URLs:
 
 ```
-codelens UI on http://127.0.0.1:7777/?token=ecf03d237e77307bc12f255bea265623
+provenlens UI on http://127.0.0.1:7777/?token=ecf03d237e77307bc12f255bea265623
 bookmark:   http://127.0.0.1:7777/
 ```
 
 Open the first one once. The page keeps the token, so from then on the short one is enough —
 bookmark that. The token is stored under your state directory and reused on every restart, so the
-bookmark keeps working tomorrow. `codelens serve --new-token` retires it if you ever want it gone.
+bookmark keeps working tomorrow. `provenlens serve --new-token` retires it if you ever want it gone.
 
 ### 9. Optional — wire it into Claude Code
 
 ```bash
-codelens install claude-user
+provenlens install claude-user
 ```
 
 This prints the change before writing it and always leaves a `.bak`. See
@@ -269,29 +269,29 @@ MCP tools do.
 ### Uninstalling
 
 ```bash
-codelens uninit /path/to/repo
+provenlens uninit /path/to/repo
 ```
 
 ```bash
-rm ~/.local/bin/codelens
+rm ~/.local/bin/provenlens
 ```
 
 ```bash
-rm -rf ~/AI-TOOL/codelens
+rm -rf ~/AI-TOOL/provenlens
 ```
 
 The first removes one repository's index, the second removes the command, the third removes
-codelens itself.
+provenlens itself.
 
 ### Troubleshooting setup
 
 | Symptom | Cause and fix |
 |---|---|
-| `zsh: command not found: codelens` | The symlink is missing, or `~/.local/bin` is not on your PATH. Run `ls -l ~/.local/bin/codelens` and `echo $PATH` to see which. |
+| `zsh: command not found: provenlens` | The symlink is missing, or `~/.local/bin` is not on your PATH. Run `ls -l ~/.local/bin/provenlens` and `echo $PATH` to see which. |
 | `Cannot find module 'node:sqlite'` | Node is older than 22. Check `node -v`, then upgrade. |
-| `no index — run: codelens init` | That repository has never been indexed. `cd` into it and run `codelens init .`. |
+| `no index — run: provenlens init` | That repository has never been indexed. `cd` into it and run `provenlens init .`. |
 | A `Language.load` / ABI error on first run | Something upgraded `web-tree-sitter` past 0.25.10. Run `yarn install --frozen-lockfile` to restore the pinned versions — see [Pinned versions](#pinned-versions). |
-| `EADDRINUSE` from `codelens serve` | Port 7777 is already taken, most likely by an earlier `serve`. Use `codelens serve -p 7800`, or stop the old one. |
+| `EADDRINUSE` from `provenlens serve` | Port 7777 is already taken, most likely by an earlier `serve`. Use `provenlens serve -p 7800`, or stop the old one. |
 | The web UI says it needs a token | This browser has not been given the token yet, or `--new-token` retired the one it had. Open the `?token=…` URL `serve` printed once; the bare address works from then on. |
 
 ---
@@ -320,7 +320,7 @@ that. A plugin declares both ends, and one shared pass matches them:
 | `flyway` | `V*__*.sql` ↔ the entity or mapper touching that table | `touches-table` (0.6) |
 | `http` | A URL is a string on both sides: `@GetMapping`/`@Get`/`app.get`/`config/routes.rb` declare the handler, an HTTP client naming a path calls it — **across services** | `calls-route` (0.8) |
 
-SQL statements in XML and each migration file **become real symbols** — `codelens explore
+SQL statements in XML and each migration file **become real symbols** — `provenlens explore
 "OrderMapper#findById"` returns both the Java signature and the SQL that will actually run.
 
 Camel and SQS shake hands too: a route publishing to `aws2-sqs:order-events` links straight through
@@ -333,7 +333,7 @@ edge creation are shared.
 ## Reading the numbers honestly
 
 In a real Spring application, **46–59% of all calls target a class inside a JAR**. Counting those
-as "unresolved" makes the metric meaningless. codelens splits three ways:
+as "unresolved" makes the metric meaningless. provenlens splits three ways:
 
 ```
 calls = linked + library + missed
@@ -635,12 +635,12 @@ agenta is the one to read carefully, because its floor is 62.5% and almost none 
 types, which in a React codebase means callback parameters. A codebase written that way will have a
 low floor no matter what is installed, and it is better to know that than to be told a number.
 
-**`codelens doctor` answers this for a repository you have rather than one in a table.** It reads
+**`provenlens doctor` answers this for a repository you have rather than one in a table.** It reads
 the index against the machine and says what is missing, because the figure alone cannot tell a weak
 resolver from an uninstalled project:
 
 ```
-$ codelens doctor
+$ provenlens doctor
 reading: 72.4% of the calls that could be in this repo
 
 [MISSING] no node_modules anywhere in the tree, and the code imports 373 package(s)
@@ -658,7 +658,7 @@ types — so no one spends an afternoon looking for a package that was never goi
 types `context` from Spring Boot's signature; `Mono<T>` types halo's reactive chains from Reactor's.
 Everything downstream of such a receiver used to be unresolvable.
 
-For TypeScript and JavaScript it no longer is: codelens **reads the `.d.ts` files of the packages a
+For TypeScript and JavaScript it no longer is: provenlens **reads the `.d.ts` files of the packages a
 project imports**, so a chain can be typed through a library instead of stopping at one. Those
 files are marked external — never a resolution target, never in a search or a count — and a call
 landing on one is booked as a library call named after its package, proven by the declaration
@@ -741,27 +741,27 @@ a convention. No amount of engineering turns that into a declaration, because Ru
 
 | Command | What it does |
 |---|---|
-| `codelens init [path]` | Create `.codelens/` and build the index for the first time |
-| `codelens sync [-w]` | Reparse changed files; `-w` keeps watching |
-| `codelens index` | Rebuild everything |
-| `codelens status` | Coverage, resolution quality, binding counts |
-| `codelens doctor` | **Why this repo reads as it does, and what would change it** — checks dependencies, JDK and jars against what the code imports |
-| `codelens query <name>` | Find symbols by name |
-| `codelens explore <name>` | Source + call paths + bindings + blast radius, in one shot |
-| `codelens node <name>` | One symbol in full, with callers and callees |
-| `codelens callers <name>` / `callees <name>` | One direction of the relationship |
-| `codelens impact <name>` | Blast radius |
-| `codelens hotspots` | **What the most other code depends on** — read this before changing anything |
-| `codelens dead [--public]` | Methods nothing reaches, with framework entry points and template-named symbols already ruled out |
-| `codelens cycles` | Files that depend on each other, directly or the long way round |
-| `codelens routes [-m <text>]` | **Every HTTP route the repo serves and who calls it** — Spring, NestJS, Express and Rails |
-| `codelens path <from> <to>` | **Shortest directed chain** between two symbols, hop by hop — across repositories when a binding bridges them |
-| `codelens affected [files...] [--fail-if-untested]` | What changed files reach, and **which tests already cover it**; the flag exits 2 when nothing does — a CI gate |
-| `codelens export [name] [-f json\|mermaid]` | The graph around a symbol as JSON or a **Mermaid diagram** ready for a README or PR |
-| `codelens install [target]` | Register the MCP server with an agent (`--dry-run` to preview) |
-| `codelens uninit [path]` | Remove the index from a project |
-| `codelens serve [paths...] [-p 7777] [-o] [--new-token]` | **Web UI** — search and browse the graph, one repo or **many at once** |
-| `codelens mcp [path]` | MCP server over stdio |
+| `provenlens init [path]` | Create `.provenlens/` and build the index for the first time |
+| `provenlens sync [-w]` | Reparse changed files; `-w` keeps watching |
+| `provenlens index` | Rebuild everything |
+| `provenlens status` | Coverage, resolution quality, binding counts |
+| `provenlens doctor` | **Why this repo reads as it does, and what would change it** — checks dependencies, JDK and jars against what the code imports |
+| `provenlens query <name>` | Find symbols by name |
+| `provenlens explore <name>` | Source + call paths + bindings + blast radius, in one shot |
+| `provenlens node <name>` | One symbol in full, with callers and callees |
+| `provenlens callers <name>` / `callees <name>` | One direction of the relationship |
+| `provenlens impact <name>` | Blast radius |
+| `provenlens hotspots` | **What the most other code depends on** — read this before changing anything |
+| `provenlens dead [--public]` | Methods nothing reaches, with framework entry points and template-named symbols already ruled out |
+| `provenlens cycles` | Files that depend on each other, directly or the long way round |
+| `provenlens routes [-m <text>]` | **Every HTTP route the repo serves and who calls it** — Spring, NestJS, Express and Rails |
+| `provenlens path <from> <to>` | **Shortest directed chain** between two symbols, hop by hop — across repositories when a binding bridges them |
+| `provenlens affected [files...] [--fail-if-untested]` | What changed files reach, and **which tests already cover it**; the flag exits 2 when nothing does — a CI gate |
+| `provenlens export [name] [-f json\|mermaid]` | The graph around a symbol as JSON or a **Mermaid diagram** ready for a README or PR |
+| `provenlens install [target]` | Register the MCP server with an agent (`--dry-run` to preview) |
+| `provenlens uninit [path]` | Remove the index from a project |
+| `provenlens serve [paths...] [-p 7777] [-o] [--new-token]` | **Web UI** — search and browse the graph, one repo or **many at once** |
+| `provenlens mcp [path]` | MCP server over stdio |
 
 `query`, `callers`, `callees`, `impact`, `path`, `export` and `affected` all accept `--json` for
 piping into other tools.
@@ -803,7 +803,7 @@ calls `GET /orders/42`. No call graph crosses that gap — it is a string at eac
 same shape as an SQS queue name, so it is the same kind of plugin.
 
 ```
-$ codelens routes -m owners
+$ provenlens routes -m owners
 GET /owners/{}
   served by  org.springframework.samples.petclinic.owner.OwnerController#showOwner
              src/main/java/.../OwnerController.java:180
@@ -843,17 +843,17 @@ OrderAuditWorker#record — app/workers/order_audit_worker.rb:7
 ### Web UI
 
 ```bash
-codelens serve --open
+provenlens serve --open
 ```
 
 **Several repositories at once.** Point it at a folder holding multiple services and it finds every
 initialised repo inside:
 
 ```bash
-codelens serve ~/work/services --open
+provenlens serve ~/work/services --open
 ```
 
-Or list them explicitly: `codelens serve ./order-service ./notify-service`.
+Or list them explicitly: `provenlens serve ./order-service ./notify-service`.
 
 The toolbar has a repository dropdown — **"All repos" shows every one of them**, picking one
 narrows the view to it. Clicking a repository's hub on the canvas moves the dropdown too, so the
@@ -863,7 +863,7 @@ wears that same hue.
 
 **Cross-repo edges.** This is the actual reason to open several repos at once: an SQS producer in
 one service and its listener in another are connected only by **the queue name**, with no call
-between them. codelens matches binding endpoints across the separate indexes and draws them as
+between them. provenlens matches binding endpoints across the separate indexes and draws them as
 **dashed teal lines labelled with the queue**:
 
 ```
@@ -881,7 +881,7 @@ type relationships, framework bindings, blast radius. Derived symbols (a `belong
 database column, a SQL statement in XML) are labelled `derived`; test files are labelled `test`.
 `/` returns to the search box, arrow keys move through results, and the detail panel can be dragged
 wider by its left edge. Typing **`A -> B`** in the search box traces the shortest chain between two
-symbols and draws just that chain — the same walk `codelens path` does, bindings and all.
+symbols and draws just that chain — the same walk `provenlens path` does, bindings and all.
 
 **Themes.** Seven editor palettes, remembered across sessions: Solarized Dark (default), Solarized
 Light, Gruvbox Dark, Monokai, Nord, One Dark, and **Matrix** — black background, green monospace,
@@ -898,7 +898,7 @@ Three layers of protection, each with a regression test in `test/server.test.js`
 
 - **A token on every data route** (Jupyter style), compared with `timingSafeEqual`. Stops another
   process on this machine from reading your index through the API. It is stored at
-  `$XDG_STATE_HOME/codelens/ui-token` (mode 0600) and reused across restarts, so the URL stays
+  `$XDG_STATE_HOME/provenlens/ui-token` (mode 0600) and reused across restarts, so the URL stays
   bookmarkable; `serve --new-token` rotates it. The page keeps it in `localStorage` rather than a
   cookie, because cookies ignore the port — a cookie set for `127.0.0.1` would be handed to every
   other dev server you run. The token is stripped from the address bar on arrival, so it never
@@ -912,7 +912,7 @@ Three layers of protection, each with a regression test in `test/server.test.js`
 ### Daily workflow
 
 ```bash
-git diff --name-only | codelens affected
+git diff --name-only | provenlens affected
 ```
 
 That returns which symbols changed, what reaches them, and **which existing tests cover them** — in
@@ -923,28 +923,28 @@ As a pre-push gate, `--fail-if-untested` exits 2 when the diff touches productio
 existing test reaches:
 
 ```bash
-git diff --name-only | codelens affected --fail-if-untested
+git diff --name-only | provenlens affected --fail-if-untested
 ```
 
 ## Using it from Claude Code
 
 ```bash
-codelens install claude-user
+provenlens install claude-user
 ```
 
 It prints the change before writing and always keeps a `.bak`. Targets are `claude-user`,
 `claude-project` and `cursor`. Or do it by hand:
 
 ```bash
-claude mcp add codelens -- node ~/AI-TOOL/codelens/bin/codelens.js mcp
+claude mcp add provenlens -- node ~/AI-TOOL/provenlens/bin/provenlens.js mcp
 ```
 
-Four tools: `codelens_explore`, `codelens_impact`, `codelens_affected`, `codelens_status`. Each
+Four tools: `provenlens_explore`, `provenlens_impact`, `provenlens_affected`, `provenlens_status`. Each
 takes a `projectPath`, so **one server serves every repository** — and a `projectPath` naming a
 folder of checkouts serves them **all at once**, each answer labelled with the repository it came
 from. Indexes stay current through the file watcher.
 
-`codelens install` only auto-detects agents that already have a config file. The project-scoped
+`provenlens install` only auto-detects agents that already have a config file. The project-scoped
 variant (`.mcp.json` in the current directory) is **never** automatic — you have to name it
 explicitly, so a config file can never be dropped into a team repo by accident.
 

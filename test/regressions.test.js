@@ -15,7 +15,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 
 /** A throwaway project written from literals, for cases no fixture covers. */
 async function tempProject(files) {
-  const root = mkdtempSync(join(tmpdir(), 'codelens-reg-'));
+  const root = mkdtempSync(join(tmpdir(), 'provenlens-reg-'));
   for (const [path, content] of Object.entries(files)) {
     const full = join(root, path);
     mkdirSync(join(full, '..'), { recursive: true });
@@ -125,7 +125,7 @@ describe('watcher ignore rules', () => {
       'node_modules/react/index.js',
       'target/classes/X.java',
       'dist/bundle.js',
-      '.codelens/index.db',
+      '.provenlens/index.db',
     ]) {
       assert.ok(ignored(path), `${path} should be ignored`);
     }
@@ -655,7 +655,7 @@ describe('rails schema', () => {
 
 describe('affected --fail-if-untested', () => {
   // The CI gate: exit 2 when a production change is reached by no test.
-  const CLI = join(HERE, '..', 'bin', 'codelens.js');
+  const CLI = join(HERE, '..', 'bin', 'provenlens.js');
   let covered;
   let bare;
 
@@ -670,8 +670,8 @@ describe('affected --fail-if-untested', () => {
     });
 
   before(async () => {
-    covered = mkdtempSync(join(tmpdir(), 'codelens-gate-a-'));
-    bare = mkdtempSync(join(tmpdir(), 'codelens-gate-b-'));
+    covered = mkdtempSync(join(tmpdir(), 'provenlens-gate-a-'));
+    bare = mkdtempSync(join(tmpdir(), 'provenlens-gate-b-'));
     const price = [
       'package shop;',
       'public class Price {',
@@ -881,7 +881,7 @@ describe('JVM signatures read with javap', () => {
 
 describe('dependency declarations are read once, not on every sync', () => {
   test('a re-sync keeps them and does not report them as vanished', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'codelens-ambient-'));
+    const root = mkdtempSync(join(tmpdir(), 'provenlens-ambient-'));
     mkdirSync(join(root, 'src'), { recursive: true });
     writeFileSync(
       join(root, 'src', 'A.java'),
@@ -918,7 +918,7 @@ describe('a .gitignore that un-ignores a vendored node_modules', () => {
   // arrive twice -- once through discovery, once through the ambient reader -- and the
   // second insert hit the files.path UNIQUE constraint and aborted the whole index.
   const build = () => {
-    const root = mkdtempSync(join(tmpdir(), 'codelens-negated-nm-'));
+    const root = mkdtempSync(join(tmpdir(), 'provenlens-negated-nm-'));
     const stub = join(root, 'vendor', 'stub', 'node_modules', 'tiny-lib');
     mkdirSync(join(root, 'src'), { recursive: true });
     mkdirSync(stub, { recursive: true });
@@ -986,7 +986,7 @@ describe('the MCP entry the installer writes', () => {
   test('runs the bin directly, which resolves node at run time', async () => {
     const { serverEntry } = await import('../src/install.js');
     const entry = serverEntry();
-    assert.match(entry.command, /bin\/codelens\.js$/);
+    assert.match(entry.command, /bin\/provenlens\.js$/);
     assert.deepEqual(entry.args, ['mcp']);
 
     // The command is only safe to spawn if the file really is executable and really carries a

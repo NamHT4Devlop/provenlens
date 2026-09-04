@@ -9,7 +9,7 @@ import { homedir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const BIN = resolve(fileURLToPath(import.meta.url), '..', '..', 'bin', 'codelens.js');
+const BIN = resolve(fileURLToPath(import.meta.url), '..', '..', 'bin', 'provenlens.js');
 
 export const TARGETS = {
   'claude-user': {
@@ -56,7 +56,7 @@ export function planInstall(targetName) {
   if (!target) throw new Error(`unknown target: ${targetName}`);
 
   const config = readJson(target.file);
-  const existing = config[target.key]?.codelens;
+  const existing = config[target.key]?.provenlens;
   const wanted = serverEntry();
   const same = JSON.stringify(existing) === JSON.stringify(wanted);
 
@@ -76,7 +76,7 @@ export function applyInstall(targetName) {
 
   const config = readJson(target.file);
   config[target.key] ??= {};
-  config[target.key].codelens = serverEntry();
+  config[target.key].provenlens = serverEntry();
 
   mkdirSync(dirname(target.file), { recursive: true });
   if (existsSync(target.file)) copyFileSync(target.file, `${target.file}.bak`);

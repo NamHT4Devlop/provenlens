@@ -4,7 +4,7 @@ import { extractTypeScript } from './typescript.js';
 
 /**
  * Language -> extractor. A language with no entry here is discovered and
- * counted, but not parsed; `codelens status` reports it as pending so the
+ * counted, but not parsed; `provenlens status` reports it as pending so the
  * gap is visible rather than silent.
  */
 const EXTRACTORS = {

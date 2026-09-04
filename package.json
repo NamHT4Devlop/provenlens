@@ -1,10 +1,10 @@
 {
-  "name": "codelens",
+  "name": "provenlens",
   "version": "0.1.0",
   "description": "Personal pre-indexed code knowledge graph for Java, Ruby, TypeScript and JavaScript",
   "type": "module",
   "bin": {
-    "codelens": "./bin/codelens.js"
+    "provenlens": "./bin/provenlens.js"
   },
   "engines": {
     "node": ">=22"

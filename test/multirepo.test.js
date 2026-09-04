@@ -54,7 +54,7 @@ let handle;
 before(async () => {
   // The server persists its UI token, so keep that inside the workspace rather
   // than writing into the state directory the real UI reads.
-  workspace = mkdtempSync(join(tmpdir(), 'codelens-ws-'));
+  workspace = mkdtempSync(join(tmpdir(), 'provenlens-ws-'));
   process.env.XDG_STATE_HOME = join(workspace, '.state');
   for (const [path, content] of Object.entries(SERVICES)) {
     const full = join(workspace, path);
@@ -83,7 +83,7 @@ const get = (path) =>
         host: '127.0.0.1',
         port: handle.server.address().port,
         path,
-        headers: { 'x-codelens-token': handle.token },
+        headers: { 'x-provenlens-token': handle.token },
       },
       (res) => {
         let body = '';
@@ -270,7 +270,7 @@ describe('a path across the repository boundary', () => {
 });
 
 describe('the same workspace through the CLI', () => {
-  const CLI = join(HERE2, '..', 'bin', 'codelens.js');
+  const CLI = join(HERE2, '..', 'bin', 'provenlens.js');
 
   const run = (args, cwd = workspace) =>
     new Promise((done) => {
@@ -312,8 +312,8 @@ describe('the same workspace through the CLI', () => {
 });
 
 describe('the same workspace through MCP', () => {
-  test('codelens_status covers every repository in one call', async () => {
-    const CLI = join(HERE2, '..', 'bin', 'codelens.js');
+  test('provenlens_status covers every repository in one call', async () => {
+    const CLI = join(HERE2, '..', 'bin', 'provenlens.js');
     const child = spawn(process.execPath, ['--no-warnings', CLI, 'mcp', workspace]);
     const replies = [];
     let buffer = '';
@@ -329,7 +329,7 @@ describe('the same workspace through MCP', () => {
 
     const ask = (msg) => child.stdin.write(JSON.stringify(msg) + '\n');
     ask({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
-    ask({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'codelens_status', arguments: {} } });
+    ask({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'provenlens_status', arguments: {} } });
 
     const until = async (pred, ms = 15000) => {
       const start = Date.now();

@@ -49,11 +49,11 @@ describe('schema', () => {
   test('a fresh index is readable by its owner alone', () => {
     // The HTTP API is token-gated against other local users; a world-readable
     // index file would hand them the same data without asking the server.
-    const root = mkdtempSync(join(tmpdir(), 'codelens-perm-'));
-    const dbPath = join(root, '.codelens', 'index.db');
+    const root = mkdtempSync(join(tmpdir(), 'provenlens-perm-'));
+    const dbPath = join(root, '.provenlens', 'index.db');
     const db = openDb(dbPath, { create: true });
     try {
-      assert.equal(statSync(dirname(dbPath)).mode & 0o777, 0o700, '.codelens/ must be 0700');
+      assert.equal(statSync(dirname(dbPath)).mode & 0o777, 0o700, '.provenlens/ must be 0700');
       assert.equal(statSync(dbPath).mode & 0o777, 0o600, 'index.db must be 0600');
     } finally {
       db.close();

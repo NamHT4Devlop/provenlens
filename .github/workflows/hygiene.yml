@@ -26,7 +26,7 @@ jobs:
           # Kept as one list so the message can name what it found. These are
           # ignored globally on the author's machine, which is exactly why they
           # would go unnoticed in a contributor's PR.
-          patterns='^\.codelens/|^namht-sessions/|^knowledge-base/|^node_modules/|(^|/)\.DS_Store$|\.db(-wal|-shm)?$|^\.env'
+          patterns='^\.provenlens/|^namht-sessions/|^knowledge-base/|^node_modules/|(^|/)\.DS_Store$|\.db(-wal|-shm)?$|^\.env'
           found=$(git ls-files | grep -E "$patterns" || true)
           if [ -n "$found" ]; then
             echo "::error::generated or local-only files are tracked"
@@ -45,7 +45,7 @@ jobs:
       - name: Each path this tool writes is ignored
         run: |
           fail=0
-          for path in .codelens/index.db namht-sessions/x.md knowledge-base/x.md; do
+          for path in .provenlens/index.db namht-sessions/x.md knowledge-base/x.md; do
             mkdir -p "$(dirname "$path")" && touch "$path"
             if ! git check-ignore -q "$path"; then
               echo "::error::$path is not ignored by this repository's .gitignore"

@@ -28,7 +28,7 @@ export function watchProject(db, root, { onSync } = {}) {
       const stats = await indexProject(db, root, { full: false });
       if (stats.parsed || stats.removed) onSync?.(stats, reason);
     } catch (err) {
-      process.stderr.write(`codelens: sync failed: ${err.message}\n`);
+      process.stderr.write(`provenlens: sync failed: ${err.message}\n`);
     } finally {
       running = false;
       if (pending) {

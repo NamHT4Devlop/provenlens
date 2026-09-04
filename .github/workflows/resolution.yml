@@ -22,7 +22,7 @@ env:
 
 jobs:
   self-index:
-    name: codelens still indexes itself above 90%
+    name: provenlens still indexes itself above 90%
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -36,11 +36,11 @@ jobs:
       # the .gitignore negation that once crashed indexing, so building the
       # index here is itself a regression test.
       - name: Build the index on a clean checkout
-        run: node bin/codelens.js init .
+        run: node bin/provenlens.js init .
 
       - name: Read the resolution back and hold it to the floor
         run: |
-          node bin/codelens.js status | tee status.txt
+          node bin/provenlens.js status | tee status.txt
           got=$(sed -n 's/^resolution: *\([0-9.]*\)%.*/\1/p' status.txt | head -1)
           if [ -z "$got" ]; then
             echo "::error::status printed no resolution line -- the index did not build"
@@ -60,10 +60,10 @@ jobs:
       - name: Every command runs against that index
         run: |
           for cmd in status doctor dead cycles hotspots routes export; do
-            echo "--- codelens $cmd"
-            node bin/codelens.js "$cmd" > /dev/null || { echo "::error::codelens $cmd failed"; exit 1; }
+            echo "--- provenlens $cmd"
+            node bin/provenlens.js "$cmd" > /dev/null || { echo "::error::provenlens $cmd failed"; exit 1; }
           done
-          node bin/codelens.js query indexProject > /dev/null
-          node bin/codelens.js explore indexProject > /dev/null
-          node bin/codelens.js callers indexProject > /dev/null
-          node bin/codelens.js impact indexProject > /dev/null
+          node bin/provenlens.js query indexProject > /dev/null
+          node bin/provenlens.js explore indexProject > /dev/null
+          node bin/provenlens.js callers indexProject > /dev/null
+          node bin/provenlens.js impact indexProject > /dev/null

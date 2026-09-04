@@ -195,7 +195,7 @@ export function diagnose(db, root) {
       level: 'minor',
       what: 'no package.json at the root being indexed',
       why: 'this may be a level above the actual application, which costs nothing but indexes more than you asked for',
-      fix: 'point codelens at the directory holding package.json if the extra files are not wanted',
+      fix: 'point provenlens at the directory holding package.json if the extra files are not wanted',
     });
   }
 

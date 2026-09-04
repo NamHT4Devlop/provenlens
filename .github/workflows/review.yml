@@ -124,7 +124,7 @@ jobs:
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
 
-            codelens builds a call graph for Java, Ruby, TypeScript and JavaScript.
+            provenlens builds a call graph for Java, Ruby, TypeScript and JavaScript.
             Its output is a percentage, so a change can look correct in a diff and
             still be wrong in a way only measurement shows. Review with that in mind.
 
@@ -153,7 +153,7 @@ jobs:
 
             5. **What the project refuses to become.** Four runtime dependencies,
                no dev dependencies, no build step, no network egress, and nothing
-               written into the user's repository beyond `.codelens/`. A PR that
+               written into the user's repository beyond `.provenlens/`. A PR that
                changes any of those is making a decision, not an improvement, and
                should be discussed rather than merged quietly.
 

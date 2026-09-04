@@ -130,7 +130,7 @@ export function runBindings(db, root) {
     try {
       plugin.collect(ctx);
     } catch (err) {
-      process.stderr.write(`codelens: binding plugin ${plugin.name} failed: ${err.message}\n`);
+      process.stderr.write(`provenlens: binding plugin ${plugin.name} failed: ${err.message}\n`);
       continue;
     }
 

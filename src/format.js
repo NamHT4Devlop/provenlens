@@ -69,10 +69,10 @@ function membersOf(db, containerFqn) {
 export function formatExplore(db, root, query, { maxMatches = 3, maxLines = 120 } = {}) {
   const matches = searchSymbols(db, query, { limit: 12 });
   if (!matches.length) {
-    return `No symbol matches "${query}".\n\nTry \`codelens query <partial-name>\` to browse what is indexed.`;
+    return `No symbol matches "${query}".\n\nTry \`provenlens query <partial-name>\` to browse what is indexed.`;
   }
 
-  const out = [`# codelens explore: "${query}"`, ''];
+  const out = [`# provenlens explore: "${query}"`, ''];
   const shown = matches.slice(0, maxMatches);
 
   if (matches.length > shown.length) {

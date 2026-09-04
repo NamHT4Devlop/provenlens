@@ -8,7 +8,7 @@
  * same kind of plugin.
  *
  * Providers are the handlers. Consumers are the clients that name a path. In a
- * single service the providers alone are worth having: `codelens routes` then
+ * single service the providers alone are worth having: `provenlens routes` then
  * answers "which method serves POST /orders", which is otherwise a grep
  * through annotations that may not even be on the method.
  */

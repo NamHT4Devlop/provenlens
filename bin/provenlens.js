@@ -40,7 +40,7 @@ import { openWorkspace, locateSymbol, pathAcross } from '../src/workspace.js';
 
 const program = new Command();
 
-/** Machine-readable output, so codelens can feed other tools. */
+/** Machine-readable output, so provenlens can feed other tools. */
 function emitJson(value) {
   console.log(JSON.stringify(value, null, 2));
 }
@@ -73,17 +73,17 @@ function readStdin() {
 }
 
 function die(msg) {
-  console.error(`codelens: ${msg}`);
+  console.error(`provenlens: ${msg}`);
   process.exit(1);
 }
 
 /** Opens the nearest indexed project, or explains how to make one. */
 function useProject(pathArg, { needsData = true } = {}) {
   const root = findProjectRoot(pathArg ? resolve(pathArg) : process.cwd());
-  if (!root) die(`no ${INDEX_DIR}/ found here or in any parent. Run \`codelens init\` first.`);
+  if (!root) die(`no ${INDEX_DIR}/ found here or in any parent. Run \`provenlens init\` first.`);
   const { db, staleSchema } = openProject(dbPathFor(root));
   if (staleSchema && needsData) {
-    die('index was built by an older version and has been reset. Run `codelens index`.');
+    die('index was built by an older version and has been reset. Run `provenlens index`.');
   }
   return { root, db };
 }
@@ -100,7 +100,7 @@ function useScope(pathArg) {
   }
   const projects = openWorkspace(start);
   if (!projects.length) {
-    die(`no ${INDEX_DIR}/ found here, in any parent, or one level down. Run \`codelens init\` first.`);
+    die(`no ${INDEX_DIR}/ found here, in any parent, or one level down. Run \`provenlens init\` first.`);
   }
   return projects;
 }
@@ -142,7 +142,7 @@ function pickSymbol(db, name) {
  * they contend over the CONTENT: one rebuilds the symbols the other is still
  * resolving edges against, and the loser dies on a foreign-key violation with
  * the index half written. The lock lives at the CLI, because this is where a
- * project's own `.codelens/` is the database being written; the library takes
+ * project's own `.provenlens/` is the database being written; the library takes
  * whatever database it is handed, which a benchmark or a test may keep
  * somewhere else entirely.
  */
@@ -151,7 +151,7 @@ async function withIndexLock(root, run) {
   try {
     release = acquireIndexLock(root);
   } catch (err) {
-    if (err?.code === 'CODELENS_LOCKED') die(err.message);
+    if (err?.code === 'PROVENLENS_LOCKED') die(err.message);
     throw err;
   }
   try {
@@ -198,7 +198,7 @@ function reportIndex(stats) {
 }
 
 program
-  .name('codelens')
+  .name('provenlens')
   .description('Personal code knowledge graph for Java, Ruby, TypeScript and JavaScript')
   .version('0.1.0');
 
@@ -401,7 +401,7 @@ program
     const { hotspots } = await import('../src/insight.js');
     const rows = hotspots(db, { limit: Number(opts.limit) || 20 });
     if (!rows.length) {
-      console.log('no symbol has a caller yet — run `codelens index` first');
+      console.log('no symbol has a caller yet — run `provenlens index` first');
       return;
     }
     console.log(`${'callers'.padStart(8)}  ${'files'.padStart(6)}  symbol`);
@@ -635,13 +635,13 @@ program
     const { root, db } = useProject();
     let paths = files;
     if (!paths.length) {
-      // Built for `git diff --name-only | codelens affected`.
+      // Built for `git diff --name-only | provenlens affected`.
       paths = (await readStdin())
         .split('\n')
         .map((l) => l.trim())
         .filter(Boolean);
     }
-    if (!paths.length) die('no files given. Try: git diff --name-only | codelens affected');
+    if (!paths.length) die('no files given. Try: git diff --name-only | provenlens affected');
 
     // Accept absolute or cwd-relative paths and normalise to repo-relative.
     const normalised = paths.map((p) => {
@@ -772,7 +772,7 @@ program
     const targets = target ? [target] : detectTargets();
     if (!targets.length) {
       console.log('No agent config found. Add this to your agent\'s MCP config manually:\n');
-      console.log(JSON.stringify({ mcpServers: { codelens: serverEntry() } }, null, 2));
+      console.log(JSON.stringify({ mcpServers: { provenlens: serverEntry() } }, null, 2));
       return;
     }
 

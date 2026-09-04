@@ -84,7 +84,7 @@ describe('mybatis', () => {
 
   test('does not take over the FQN of the method it implements', () => {
     // Both symbols sharing one FQN made every mapper method ambiguous, so
-    // `codelens node OrderMapper#findById` could not resolve at all.
+    // `provenlens node OrderMapper#findById` could not resolve at all.
     const fqns = db
       .prepare("SELECT s.fqn FROM symbols s WHERE s.name = 'findById' ORDER BY s.fqn")
       .all()
