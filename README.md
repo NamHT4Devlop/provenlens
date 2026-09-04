@@ -756,6 +756,7 @@ a convention. No amount of engineering turns that into a declaration, because Ru
 | `provenlens node <name>` | One symbol in full, with callers and callees |
 | `provenlens callers <name>` / `callees <name>` | One direction of the relationship |
 | `provenlens impact <name>` | Blast radius |
+| `provenlens why <name>` | **Which of this symbol's links rest on a declaration, and which on a convention** — plus the calls it makes that never resolved |
 | `provenlens hotspots` | **What the most other code depends on** — read this before changing anything |
 | `provenlens dead [--public]` | Methods nothing reaches, with framework entry points and template-named symbols already ruled out |
 | `provenlens cycles` | Files that depend on each other, directly or the long way round |
@@ -944,7 +945,8 @@ It prints the change before writing and always keeps a `.bak`. Targets are `clau
 claude mcp add provenlens -- node ~/AI-TOOL/provenlens/bin/provenlens.js mcp
 ```
 
-Four tools: `provenlens_explore`, `provenlens_impact`, `provenlens_affected`, `provenlens_status`. Each
+Five tools: `provenlens_explore`, `provenlens_why`, `provenlens_impact`, `provenlens_affected`,
+`provenlens_status`. Each
 takes a `projectPath`, so **one server serves every repository** — and a `projectPath` naming a
 folder of checkouts serves them **all at once**, each answer labelled with the repository it came
 from. Indexes stay current through the file watcher.
@@ -1024,7 +1026,7 @@ it automatically.
 yarn test
 ```
 
-221 tests across five fixture suites plus regression, security and multi-repo coverage:
+223 tests across five fixture suites plus regression, security and multi-repo coverage:
 
 | Fixture | Simulates | The chain grep cannot follow |
 |---|---|---|

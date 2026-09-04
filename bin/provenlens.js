@@ -12,6 +12,7 @@ import { resolve, join } from 'node:path';
 import { existsSync, rmSync } from 'node:fs';
 import { openDb, openProject, getMeta } from '../src/db.js';
 import { findProjectRoot, dbPathFor, INDEX_DIR, acquireIndexLock } from '../src/project.js';
+import { explainSymbol } from '../src/why.js';
 import { indexProject } from '../src/indexer.js';
 import {
   searchSymbols,
@@ -24,17 +25,7 @@ import {
   graphAround,
   topHubs,
 } from '../src/query.js';
-import {
-  formatExplore,
-  formatNode,
-  formatImpact,
-  formatRelations,
-  formatAffected,
-  toMermaid,
-  formatPath,
-  pathLines,
-  symbolLabel,
-} from '../src/format.js';
+import { formatExplore, formatNode, formatImpact, formatRelations, formatAffected, toMermaid, formatPath, pathLines, symbolLabel, formatWhy } from '../src/format.js';
 import { IMPLEMENTED_LANGUAGES } from '../src/extract/index.js';
 import { openWorkspace, locateSymbol, pathAcross } from '../src/workspace.js';
 
@@ -600,6 +591,18 @@ program
     const { project, hit } = pickAcross(useScope(), name);
     if (opts.json) return emitJson(calleesOf(project.db, hit.id).map(publicSymbol));
     console.log(formatRelations(project.db, hit.id, 'callees'));
+  });
+
+program
+  .command('why')
+  .argument('<name>', 'symbol name')
+  .option('--json', 'machine-readable output')
+  .description('how much of what the graph says about this rests on a declaration')
+  .action((name, opts) => {
+    const { project, hit } = pickAcross(useScope(), name);
+    const explained = explainSymbol(project.db, hit.id);
+    if (opts.json) return emitJson(explained);
+    console.log(formatWhy(explained));
   });
 
 program

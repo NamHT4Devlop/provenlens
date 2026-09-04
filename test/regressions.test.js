@@ -1339,3 +1339,58 @@ describe('a repository you clone to read must not get to run anything', () => {
     }
   });
 });
+
+describe('why: the evidence behind one symbol', () => {
+  test('a guessed link is counted apart from a proven one', async () => {
+    const { explainSymbol, GUESSED_VIA } = await import('../src/why.js');
+    const { formatWhy } = await import('../src/format.js');
+    const project = await tempProject({
+      'src/a.ts': [
+        'export class Store {',
+        '  save(x: string) { return x; }',
+        '}',
+      ].join('\n'),
+      'src/b.ts': [
+        "import { Store } from './a';",
+        'export function run() {',
+        '  const store = new Store();',
+        "  return store.save('x');",
+        '}',
+      ].join('\n'),
+    });
+    try {
+      const [hit] = searchSymbols(project.db, 'save', { limit: 3 });
+      const why = explainSymbol(project.db, hit.id);
+      assert.ok(why, 'the symbol is explainable');
+      assert.equal(why.callers.length, 1, 'run() reaches save()');
+      // A receiver typed by `new Store()` is a declaration, not a convention.
+      assert.equal(why.callers[0].tier, 'proof', `saw ${why.callers[0].via}`);
+      assert.equal(why.counts.callers.guess, undefined, 'nothing here is guessed');
+
+      const text = formatWhy(why);
+      assert.match(text, /would survive the floor/);
+      assert.ok(!text.includes('  ~ '), 'no link is marked as a guess');
+
+      // The list the floor uses and the list this command reports must be the
+      // same list, or a symbol's account and the repository's number disagree.
+      const bench = readFileSync(join(HERE, '..', 'scripts', 'bench.js'), 'utf8');
+      for (const via of GUESSED_VIA) {
+        assert.ok(bench.includes(`'${via}'`), `bench must strike ${via} off the floor too`);
+      }
+    } finally {
+      project.cleanup();
+    }
+  });
+
+  test('an unknown symbol explains nothing rather than guessing', async () => {
+    const { explainSymbol } = await import('../src/why.js');
+    const { formatWhy } = await import('../src/format.js');
+    const project = await tempProject({ 'src/a.ts': 'export function only() { return 1; }\n' });
+    try {
+      assert.equal(explainSymbol(project.db, 999999), null);
+      assert.equal(formatWhy(null), 'No such symbol.');
+    } finally {
+      project.cleanup();
+    }
+  });
+});
