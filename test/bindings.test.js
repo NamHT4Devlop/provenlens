@@ -6,6 +6,7 @@ import { normalizeUri } from '../src/bindings/camel.js';
 import { queueName } from '../src/bindings/sqs.js';
 import { topicName } from '../src/bindings/kafka.js';
 import { eventType } from '../src/bindings/springevent.js';
+import { coordinate } from '../src/bindings/graphql.js';
 import { tablesIn, tablesReferenced } from '../src/bindings/flyway.js';
 
 let db;
@@ -365,5 +366,61 @@ describe('an event published with a nested constructor', () => {
       !endpointsOf('spring-event').some((e) => e.key === 'OrderId'),
       'the nested constructor is an argument, not an event',
     );
+  });
+});
+
+describe('graphql', () => {
+  test('a coordinate needs both halves', () => {
+    assert.equal(coordinate('Query', 'orders'), 'Query.orders');
+    assert.equal(coordinate('Query', ''), null);
+    assert.equal(coordinate('', 'orders'), null);
+    assert.equal(coordinate('Query', 'not a name'), null);
+  });
+
+  test('a schema field becomes a symbol, the way an SQL statement does', () => {
+    const field = one('graphql:Query.orders');
+    assert.equal(field.kind, 'graphql-field');
+    assert.match(field.file_path, /schema\.graphqls$/);
+    // Prefixed, because the resolver method may own the same name and two
+    // symbols with one FQN leaves both unaddressable.
+    assert.match(field.fqn, /^graphql:/);
+  });
+
+  test('the annotation names the field, and the method name is the default', () => {
+    const wired = wiredBy('graphql');
+    // @QueryMapping with nothing said -> the method name is the field.
+    assert.ok(wired.some((w) => /Query\.orders -> .*OrderResolver#orders/.test(w)));
+    // @QueryMapping("orderById") on a method called byId -> the annotation wins.
+    assert.ok(
+      wired.some((w) => /Query\.orderById -> .*OrderResolver#byId/.test(w)),
+      `the annotation overrides the method name, saw ${JSON.stringify(wired)}`,
+    );
+    // @SchemaMapping(typeName = "Order", field = "customer") -> both halves.
+    assert.ok(wired.some((w) => /Order\.customer -> .*OrderResolver#customerOf/.test(w)));
+  });
+
+  test('NestJS names the field where str_args cannot see it', () => {
+    // `@Query(() => [String], { name: 'orders' })` on a method called findAll.
+    // Without reading the decorator back from the source this would be
+    // recorded against Query.findAll -- a field no schema declares.
+    const wired = wiredBy('graphql');
+    assert.ok(
+      wired.some((w) => /Query\.orders -> .*OrdersResolver#findAll/.test(w)),
+      `saw ${JSON.stringify(wired)}`,
+    );
+    assert.ok(
+      !endpointsOf('graphql').some((e) => e.key === 'Query.findAll'),
+      'the method name is not the field here',
+    );
+  });
+
+  test('a field nothing implements stays visible as an unmatched endpoint', () => {
+    // Which is the question worth asking of a schema: what did we declare and
+    // never build? Half a binding is information, not a failure.
+    const endpoints = endpointsOf('graphql');
+    const unimplemented = endpoints.filter(
+      (e) => e.role === 'consumer' && !endpoints.some((p) => p.role === 'provider' && p.key === e.key),
+    );
+    assert.ok(unimplemented.some((e) => e.key === 'Query.unimplemented'), 'the gap is recorded');
   });
 });
