@@ -4,6 +4,17 @@ import { readFileSync } from 'node:fs';
 const MAX_PARSE_BYTES = 2 * 1024 * 1024;
 /** How far in to look for the NUL that means "this is not text". git uses 8000. */
 const BINARY_SNIFF_CHARS = 8000;
+/** Below this a packed file costs little and is not worth refusing. */
+const MIN_BYTES_TO_CALL_PACKED = 20 * 1024;
+/** See the comment at the use site: written code measured 302 at its worst. */
+const PACKED_LINE_AVG = 1000;
+
+/** Mean bytes per line, the cheapest thing that tells packed from written. */
+function bytesPerLine(source) {
+  let lines = 1;
+  for (let i = 0; i < source.length; i++) if (source.charCodeAt(i) === 10) lines++;
+  return source.length / lines;
+}
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { getParser, langForPath } from './lang.js';
@@ -66,6 +77,10 @@ export async function indexProject(db, root, { full = false, onProgress } = {}) 
     // silently dropped: a file that is not in the index is a file whose calls
     // are missing from the graph, and the number should say so.
     unparsable: 0,
+    // Files refused for being machine-packed rather than written. Kept apart
+    // from `unparsable`: the parser could have taken these, and the reason
+    // they are missing from the graph is a decision, not a failure.
+    packed: 0,
   };
 
   const seen = new Set();
@@ -153,6 +168,26 @@ export async function indexProject(db, root, { full = false, onProgress } = {}) 
       // four languages contains one.
       if (source.lastIndexOf('\u0000', BINARY_SNIFF_CHARS) !== -1) {
         stats.unparsable++;
+        continue;
+      }
+
+      // A bundle is not source. `.yarn/plugins/*.cjs` -- Yarn Berry's own
+      // runtime, committed for reproducible installs -- is 2 MB of minified
+      // JavaScript, and one 37-file repository parsed it into 7,996 symbols
+      // and 35,526 call sites. Everything the tool then reported was about
+      // Yarn rather than about the project, and `hotspots`, `dead` and
+      // `explore` answered with one-letter names.
+      //
+      // Line length is what separates packed from written, and it separates
+      // them by an order of magnitude in both directions. Measured across
+      // express, rails, spring-framework and angular, the longest-lined file
+      // anybody had written averaged 302 bytes a line -- angular's currency
+      // data table. The minified files start at 1,493 (a vendored clipboard.js
+      // in rails) and reach 28,241. The threshold sits in that gap with room
+      // on both sides, and the size floor keeps a short one-line module out of
+      // it, where being packed costs nothing anyway.
+      if (source.length > MIN_BYTES_TO_CALL_PACKED && bytesPerLine(source) > PACKED_LINE_AVG) {
+        stats.packed++;
         continue;
       }
 

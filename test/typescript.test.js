@@ -73,6 +73,55 @@ describe('type normalisation', () => {
   });
 });
 
+describe('a file packed by a machine', () => {
+  test('is refused, so a bundle cannot fill the index with its own names', () => {
+    // `bundle.js` is one 32 KB line declaring a thousand functions -- the shape
+    // of `.yarn/plugins/*.cjs`, which one 37-file repository parsed into 7,996
+    // symbols and 35,526 call sites. Everything the tool reported about that
+    // repository was about Yarn.
+    assert.equal(searchSymbols(db, 'packed500', { limit: 5 }).length, 0);
+    assert.ok(
+      !db.prepare("SELECT 1 FROM files WHERE path LIKE '%bundle.js'").get(),
+      'a packed file must not be indexed at all',
+    );
+  });
+
+  test('is counted as a decision, not as a parser failure', () => {
+    // `unparsable` means the parser could not take the file. This one it
+    // could; the tool chose not to, and the number has to say which.
+    assert.equal(stats.packed, 1);
+  });
+});
+
+describe('a named CommonJS export', () => {
+  test('declares a function, though no `export` keyword announces it', () => {
+    // `exports.summarise = function () {}` is how a Lambda handler, an Express
+    // router module and a Discord command file all declare their entry point.
+    // One repository in the sweep had 92 JavaScript files and fifteen
+    // functions between them because none of this was read.
+    const sym = one('handlers:summarise');
+    assert.equal(sym.kind, 'function');
+  });
+
+  test('is reachable from another module by name', () => {
+    assert.ok(calls('report').includes('summarise'));
+  });
+
+  test('owns the calls its body makes', () => {
+    // The reason this is read during the walk rather than after it: the body
+    // has to belong to the new symbol, or the function exists while every call
+    // it makes is booked against the file.
+    assert.ok(
+      calls('handlers:summarise').includes('formatAmount'),
+      `expected summarise to own its own callee, got ${calls('handlers:summarise')}`,
+    );
+  });
+
+  test('the arrow form is read as well as the function form', () => {
+    assert.equal(one('handlers:total').kind, 'function');
+  });
+});
+
 describe('a type written as a pointer at a declaration', () => {
   test("reads `Receipt['donation']` as the type that member is declared to hold", () => {
     // The parameter is annotated with an indexed access, so the only way to
@@ -103,8 +152,9 @@ describe('module resolution', () => {
     const fmt = one('formatAmount');
     assert.equal(fmt.lang, 'javascript');
     assert.deepEqual(
-      callersOf(db, fmt.id).map((c) => c.fqn.split(':').pop()),
-      ['DonationService#summarise'],
+      callersOf(db, fmt.id).map((c) => c.fqn.split(':').pop()).sort(),
+      // handlers.js reaches it too, through a named CommonJS export.
+      ['DonationService#summarise', 'summarise'],
     );
   });
 
