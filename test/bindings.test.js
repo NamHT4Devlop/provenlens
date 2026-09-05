@@ -5,6 +5,7 @@ import { calleesOf, callersOf } from '../src/query.js';
 import { normalizeUri } from '../src/bindings/camel.js';
 import { queueName } from '../src/bindings/sqs.js';
 import { topicName } from '../src/bindings/kafka.js';
+import { eventType } from '../src/bindings/springevent.js';
 import { tablesIn, tablesReferenced } from '../src/bindings/flyway.js';
 
 let db;
@@ -289,5 +290,80 @@ describe('kafka', () => {
     const endpoints = endpointsOf('kafka');
     assert.ok(!endpoints.some((e) => e.key === 'order-events'), 'order-events belongs to sqs');
     assert.ok(!endpoints.some((e) => /sqs/i.test(e.fqn)), 'no SQS symbol is a kafka endpoint');
+  });
+});
+
+describe('spring events', () => {
+  test('an event type is refused when the name is one anything could share', () => {
+    assert.equal(eventType('OrderPlaced'), 'OrderPlaced');
+    // A listener imports the event; a publisher usually constructs it
+    // unqualified. Both spellings name the same event.
+    assert.equal(eventType('com.shop.events.OrderPlaced'), 'OrderPlaced');
+    assert.equal(eventType('OrderPlaced<String>'), 'OrderPlaced');
+    // Names two unrelated methods share by accident. Joining on one of these
+    // would invent a link rather than find it.
+    assert.equal(eventType('Object'), null);
+    assert.equal(eventType('String'), null);
+    assert.equal(eventType('T'), null);
+    assert.equal(eventType('int'), null);
+    assert.equal(eventType(''), null);
+  });
+
+  test('a publisher reaches the listener that declares the same type', () => {
+    const wired = wiredBy('spring-event');
+    assert.ok(
+      wired.some((w) => /OrderEvents#place -> .*OrderAudit#onPlaced/.test(w)),
+      `the publisher should reach the listener, saw ${JSON.stringify(wired)}`,
+    );
+  });
+
+  test('the event type comes from the constructor, not the call', () => {
+    // publishEvent(new OrderPlaced(id)) carries no type on the call itself --
+    // arg_types is [null] for a constructed argument. The `new` is its own ref
+    // on the same line inside the same method, and is the only place the
+    // event's name appears at all.
+    const published = endpointsOf('spring-event').filter((e) => e.role === 'consumer');
+    assert.ok(
+      published.some((e) => /#place$/.test(e.fqn) && e.key === 'OrderPlaced'),
+      `place() publishes OrderPlaced, saw ${JSON.stringify(published)}`,
+    );
+    // Every consumer read a type out of a constructor; none was invented.
+    assert.ok(published.every((e) => e.key === 'OrderPlaced'), 'no other type was claimed');
+  });
+
+  test('a listener with no publisher is still an endpoint, and no edge', () => {
+    // OrderShipped is declared and never published here. Half a binding is
+    // worth recording: in a service split across repositories that is the
+    // normal case, and the missing half is information.
+    const endpoints = endpointsOf('spring-event');
+    assert.ok(endpoints.some((e) => e.key === 'OrderShipped' && e.role === 'provider'));
+    assert.ok(!endpoints.some((e) => e.key === 'OrderShipped' && e.role === 'consumer'));
+    assert.ok(!wiredBy('spring-event').some((w) => /onShipped/.test(w)));
+  });
+
+  test('a publish on a receiver that is not a publisher is left alone', () => {
+    // `bus.publish(new OrderPlaced("x"))` -- `publish` is a common method name,
+    // and claiming every one of them would fill the graph with events that
+    // were never Spring's.
+    const endpoints = endpointsOf('spring-event');
+    assert.ok(!endpoints.some((e) => /unrelated/.test(e.fqn)), 'bus.publish is not Spring');
+    // And a listener typed Object matches anything, so it matches nothing.
+    assert.ok(!endpoints.some((e) => /onAnything/.test(e.fqn)), 'Object is not an event');
+  });
+});
+
+describe('an event published with a nested constructor', () => {
+  test('the event is the outer type, not the one inside it', () => {
+    // publishEvent(new ApplicationFailedEvent(new SpringApplication(this), ...))
+    // puts two constructors on one line. Keeping the last made SpringApplication
+    // an event five times over in spring-boot; the outer one is the argument,
+    // and the walk reaches it first.
+    const endpoints = endpointsOf('spring-event').filter((e) => /#nested/.test(e.fqn));
+    assert.equal(endpoints.length, 1, `saw ${JSON.stringify(endpoints)}`);
+    assert.equal(endpoints[0].key, 'OrderPlaced', 'the outer constructor is the event');
+    assert.ok(
+      !endpointsOf('spring-event').some((e) => e.key === 'OrderId'),
+      'the nested constructor is an argument, not an event',
+    );
   });
 });

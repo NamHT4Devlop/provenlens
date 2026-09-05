@@ -23,8 +23,9 @@ import sqs from './sqs.js';
 import flyway from './flyway.js';
 import http from './http.js';
 import kafka from './kafka.js';
+import springevent from './springevent.js';
 
-export const PLUGINS = [mybatis, camel, sqs, flyway, http, kafka];
+export const PLUGINS = [mybatis, camel, sqs, flyway, http, kafka, springevent];
 
 /**
  * Languages the binding plugins own. They have no grammar, so the normal
