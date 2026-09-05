@@ -319,12 +319,24 @@ that. A plugin declares both ends, and one shared pass matches them:
 | `sqs` | Producer ↔ `@SqsListener` / NestJS `@SqsMessageHandler` / Shoryuken worker, **across languages** | `sends-to` (0.85) |
 | `flyway` | `V*__*.sql` ↔ the entity or mapper touching that table | `touches-table` (0.6) |
 | `http` | A URL is a string on both sides: `@GetMapping`/`@Get`/`app.get`/`config/routes.rb` declare the handler, an HTTP client naming a path calls it — **across services** | `calls-route` (0.8) |
+| `kafka` | A topic is a string on both sides: `@KafkaListener`/NestJS `@EventPattern`/KafkaJS `subscribe`/Karafka `topic :x` declare the handler, a producer naming the same topic reaches it — **across languages** | `sends-to` (0.85) |
 
 SQL statements in XML and each migration file **become real symbols** — `provenlens explore
 "OrderMapper#findById"` returns both the Java signature and the SQL that will actually run.
 
 Camel and SQS shake hands too: a route publishing to `aws2-sqs:order-events` links straight through
 to a `@SqsListener` and to a Ruby worker consuming the same queue.
+
+**Only a topic the source spells out.** `@KafkaListener(topics = "${app.topic.audit}")` names a
+configuration key whose value lives in a file the index does not read, and `subscribe({ topic })`
+names a variable. Both produce no endpoint: wiring two services together on the spelling of a key
+would be an invention, and the floor exists to keep inventions out. On spring-kafka that leaves 97
+topics and **93 links a call graph could not see** — while kafkajs's own suite, which passes topic
+names as variables, yields almost none. Both numbers are correct.
+
+A group id is not a topic. `@KafkaListener(id = "one", topics = "orders", containerGroup = "g1")`
+hands the extractor three strings and no attribute names, so the annotation is read again from the
+file: whatever `topics =` names, and nothing else.
 
 **Adding a new framework** means adding one file to `src/bindings/` that declares `accepts` (which
 files to read) and `collect` (emit providers and consumers with a shared `key`). The matching and
@@ -1026,7 +1038,7 @@ it automatically.
 yarn test
 ```
 
-225 tests across five fixture suites plus regression, security and multi-repo coverage:
+231 tests across five fixture suites plus regression, security and multi-repo coverage:
 
 | Fixture | Simulates | The chain grep cannot follow |
 |---|---|---|
