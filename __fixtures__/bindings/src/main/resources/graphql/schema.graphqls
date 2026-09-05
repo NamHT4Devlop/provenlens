@@ -1,0 +1,15 @@
+type Query {
+  orders(first: Int): [Order!]!
+  orderById(id: ID!): Order
+  # A field the schema declares and no resolver implements.
+  unimplemented: String
+}
+
+type Mutation {
+  placeOrder(input: String!): Order
+}
+
+type Order {
+  id: ID!
+  customer: Customer
+}
