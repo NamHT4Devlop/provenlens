@@ -348,7 +348,14 @@ describe('the same workspace through MCP', () => {
         assert.match(text, new RegExp(name));
       }
     } finally {
+      // Waiting for the exit, not just asking for it. kill() only sends the
+      // signal, and the child still holds a handle on every index in the
+      // workspace until it is gone -- which on Windows is why the directory
+      // could not be removed afterwards and the whole file failed in teardown,
+      // with no individual test to point at.
+      const gone = new Promise((done) => child.once('exit', done));
       child.kill();
+      await gone;
     }
   });
 });
