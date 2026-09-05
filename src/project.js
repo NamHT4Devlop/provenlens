@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, readdirSync, statSync, writeFileSync, rmSync } from 'node:fs';
-import { join, resolve, relative, sep } from 'node:path';
+import { join, resolve, relative, sep, isAbsolute } from 'node:path';
 import ignore from 'ignore';
 import { langForPath } from './lang.js';
 
@@ -182,6 +182,21 @@ export function walkFiles(root, accept, { maxBytes = 2_000_000 } = {}) {
 
   visit(root);
   return found.sort();
+}
+
+/**
+ * A path as the index spells it: relative to the root, forward slashes.
+ *
+ * Accepts what a user or a tool hands over -- absolute, or relative to the
+ * working directory -- and returns null for anything outside the root. The
+ * CLI and the MCP server both used to test `abs.startsWith(root + '/')`, which
+ * on Windows is never true: the separator there is `\`, so every absolute path
+ * fell through unchanged and matched nothing in the index.
+ */
+export function repoRelative(root, given) {
+  const rel = relative(root, resolve(given));
+  if (!rel || rel.startsWith('..') || isAbsolute(rel)) return null;
+  return rel.split(sep).join('/');
 }
 
 /** Every source file with a grammar, as repo-relative paths. */
