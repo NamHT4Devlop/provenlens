@@ -36,6 +36,12 @@ export function serverEntry() {
   // .../versions/node/v24.13.0/bin/node -- and the server then died the next time the user
   // switched Node versions, in a config file nobody would think to look at. The README already
   // gives this same warning about `npm link` for the CLI; the installer was doing it to itself.
+  //
+  // Windows has no shebang. An MCP host there hands `command` to CreateProcess, which cannot
+  // run a `.js` file, so the interpreter has to be named -- and it is named as the bare word
+  // `node`, resolved from PATH when the host starts the server, for the same reason the
+  // shebang says `env node` rather than a path: nothing is pinned to today's install.
+  if (process.platform === 'win32') return { command: 'node', args: [BIN, 'mcp'] };
   return { command: BIN, args: ['mcp'] };
 }
 

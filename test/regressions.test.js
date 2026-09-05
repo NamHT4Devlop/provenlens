@@ -4,12 +4,12 @@ import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync, statSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, dirname } from 'node:path';
+import { join, dirname, sep, resolve } from 'node:path';
 import { buildIndex } from './helpers.js';
 import { openDb } from '../src/db.js';
 import { indexProject } from '../src/indexer.js';
 import { searchSymbols, callersOf, affectedBy, isTestPath } from '../src/query.js';
-import { buildIgnoreFilter, dbPathFor } from '../src/project.js';
+import { buildIgnoreFilter, dbPathFor, repoRelative } from '../src/project.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -142,6 +142,27 @@ describe('watcher ignore rules', () => {
       assert.ok(ignored(path), `${path} should be ignored`);
     }
     assert.ok(!ignored('src/App.tsx'));
+  });
+});
+
+describe('a path the way the index spells it', () => {
+  // The CLI and the MCP server both tested `abs.startsWith(root + '/')`, which
+  // is never true on Windows, where the separator is `\\`. Every absolute path
+  // there fell through unchanged and matched nothing in the index.
+  const root = resolve('some', 'repo');
+
+  test('turns an absolute path under the root into the relative, slash-separated form', () => {
+    assert.equal(repoRelative(root, join(root, 'src', 'a.ts')), 'src/a.ts');
+  });
+
+  test('accepts the native separator on the way in and never emits it', () => {
+    assert.equal(repoRelative(root, [root, 'src', 'deep', 'b.rb'].join(sep)), 'src/deep/b.rb');
+  });
+
+  test('refuses a path outside the root rather than guessing', () => {
+    assert.equal(repoRelative(root, resolve('some', 'other', 'c.js')), null);
+    assert.equal(repoRelative(root, join(root, '..', 'escape.js')), null);
+    assert.equal(repoRelative(root, root), null);
   });
 });
 
@@ -995,23 +1016,37 @@ describe('the MCP entry the installer writes', () => {
     );
   });
 
-  test('runs the bin directly, which resolves node at run time', async () => {
+  test('runs the bin in a way the platform can actually start', async () => {
     const { serverEntry } = await import('../src/install.js');
     const entry = serverEntry();
     // resolve() gives a native path, so the separator is \ on Windows.
-    assert.match(entry.command, /bin[\\/]provenlens\.js$/);
-    assert.deepEqual(entry.args, ['mcp']);
+    const bin = /bin[\\/]provenlens\.js$/;
+    let binPath;
+    if (process.platform === 'win32') {
+      // Windows has no shebang: an MCP host hands `command` to CreateProcess,
+      // which cannot run a .js file. So the interpreter is named -- as the bare
+      // word, resolved from PATH when the host starts it, never as a pinned path.
+      assert.equal(entry.command, 'node');
+      assert.equal(entry.args.length, 2);
+      assert.match(entry.args[0], bin);
+      assert.equal(entry.args[1], 'mcp');
+      binPath = entry.args[0];
+    } else {
+      assert.match(entry.command, bin);
+      assert.deepEqual(entry.args, ['mcp']);
+      binPath = entry.command;
+    }
 
     // The shebang is what lets the file be the command on a POSIX system, and
     // it must name node without pinning an interpreter -- true everywhere, so
     // asserted everywhere.
-    assert.match(readFileSync(entry.command, 'utf8').split('\n')[0], /^#!.*\bnode\b/);
+    assert.match(readFileSync(binPath, 'utf8').split('\n')[0], /^#!.*\bnode\b/);
 
     // The executable bit is a POSIX fact. Windows has no such mode and npm
     // writes .cmd/.ps1 shims instead, so asserting it there would fail for a
     // reason that says nothing about whether the entry works.
     if (process.platform !== 'win32') {
-      assert.ok(statSync(entry.command).mode & 0o111, 'the bin must be executable');
+      assert.ok(statSync(binPath).mode & 0o111, 'the bin must be executable');
     }
   });
 });

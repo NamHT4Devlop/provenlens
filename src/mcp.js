@@ -4,11 +4,11 @@
  * Only stdout carries protocol traffic -- anything diagnostic must go to stderr
  * or it corrupts the stream.
  */
-import { resolve, join } from 'node:path';
+import { resolve, join, basename } from 'node:path';
 import { existsSync } from 'node:fs';
 import { openProject } from './db.js';
 import { explainSymbol } from './why.js';
-import { dbPathFor, discoverProjects } from './project.js';
+import { dbPathFor, discoverProjects, repoRelative } from './project.js';
 import { indexProject } from './indexer.js';
 import { watchProject } from './watch.js';
 import { formatExplore, formatImpact, formatAffected, formatWhy } from './format.js';
@@ -149,7 +149,7 @@ async function callTool(name, args, defaultRoot) {
       for (const { root, db } of all) {
         if (all.length > 1 && !searchSymbols(db, args.query, { limit: 1 }).length) continue;
         const body = formatExplore(db, root, args.query, { maxMatches: args.maxMatches ?? 3 });
-        sections.push(all.length > 1 ? `# repository: ${root.split('/').pop()}\n\n${body}` : body);
+        sections.push(all.length > 1 ? `# repository: ${basename(root)}\n\n${body}` : body);
       }
       return sections.length ? sections.join('\n\n---\n\n') : `No symbol matches "${args.query}".`;
     }
@@ -168,7 +168,7 @@ async function callTool(name, args, defaultRoot) {
         const matches = searchSymbols(db, args.symbol, { limit: 5 });
         if (!matches.length) continue;
         const body = formatImpact(db, matches[0].id);
-        return all.length > 1 ? `# repository: ${root.split('/').pop()}\n\n${body}` : body;
+        return all.length > 1 ? `# repository: ${basename(root)}\n\n${body}` : body;
       }
       return `No symbol matches "${args.symbol}".`;
     }
@@ -178,19 +178,23 @@ async function callTool(name, args, defaultRoot) {
       // Each file belongs to exactly one repository; group and answer per repo.
       const byRepo = new Map();
       for (const f of args.files) {
-        const abs = resolve(f);
+        // Three spellings arrive here. An absolute path names its repository
+        // by containment, whatever separator the caller used. A repo-relative
+        // one -- the form the tool describes -- names it by existing under
+        // exactly one root. Anything else goes to the first repository as
+        // written, so the report can say it was not in the index.
         const home =
-          all.find((p) => abs.startsWith(`${p.root}/`)) ??
+          all.find((p) => repoRelative(p.root, f) !== null) ??
           all.find((p) => existsSync(join(p.root, f))) ??
           all[0];
-        const rel = abs.startsWith(`${home.root}/`) ? abs.slice(home.root.length + 1) : f;
+        const rel = repoRelative(home.root, f) ?? f.split('\\').join('/');
         if (!byRepo.has(home.root)) byRepo.set(home.root, { db: home.db, files: [] });
         byRepo.get(home.root).files.push(rel);
       }
       const sections = [];
       for (const [root, { db, files }] of byRepo) {
         const body = formatAffected(db, files, { maxDepth: args.depth ?? 4 });
-        sections.push(byRepo.size > 1 ? `# repository: ${root.split('/').pop()}\n\n${body}` : body);
+        sections.push(byRepo.size > 1 ? `# repository: ${basename(root)}\n\n${body}` : body);
       }
       return sections.join('\n\n---\n\n');
     }
