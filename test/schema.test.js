@@ -59,8 +59,8 @@ describe('schema', () => {
       // known limits rather than silently assumed everywhere.
       if (process.platform !== 'win32') {
         assert.equal(statSync(dirname(dbPath)).mode & 0o777, 0o700, '.provenlens/ must be 0700');
+        assert.equal(statSync(dbPath).mode & 0o777, 0o600, 'index.db must be 0600');
       }
-      assert.equal(statSync(dbPath).mode & 0o777, 0o600, 'index.db must be 0600');
     } finally {
       db.close();
       rmSync(root, { recursive: true, force: true });

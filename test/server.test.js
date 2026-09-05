@@ -134,7 +134,11 @@ describe('the token survives a restart', () => {
     const file = tokenFile();
     assert.ok(file.startsWith(stateDir), 'the test must not touch the real token file');
     assert.equal(readFileSync(file, 'utf8').trim(), handle.token);
-    assert.equal(statSync(file).mode & 0o777, 0o600);
+    // POSIX only: Windows carries ACLs and reports a mode that means nothing.
+    // The gap it leaves is named in the README's known limits.
+    if (process.platform !== 'win32') {
+      assert.equal(statSync(file).mode & 0o777, 0o600);
+    }
   });
 
   test('a second server reuses it, so a bookmarked URL keeps working', async () => {
