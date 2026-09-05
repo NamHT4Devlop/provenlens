@@ -477,7 +477,7 @@ a dependency tree is not what separates these repositories from 90%.
 | spring-petclinic | Spring Boot + Data, 51 files | **99.7%** | **98.6%** |
 | mall | Spring Boot + MyBatis, 630 files | **99.4%** | **99.3%** |
 | mybatis spring-boot-starter | MyBatis, 154 files | **98.5%** | **98.5%** |
-| TheAlgorithms/Java | plain Java, 1588 files | **98.0%** | **97.5%** |
+| TheAlgorithms/Java | plain Java, 1588 files | **98.1%** | **97.5%** |
 | nx | TS monorepo, 5305 files | **95.6%** | 89.6% |
 | camel-spring-boot-examples | ~50 Camel examples, 325 files | **95.2%** | **94.7%** |
 | mybatis jpetstore | MyBatis + Flyway, 43 files | **95.1%** | **95.1%** |
@@ -492,7 +492,7 @@ a dependency tree is not what separates these repositories from 90%.
 | express | plain JS, 141 files | **91.4%** | **91.1%** |
 | java-design-patterns | Java, 1991 files | **91.5%** | 89.8% |
 | immich | NestJS + Svelte monorepo | **91.6%** | 85.5% |
-| nest | TS, 1904 files | **91.3%** | 87.3% |
+| nest | TS, 1904 files | **91.1%** | 87.0% |
 | puma | Ruby | **89.1%** | 77.9% |
 | micronaut-core | Java, Gradle | **88.7%** | 86.2% |
 | sinatra | Ruby, 147 files | **88.5%** | 81.4% |
@@ -501,20 +501,20 @@ a dependency tree is not what separates these repositories from 90%.
 | rubygems.org | Rails, 1392 files | **88.2%** | 80.4% |
 | mastodon | Rails + TS, 4199 files | **87.6%** | 80.1% |
 | halo | Java + TS, 2228 files | **87.6%** | 85.5% |
-| prettier | JS + TS, 5762 files | **89.4%** | 70.7% |
-| storybook | TS monorepo | **87.6%** | 75.0% |
-| medusa | TS monorepo | **87.5%** | 74.4% |
+| prettier | JS + TS, 5762 files | **89.2%** | 70.4% |
+| storybook | TS monorepo | **87.9%** | 77.6% |
+| medusa | TS monorepo | **87.4%** | 74.3% |
 | fastlane | Ruby, 1340 files | **86.7%** | 77.4% |
 | sidekiq | Ruby | **85.9%** | 79.7% |
 | quarkus | Java, Maven multi-module | **85.2%** | 82.2% |
 | jekyll | Ruby, 171 files | **84.5%** | 75.0% |
 | solidus | Rails, 2329 files | **83.5%** | 74.8% |
-| svelte | JS + TS monorepo | **88.0%** | 75.2% |
+| svelte | JS + TS monorepo | **87.9%** | 75.1% |
 | redmine | Rails app | **81.4%** | 72.7% |
-| astro | TS monorepo | **81.4%** | 69.5% |
-| trpc | TS monorepo | **80.4%** | 74.3% |
+| astro | TS monorepo | **81.3%** | 69.6% |
+| trpc | TS monorepo | **80.0%** | 73.8% |
 | discourse | Rails, 14358 files | **78.7%** | 72.8% |
-| axios | JS, 242 files | **76.2%** | 69.1% |
+| axios | JS, 242 files | **76.0%** | 69.0% |
 | zod | TS pnpm workspace | **75.7%** | 62.1% |
 | rails | Rails framework | **74.8%** | 62.6% |
 
@@ -576,8 +576,10 @@ The obvious levers were pulled and measured, and most of them did nothing:
 | **Type what a factory returns** — `return { … }` as a type | astro 80.9 → 80.3, axios 67.6 → 67.2. **Reverted.** |
 | **Infer a parameter's type from its call sites** | netron: **0** call sites pass a constructed value, and 2,574 of 2,628 pass the caller's own untyped parameter. **Not attempted** — measured first. |
 | **Read a type that points at a declaration** — `T['key']`, `ReturnType<typeof f>` | n8n: 159 receivers typed, and correctly; **+10 edges of 1,123,583**. Headline and floor both unchanged. **Kept** — it reads a declaration and adds no guess — and stated at its true size. |
+| **Read `User.prototype.render = …` as a member** | mongoose: 17 members added to its constructor and **0 edges reach any of them**; express floor 91.1% → 83.3%. **Reverted** — the blocker is the CommonJS singleton, not the members. |
+| **Let a repository's own `.gitignore` say what its source is** | node-red: 214 → **581 files**, 1,905 → **15,226 edges**. babel, jest, vite and nuxt unchanged. **Kept.** |
 
-Three of those deserve more than a table row.
+Four of those deserve more than a table row.
 
 **Inferring a parameter's type from its call sites** was proposed here on the strength of one
 number: netron reports 20,966 unresolved calls on `reader`, a parameter of `static decode(reader,
@@ -635,6 +637,51 @@ And the reason it resolves 2% is the honest one: **`ReturnType<typeof f>` is wha
 precisely because `f` has no written return type.** The annotation is a pointer at the one
 declaration that is missing, which is why 1,292 of 2,170 uses find the function and cannot type it.
 Reading the pointer cannot conjure the thing pointed at.
+
+**Letting a repository say what its own source is** came out of a sweep over twenty repositories
+that had never been indexed, chosen for structural variety rather than score. node-red read 60.4%,
+and the reason was not resolution at all: 214 files, **511 symbols**. Its entire product lives in
+`packages/node_modules` — 308 of its 541 JavaScript files — and `node_modules` was on a blanket
+skip list, so 57% of the repository was invisible.
+
+The repository had already said so, in its own `.gitignore`:
+
+```
+node_modules
+!packages/node_modules
+packages/node_modules/@node-red/editor-client/public
+```
+
+Those three lines answer every path correctly, including the re-exclusion on the third. The skip
+list was applied afterwards and overruled them. It was applied afterwards for a reason that had
+since stopped being true: a dependency tree indexed once as project code and again as an external
+declaration used to hit the `files.path` UNIQUE constraint and abort the whole index — and that was
+later fixed where it belonged, at the insert, which now says `ON CONFLICT(path) DO NOTHING` and lets
+the project's own copy win. The guard outlived the thing it guarded.
+
+An **explicit negation** in the repository's own `.gitignore` now wins, and nothing else does; a
+repository that never mentions `build/` still has it skipped. The authority is the right one: git
+tracks what you wrote and does not track what you installed.
+
+| node-red | before | after |
+|---|---|---|
+| files | 214 | **581** |
+| symbols | 511 | **16,111** |
+| edges | 1,905 | **15,226** |
+
+Its floor fell from 59.8% to 48.1%, and that is the point rather than a cost: the old floor was a
+confident number about 37% of a repository. Four other repositories carry the same kind of negation
+for test fixtures — babel, jest, vite and nuxt — and all four are unchanged to the decimal.
+
+**Reading `User.prototype.render = …`** came out of the same sweep, from mongoose at 34.1%, and was
+built and thrown away. `lib/mongoose.js` writes fifty prototype assignments and contributed three
+symbols. Reading them gave `Mongoose` seventeen members — and **nothing reached one**: zero edges.
+The receiver is never typed as a Mongoose, because the singleton is re-exported through three
+CommonJS hops (`module.exports = new Mongoose()`, then two files re-exporting the binding), none of
+which is read. Members without that chain only swap one wrong answer for another: mongoose's false
+`external:not-in-project` count fell from 126 to 13, which is honest, while its resolution stayed at
+34.1% and express's floor fell 91.1% → 83.3%. Half of that change is worse than none — the same
+verdict the object-module experiment reached, for the same reason.
 
 The dependency result is worth stating plainly because it contradicts what this file said two
 rounds ago. express really does go 72.4% → 91.4% when `node_modules` appears — and express is the
@@ -1102,7 +1149,7 @@ it automatically.
 yarn test
 ```
 
-251 tests across five fixture suites plus regression, security and multi-repo coverage:
+255 tests across six fixture suites plus regression, security and multi-repo coverage:
 
 | Fixture | Simulates | The chain grep cannot follow |
 |---|---|---|
@@ -1110,6 +1157,7 @@ yarn test
 | `ruby` | Rails: model, concern, service object, controller | `donor.name` — `donor` generated by `belongs_to`, `name` by `attr_reader` |
 | `ts` | TS + JS: barrel files, tsconfig aliases, constructor DI | an import through `export *` before reaching the real class |
 | `bindings` | MyBatis + Camel + SQS + Flyway | a Java producer → a Ruby Shoryuken worker, matched on queue name |
+| `vendored` | A repository that keeps its own source inside `packages/node_modules` | that the directory a project's `.gitignore` puts back is source, and a tree re-excluded after it is not |
 | all of `__fixtures__` | One repo containing all four languages | resolvers not wiping each other's graphs |
 
 `test/regressions.test.js` locks down every bug that has been fixed: LIKE wildcards, scoring order,
@@ -1181,7 +1229,7 @@ the second.
   cap. `init`, `index` and `sync` now re-exec with half of physical memory (clamped to 4–16 GB), so
   the ceiling is the machine rather than V8; on a small machine a repository that size will still
   not fit. Two of 5,000 repositories reached it.
-- **Windows runs, and one test does not.** The suite is 250 of 251 there, and the failure is in the
+- **Windows runs, and one test does not.** Every test but `multirepo`'s passes there, and the failure is in the
   test harness rather than the tool: multirepo's teardown closes a server holding three recursive
   watchers and then removes the workspace. Windows is in the matrix and reports on every pull
   request; it does not gate one, because claiming green would be worse than saying this.

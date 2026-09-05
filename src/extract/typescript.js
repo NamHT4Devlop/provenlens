@@ -1050,10 +1050,19 @@ function markEsmDefault(root, src, modulePath, symbols) {
 /**
  * The CommonJS half of a module, which no `export` keyword ever announces.
  *
- * Node code says `module.exports = View` to export, `User.all = function(){}`
- * to hang a member off a constructor, and `User.prototype.render = ...` for an
- * instance one. None of it is syntax the ESM reader looks at, so a plain-JS
- * repository exported nothing and its constructors had no members at all.
+ * Node code says `module.exports = View` to export, which is no syntax the ESM
+ * reader looks at, so a plain-JS repository exported nothing at all.
+ *
+ * `User.prototype.render = function(){}` -- the pre-class way to give a
+ * constructor its members -- is deliberately NOT read here, and the comment
+ * above used to list it as though it were. Measured since: adding it gives
+ * mongoose's `Mongoose` its seventeen members and **nothing calls any of
+ * them**, because the receiver is never typed as a Mongoose. The singleton is
+ * re-exported through three CommonJS hops (`module.exports = new Mongoose()`,
+ * then two files that re-export the binding), and reading members without
+ * reading that chain only swaps one wrong answer for another: mongoose's
+ * `external:not-in-project` count fell from 126 to 13 -- honest -- while its
+ * resolution stayed at 34.1% and express's floor fell 91.1% -> 83.3%.
  *
  * Run after the walk, so every function this names already has its symbol.
  */

@@ -1,0 +1,5 @@
+node_modules
+# ...except the packages directory, which is this project's own source.
+!packages/node_modules
+# ...but not the generated tree inside it.
+packages/node_modules/@acme/engine/generated

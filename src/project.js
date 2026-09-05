@@ -65,23 +65,61 @@ export function dbPathFor(root) {
 }
 
 function buildIgnore(root) {
-  const ig = ignore();
+  const own = ignore();
+  let hasOwn = false;
   const gitignore = join(root, '.gitignore');
   if (existsSync(gitignore)) {
     try {
-      ig.add(readFileSync(gitignore, 'utf8'));
+      own.add(readFileSync(gitignore, 'utf8'));
+      hasOwn = true;
     } catch {
       /* an unreadable .gitignore just means fewer exclusions */
     }
   }
-  // Added LAST, so it wins over a negation in the repository's own .gitignore.
-  // `!vendor/**/node_modules/**` tells git what to TRACK; it does not tell this
-  // tool that a dependency tree is the project's own source. Applied the other way
-  // round, such a repository indexed the same .d.ts twice -- once as project code,
-  // then again as an external declaration -- and the second insert hit the
-  // files.path UNIQUE constraint and aborted the entire index.
-  ig.add(ALWAYS_IGNORE);
-  return ig;
+  const always = ignore().add(ALWAYS_IGNORE);
+
+  /**
+   * Whether the repository has said, in its own .gitignore, that this path is
+   * source rather than an install.
+   *
+   * `node_modules` in ALWAYS_IGNORE means "a dependency tree", and for almost
+   * every repository it is. node-red keeps its entire product in
+   * `packages/node_modules` -- 308 of its 541 JavaScript files -- and says so:
+   *
+   *     node_modules
+   *     !packages/node_modules
+   *     packages/node_modules/@node-red/editor-client/public
+   *
+   * Those three lines answer every path correctly, including the sub-exclusion.
+   * A blanket rule applied after them made 57% of the repository invisible.
+   *
+   * Only an EXPLICIT negation counts, and only on the path or one of its
+   * parents: a repository that never mentions `build/` still has it skipped.
+   * The authority is the right one -- git tracks what you wrote and does not
+   * track what you installed.
+   */
+  const claimedAsSource = (path) => {
+    if (!hasOwn || !path) return false;
+    const parts = path.replace(/\/+$/, '').split('/');
+    for (let i = 1; i <= parts.length; i++) {
+      if (own.test(parts.slice(0, i).join('/')).unignored) return true;
+    }
+    return false;
+  };
+
+  // ALWAYS_IGNORE is consulted second and can be overruled, which it could not
+  // be before. The reason it could not -- a dependency tree indexed once as
+  // project code and again as an external declaration, whose second insert hit
+  // the files.path UNIQUE constraint and aborted the whole index -- was fixed
+  // where it belonged, at the insert: reading declarations now says
+  // `ON CONFLICT(path) DO NOTHING`, and the project's own copy wins.
+  return {
+    ignores(path) {
+      if (own.ignores(path)) return true;
+      if (!always.ignores(path)) return false;
+      return !claimedAsSource(path);
+    },
+  };
 }
 
 /**
