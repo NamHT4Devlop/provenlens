@@ -1105,6 +1105,11 @@ the second.
   cap. `init`, `index` and `sync` now re-exec with half of physical memory (clamped to 4–16 GB), so
   the ceiling is the machine rather than V8; on a small machine a repository that size will still
   not fit. Two of 5,000 repositories reached it.
+- **On Windows the index and the UI token are not protected by file permissions.** `.provenlens/`
+  is created `0700` and the UI token `0600`, which Windows does not have: it carries ACLs, and Node's
+  `mode` there means nothing. The index holds your source's structure and the token opens the local
+  UI, so on a shared Windows machine both inherit whatever the parent directory allows. Nothing
+  else about the tool differs.
 - **The Ruby inflector** is simple and does not handle irregulars (`people`/`person`).
 - **Annotation-style MyBatis** (`@Select` on the method) needs no binding — the SQL is already in
   the method.

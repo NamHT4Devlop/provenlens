@@ -23,7 +23,19 @@ async function tempProject(files) {
   }
   const db = openDb(join(root, 'index.db'), { create: true });
   const stats = await indexProject(db, root, { full: true });
-  return { db, root, stats, cleanup: () => rmSync(root, { recursive: true, force: true }) };
+  return {
+    db,
+    root,
+    stats,
+    // Windows will not delete a file another handle still holds open, so the
+    // database has to be closed before the directory goes. On POSIX the
+    // difference never shows, which is why 41 tests only failed once a Windows
+    // runner was asked.
+    cleanup: () => {
+      try { db.close(); } catch { /* already closed by the test */ }
+      rmSync(root, { recursive: true, force: true });
+    },
+  };
 }
 
 describe('search', () => {
