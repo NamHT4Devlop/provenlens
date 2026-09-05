@@ -965,6 +965,47 @@ export function extractTypeScript(tree, src, ctx = {}) {
     // An arrow passed straight into a call -- `.then(user => ...)`. Its
     // parameter holds one element of what that call's receiver produces, and
     // only the resolver can say what that is, so the link is recorded here.
+    // `exports.run = async (bot, msg) => {…}` / `module.exports.handler = …`
+    // -- a named CommonJS export, and the shape of every Lambda handler,
+    // Express router module and Discord command file. It declares a function
+    // that another file reaches with `require('./open').run(…)`, and nothing
+    // here read it: one repository in the sweep had 92 JavaScript files and
+    // fifteen functions between them.
+    //
+    // Handled during the walk rather than in readCommonJs afterwards, because
+    // the body has to be walked UNDER the new symbol -- otherwise the function
+    // exists but every call it makes is booked against the file.
+    if (node.type === 'assignment_expression' && typeStack.length === 0) {
+      const left = childByField(node, 'left');
+      const right = childByField(node, 'right');
+      const named = left && /^(?:module\.)?exports\.([A-Za-z_$][\w$]*)$/.exec(text(left, src));
+      const fn =
+        right && ['arrow_function', 'function_expression', 'generator_function'].includes(right.type)
+          ? right
+          : null;
+      if (named && fn) {
+        const simpleName = named[1];
+        const id = addSymbol({
+          name: simpleName,
+          fqn: `${modulePath}:${simpleName}`,
+          kind: 'function',
+          container_fqn: modulePath,
+          type_name: typeFromAnnotation(fn, src),
+          signature: simpleName,
+          arity: 0,
+          supertypes: [],
+          modifiers: ['export'],
+          annotations: [],
+          ...pos(node),
+        });
+        const params = readParams(childByField(fn, 'parameters'), id, null);
+        symbols[id].arity = params.length;
+        const body = childByField(fn, 'body');
+        if (body) walk(body, typeStack, id, false);
+        return;
+      }
+    }
+
     if (node.type === 'arrow_function' && scopeId != null && !arrowSeen.has(node.id)) {
       arrowSeen.add(node.id);
       let owner = node.parent;

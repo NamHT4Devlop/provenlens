@@ -23,9 +23,10 @@ against it.
 **It tells you how much of its own answer it is unsure about.** Every measurement comes as two
 numbers: what resolved, and what would be left if *every* judgement made without a declaration
 behind it turned out to be wrong. A link that rests on a naming convention is struck out of the
-second number, so an assumption cannot flatter the score without showing up as a gap. The median
-repository reads **94.0% with the first number**; the benchmark table below sits far lower because
-it is deliberately made of hard cases.
+second number, so an assumption cannot flatter the score without showing up as a gap. Across two
+independent samples totalling 15,000 repositories, **84% of all call sites that could land in their
+own repository did**; the median repository reads higher and the benchmark table below sits far
+lower, because it is deliberately made of hard cases.
 
 **A lower number is allowed to be the right answer.** `StoryRender<T> | CsfDocsRender<T> |
 MdxDocsRender<T>` names three types and the call could be reaching any of them, so the graph
@@ -33,10 +34,10 @@ refuses rather than picking the first — and gives up coverage doing it. Severa
 history moved the score *down* and were kept, each one recorded in the table of experiments that
 did not work, with the number it cost.
 
-**The claims are measured, on 5,000 repositories.** 136.5 million call sites, four languages,
-cloned and indexed and thrown away. It is also how the two worst defects here were found: a parse
-tree leaking into a WebAssembly heap, and V8's 4 GB ceiling. Neither was reachable from a curated
-set.
+**The claims are measured, on 15,000 repositories** across two samples drawn a different way. 178.6
+million call sites, four languages, cloned and indexed and thrown away. It is also how the worst
+defects here were found: a parse tree leaking into a WebAssembly heap, V8's 4 GB ceiling, and a
+minified bundle parsed into 7,996 symbols. None was reachable from a curated set.
 
 None of that makes it better than the alternatives at finding a caller. It makes it answerable
 about when it is guessing, which is the property that matters when the thing reading the output is
@@ -417,6 +418,46 @@ Only **6.8%** of the 5,000 sit in that last band — and the forty-three below a
 entirely from it. The table is not a typical sample. It is close to a worst case, which is what makes
 it useful for finding bugs and misleading as a summary. Both are now stated.
 
+### Run again over ten thousand, and the two samples agree where it counts
+
+The 5,000 above were sampled from **200 stars upward**. A second run took **10,000 repositories from
+5 stars upward** — 2,500 per language, across eleven star bands — which is a different population:
+mostly smaller, and far fewer of the large repositories that are hard. **9,946 indexed, one clone
+failed, 53 were skipped above 400 MB, and nothing crashed or timed out.** Read under the same rule as
+the table above (repositories under 200 call sites discarded), 6,274 remain and **42.1 million call
+sites** with them.
+
+| Language | Repos | Median | Mean | Weighted by call sites | Clear 90% |
+|---|---:|---:|---:|---:|---:|
+| java | 1774 | **97.8%** | 95.4% | 89.0% | **87%** |
+| ruby | 1744 | **97.9%** | 95.5% | 85.6% | **86%** |
+| typescript | 1527 | **97.8%** | 93.0% | 84.6% | **76%** |
+| javascript | 1229 | **95.3%** | 88.0% | 71.5% | **62%** |
+| **all** | **6274** | **97.6%** | 93.4% | **84.1%** | **79%** |
+
+The medians are higher than the 5,000's — 97.6% against 94.0% — and that is the **sampling**, not the
+tool. Only 1.1% of this sample sits above 100,000 call sites, against 6.8% of the other, and size is
+what decides the number:
+
+| Call sites | Repos | Median | Clear 90% |
+|---|---:|---:|---:|
+| 200 – 1,000 | 3119 | **99.7%** | 86% |
+| 1,000 – 5,000 | 1994 | 96.7% | 79% |
+| 5,000 – 20,000 | 791 | 94.2% | 67% |
+| 20,000 – 100,000 | 302 | 89.8% | 49% |
+| 100,000+ | 68 | **77.7%** | 23% |
+
+**The column that removes the sampling difference gives the same answer twice.** Weighting by call
+sites asks what share of all the calls in the population got linked, and it does not care how many
+repositories were small: 5,000 repositories from 200 stars up read **83.9%**, and 10,000 from 5 stars
+up read **84.1%**. Two samples drawn a different way, 178.6 million call sites between them, and
+0.2 points apart. Neither median is the honest headline on its own; this is.
+
+Ruby moved most between the two runs — 94.6% median to 97.9% — and that is sampling again in its
+sharpest form: Ruby's weighted figure is 85.6%, the second-lowest of the four. The median Ruby
+repository is small enough to read almost perfectly and the large ones are the worst rows in the
+table above, which is the whole reason both numbers are printed.
+
 This prediction was written down before the run and was wrong in both halves: that the average would
 *fall*, and that Ruby would be what pulled it down. Ruby came second at a 94.6% median. The reasoning
 behind the prediction — that Ruby declares no receiver types — is still true, and still explains
@@ -578,8 +619,10 @@ The obvious levers were pulled and measured, and most of them did nothing:
 | **Read a type that points at a declaration** — `T['key']`, `ReturnType<typeof f>` | n8n: 159 receivers typed, and correctly; **+10 edges of 1,123,583**. Headline and floor both unchanged. **Kept** — it reads a declaration and adds no guess — and stated at its true size. |
 | **Read `User.prototype.render = …` as a member** | mongoose: 17 members added to its constructor and **0 edges reach any of them**; express floor 91.1% → 83.3%. **Reverted** — the blocker is the CommonJS singleton, not the members. |
 | **Let a repository's own `.gitignore` say what its source is** | node-red: 214 → **581 files**, 1,905 → **15,226 edges**. babel, jest, vite and nuxt unchanged. **Kept.** |
+| **Read `exports.run = …` as a declaration** | +948 edges across seven repositories for +104 honest misses — mongoose +349, gatsby +313, rollup +257. **Kept.** |
+| **Refuse a file packed by a machine** | one repository parsed Yarn's own bundle into **7,996 symbols and 35,526 call sites** in 12.5s; now 156 symbols in 0.1s. rails, discourse and prettier unchanged to the decimal. **Kept.** |
 
-Four of those deserve more than a table row.
+Six of those deserve more than a table row.
 
 **Inferring a parameter's type from its call sites** was proposed here on the strength of one
 number: netron reports 20,966 unresolved calls on `reader`, a parameter of `static decode(reader,
@@ -673,8 +716,66 @@ Its floor fell from 59.8% to 48.1%, and that is the point rather than a cost: th
 confident number about 37% of a repository. Four other repositories carry the same kind of negation
 for test fixtures — babel, jest, vite and nuxt — and all four are unchanged to the decimal.
 
-**Reading `User.prototype.render = …`** came out of the same sweep, from mongoose at 34.1%, and was
-built and thrown away. `lib/mongoose.js` writes fifty prototype assignments and contributed three
+**Refusing a file packed by a machine** came out of the same sweep, from the opposite signal:
+a repository whose 37 files declared **7,996 symbols**. Nobody writes 216 symbols a file. It commits
+`.yarn/plugins/*.cjs` — Yarn Berry's own runtime, kept in the tree for reproducible installs — and
+2 MB of minified JavaScript became 7,996 symbols and 35,526 call sites. Everything the tool then said
+about that repository was about Yarn: `hotspots` and `dead` answered with one-letter names.
+
+A bundle is not source, and line length says so by an order of magnitude in both directions:
+
+| | avg bytes per line |
+|---|---|
+| express, worst file anybody wrote | 33 |
+| angular's currency data table | 302 |
+| rails' vendored `clipboard.js` | 1,493 |
+| Yarn's plugin bundle | 1,952 |
+| a fingerprinted asset in rails' fixtures | 28,241 |
+
+The threshold sits at **1,000 bytes a line**, in the gap, with a 20 KB floor below which being packed
+costs nothing anyway. It is counted as `packed` rather than `unparsable`, because the parser could
+have taken these and the number should say the difference between a failure and a decision.
+
+react-aptos: **12.5s → 0.1s, 7,996 symbols → 156**, and its figure now describes the project rather
+than Yarn. rails loses two files and 180 symbols and reads 74.8% either way; discourse and prettier
+do not move at all.
+
+**Reading `exports.run = …`** came out of the same sweep, from one repository that
+indexed 92 JavaScript files into fifteen functions. Every one of its command files is written
+
+```js
+module.exports.run = async (bot, message, args) => { … };
+```
+
+a **named CommonJS export** — the shape of every AWS Lambda handler, Express router module and
+Discord command file. `readCommonJs` read `module.exports = View` and nothing else, so none of these
+existed. rollup writes 2,240 of them, gatsby 1,464, babel 405, express 45.
+
+It is read during the walk rather than afterwards, because the body has to belong to the new symbol:
+handled after the fact, the function exists while every call it makes is booked against the file.
+
+| | symbols | edges | honest misses |
+|---|---|---|---|
+| mongoose | +51 | **+349** | +7 |
+| gatsby | +452 | **+313** | +5 |
+| rollup | +32 | **+257** | +1 |
+| express | +27 | **+22** | +11 |
+| babel | +29 | +4 | +8 |
+| eslint | +113 | +3 | +72 |
+
+**+948 edges for +104 misses** — nine links gained per honest miss added. Three headline figures rose
+(mongoose 34.1% → 35.0%, gatsby 86.8% → 87.1%, rollup 88.6% → 88.9%), two fell (express 91.4% →
+89.5%, eslint 80.0% → 79.7%) and one did not move. The ones that fell are the documented trade: a
+name the repository now declares can no longer be **proven** absent from it, so calls correctly
+excused as library calls come back into the denominator and some become misses.
+
+The contrast with the experiment below is the whole lesson. Both add declarations nobody was
+reading. This one adds declarations the resolver already knows how to reach — `require('./open').run`
+is a lookup that has worked all along — and gains 948 edges. That one adds members to a type nothing
+is ever typed as, and gains none.
+
+**Reading `User.prototype.render = …`** came out of the same kind of sweep, from mongoose at 34.1%,
+and was built and thrown away. `lib/mongoose.js` writes fifty prototype assignments and contributed three
 symbols. Reading them gave `Mongoose` seventeen members — and **nothing reached one**: zero edges.
 The receiver is never typed as a Mongoose, because the singleton is re-exported through three
 CommonJS hops (`module.exports = new Mongoose()`, then two files re-exporting the binding), none of
@@ -1149,7 +1250,7 @@ it automatically.
 yarn test
 ```
 
-255 tests across six fixture suites plus regression, security and multi-repo coverage:
+261 tests across six fixture suites plus regression, security and multi-repo coverage:
 
 | Fixture | Simulates | The chain grep cannot follow |
 |---|---|---|
