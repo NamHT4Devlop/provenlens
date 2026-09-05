@@ -319,6 +319,7 @@ that. A plugin declares both ends, and one shared pass matches them:
 | `sqs` | Producer ↔ `@SqsListener` / NestJS `@SqsMessageHandler` / Shoryuken worker, **across languages** | `sends-to` (0.85) |
 | `flyway` | `V*__*.sql` ↔ the entity or mapper touching that table | `touches-table` (0.6) |
 | `http` | A URL is a string on both sides: `@GetMapping`/`@Get`/`app.get`/`config/routes.rb` declare the handler, an HTTP client naming a path calls it — **across services** | `calls-route` (0.8) |
+| `grpc` | `rpc GetOrder` in a `.proto` ↔ a class extending `OrderServiceGrpc.OrderServiceImplBase` — **each rpc becomes a symbol**, and the generated base's `GetOrder`→`getOrder` rename is followed | `implemented-by` (0.9) |
 | `graphql` | `type Query { orders }` in a `.graphqls` ↔ `@QueryMapping` / NestJS `@Query({ name })` — **each schema field becomes a symbol**, and a field nobody implements stays visible | `implemented-by` (0.9) |
 | `spring-event` | `publishEvent(new OrderPlaced(…))` ↔ `@EventListener void on(OrderPlaced e)` — the shared token is a **type name**, not a string | `publishes-to` (0.8) |
 | `kafka` | A topic is a string on both sides: `@KafkaListener`/NestJS `@EventPattern`/KafkaJS `subscribe`/Karafka `topic :x` declare the handler, a producer naming the same topic reaches it — **across languages** | `sends-to` (0.85) |
@@ -1040,7 +1041,7 @@ it automatically.
 yarn test
 ```
 
-242 tests across five fixture suites plus regression, security and multi-repo coverage:
+247 tests across five fixture suites plus regression, security and multi-repo coverage:
 
 | Fixture | Simulates | The chain grep cannot follow |
 |---|---|---|

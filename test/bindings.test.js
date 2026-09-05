@@ -7,6 +7,7 @@ import { queueName } from '../src/bindings/sqs.js';
 import { topicName } from '../src/bindings/kafka.js';
 import { eventType } from '../src/bindings/springevent.js';
 import { coordinate } from '../src/bindings/graphql.js';
+import { serviceFromBase, rpcCoordinate } from '../src/bindings/grpc.js';
 import { tablesIn, tablesReferenced } from '../src/bindings/flyway.js';
 
 let db;
@@ -422,5 +423,49 @@ describe('graphql', () => {
       (e) => e.role === 'consumer' && !endpoints.some((p) => p.role === 'provider' && p.key === e.key),
     );
     assert.ok(unimplemented.some((e) => e.key === 'Query.unimplemented'), 'the gap is recorded');
+  });
+});
+
+describe('grpc', () => {
+  test('only a generated gRPC base names a service', () => {
+    // grpc-java writes OrderServiceGrpc.OrderServiceImplBase, and both halves
+    // name the same service. Anything else is some other base class.
+    assert.equal(serviceFromBase('OrderServiceGrpc.OrderServiceImplBase'), 'OrderService');
+    assert.equal(serviceFromBase('SomeOtherBase'), null);
+    assert.equal(serviceFromBase('OrderServiceGrpc.PaymentServiceImplBase'), null);
+    assert.equal(serviceFromBase('OrderServiceImplBase'), null);
+    assert.equal(serviceFromBase(''), null);
+  });
+
+  test('a coordinate is what the wire uses', () => {
+    assert.equal(rpcCoordinate('OrderService', 'GetOrder'), 'OrderService/GetOrder');
+    assert.equal(rpcCoordinate('OrderService', ''), null);
+    assert.equal(rpcCoordinate('', 'GetOrder'), null);
+  });
+
+  test('an rpc becomes a symbol and the implementation answers it', () => {
+    const rpc = one('rpc:OrderService/GetOrder');
+    assert.equal(rpc.kind, 'rpc-method');
+    assert.match(rpc.file_path, /orders\.proto$/);
+
+    // The generated base lowers the proto's first letter -- GetOrder becomes
+    // getOrder -- so matching on the proto spelling alone would join nothing.
+    const wired = wiredBy('grpc');
+    assert.ok(
+      wired.some((w) => /OrderService\/GetOrder -> .*OrderServiceImpl#getOrder/.test(w)),
+      `saw ${JSON.stringify(wired)}`,
+    );
+  });
+
+  test('an rpc nobody implements stays visible', () => {
+    const endpoints = endpointsOf('grpc');
+    assert.ok(endpoints.some((e) => e.key === 'OrderService/CancelOrder' && e.role === 'consumer'));
+    assert.ok(!endpoints.some((e) => e.key === 'OrderService/CancelOrder' && e.role === 'provider'));
+  });
+
+  test('a class extending something else is not a service', () => {
+    // NotAService#getOrder has the right method name and the wrong parent.
+    // Claiming it would wire a .proto to a class that never saw one.
+    assert.ok(!endpointsOf('grpc').some((e) => /NotAService/.test(e.fqn)));
   });
 });

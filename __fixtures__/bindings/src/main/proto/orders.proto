@@ -1,0 +1,9 @@
+syntax = "proto3";
+package shop;
+
+service OrderService {
+  rpc GetOrder (GetOrderRequest) returns (Order);
+  rpc ListOrders (ListRequest) returns (stream Order);
+  // Declared and never implemented.
+  rpc CancelOrder (CancelRequest) returns (Order);
+}

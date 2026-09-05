@@ -25,15 +25,16 @@ import http from './http.js';
 import kafka from './kafka.js';
 import springevent from './springevent.js';
 import graphql from './graphql.js';
+import grpc from './grpc.js';
 
-export const PLUGINS = [mybatis, camel, sqs, flyway, http, kafka, springevent, graphql];
+export const PLUGINS = [mybatis, camel, sqs, flyway, http, kafka, springevent, graphql, grpc];
 
 /**
  * Languages the binding plugins own. They have no grammar, so the normal
  * discovery pass never sees them; without this the indexer would count them as
  * deleted on every run and report a removal that did not happen.
  */
-export const BINDING_LANGS = ['xml', 'sql', 'graphql'];
+export const BINDING_LANGS = ['xml', 'sql', 'graphql', 'proto'];
 
 export function runBindings(db, root) {
   db.exec("DELETE FROM edges WHERE via LIKE 'binding:%'");
@@ -74,7 +75,7 @@ export function runBindings(db, root) {
     } catch {
       continue;
     }
-    const lang = rel.endsWith('.sql') ? 'sql' : /\.(graphqls?|gql)$/i.test(rel) ? 'graphql' : 'xml';
+    const lang = rel.endsWith('.sql') ? 'sql' : /\.(graphqls?|gql)$/i.test(rel) ? 'graphql' : rel.endsWith('.proto') ? 'proto' : 'xml';
     const id = Number(
       insertFile.run(rel, lang, '', null, content.split('\n').length, Date.now()).lastInsertRowid,
     );
