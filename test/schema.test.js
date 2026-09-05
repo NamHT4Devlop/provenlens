@@ -53,8 +53,14 @@ describe('schema', () => {
     const dbPath = join(root, '.provenlens', 'index.db');
     const db = openDb(dbPath, { create: true });
     try {
-      assert.equal(statSync(dirname(dbPath)).mode & 0o777, 0o700, '.provenlens/ must be 0700');
-      assert.equal(statSync(dbPath).mode & 0o777, 0o600, 'index.db must be 0600');
+      // A POSIX mode. Windows has no such bits -- it carries ACLs instead, and
+      // Node reports a mode that means nothing there -- so the assertion is
+      // made where it can be true. What it protects is stated in the README's
+      // known limits rather than silently assumed everywhere.
+      if (process.platform !== 'win32') {
+        assert.equal(statSync(dirname(dbPath)).mode & 0o777, 0o700, '.provenlens/ must be 0700');
+        assert.equal(statSync(dbPath).mode & 0o777, 0o600, 'index.db must be 0600');
+      }
     } finally {
       db.close();
       rmSync(root, { recursive: true, force: true });

@@ -2,7 +2,7 @@ import { test, before, after, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { rmSync, statSync, readFileSync, mkdtempSync } from 'node:fs';
+import { rmSync, statSync, readFileSync, mkdtempSync, mkdirSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { request } from 'node:http';
 import { startServer, tokenFile } from '../src/server.js';
@@ -134,7 +134,11 @@ describe('the token survives a restart', () => {
     const file = tokenFile();
     assert.ok(file.startsWith(stateDir), 'the test must not touch the real token file');
     assert.equal(readFileSync(file, 'utf8').trim(), handle.token);
-    assert.equal(statSync(file).mode & 0o777, 0o600);
+    // POSIX only: Windows carries ACLs and reports a mode that means nothing.
+    // The gap it leaves is named in the README's known limits.
+    if (process.platform !== 'win32') {
+      assert.equal(statSync(file).mode & 0o777, 0o600);
+    }
   });
 
   test('a second server reuses it, so a bookmarked URL keeps working', async () => {
@@ -251,5 +255,37 @@ describe('the API stays read-only and bounded', () => {
   test('treats an unknown path as not found rather than guessing', async () => {
     assert.equal((await ask('/api/../etc/passwd')).status, 404);
     assert.equal((await ask('/nope')).status, 404);
+  });
+});
+
+describe('shutting the server down releases what it opened', () => {
+  test('close() lets the index file be deleted afterwards', async () => {
+    // Windows will not delete a file another handle still holds open. The
+    // server opened a database per project and closed only the watchers, so a
+    // caller that had shut it down still could not remove the index -- EPERM
+    // from a process that said it was finished. On POSIX the unlink succeeds
+    // whatever is open, which is why this went unseen.
+    const root = mkdtempSync(join(tmpdir(), 'provenlens-close-'));
+    mkdirSync(join(root, 'src'), { recursive: true });
+    writeFileSync(join(root, 'src', 'A.java'), 'package a;\npublic class A { void f() {} }\n');
+
+    // startServer serves an index; it does not build one.
+    const seed = openDb(dbPathFor(root), { create: true });
+    await indexProject(seed, root, { full: true });
+    seed.close();
+
+    const local = await startServer(root, { port: 0 });
+    local.close();
+
+    // The observable consequence, on every platform: nothing the server opened
+    // is still open.
+    for (const p of local.projects) {
+      assert.throws(
+        () => p.db.prepare('SELECT 1').get(),
+        'every project database is closed',
+      );
+    }
+    rmSync(root, { recursive: true, force: true });
+    assert.ok(!existsSync(root), 'and the tree can be removed');
   });
 });

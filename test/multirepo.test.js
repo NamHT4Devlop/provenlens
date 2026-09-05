@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, dirname } from 'node:path';
+import { join, dirname, basename } from 'node:path';
 import { request } from 'node:http';
 import { openDb } from '../src/db.js';
 import { dbPathFor, discoverProjects } from '../src/project.js';
@@ -98,7 +98,9 @@ const get = (path) =>
 
 describe('discovery', () => {
   test('finds every indexed repository one level below a workspace', () => {
-    const found = discoverProjects(workspace).map((p) => p.split('/').pop()).sort();
+    // basename, not a split on '/': discoverProjects returns native paths, and
+    // on Windows every one of them came back whole because the separator is \.
+    const found = discoverProjects(workspace).map((p) => basename(p)).sort();
     assert.deepEqual(found, ['audit-service', 'notify-service', 'order-service']);
   });
 
@@ -346,7 +348,14 @@ describe('the same workspace through MCP', () => {
         assert.match(text, new RegExp(name));
       }
     } finally {
+      // Waiting for the exit, not just asking for it. kill() only sends the
+      // signal, and the child still holds a handle on every index in the
+      // workspace until it is gone -- which on Windows is why the directory
+      // could not be removed afterwards and the whole file failed in teardown,
+      // with no individual test to point at.
+      const gone = new Promise((done) => child.once('exit', done));
       child.kill();
+      await gone;
     }
   });
 });

@@ -21,6 +21,12 @@ jobs:
   suite:
     name: Test suite · Node ${{ matrix.node }} · ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
+    # Windows reports but does not gate. 224 of 225 pass there; the one that
+    # does not is multirepo's teardown, where a server with three recursive
+    # watchers is closed and the workspace removed. Blocking every merge on an
+    # unfinished investigation would buy nothing, and marking it green would be
+    # a lie -- so it runs, and what it says is visible on every pull request.
+    continue-on-error: ${{ matrix.experimental == true }}
     strategy:
       fail-fast: false
       matrix:
@@ -34,6 +40,12 @@ jobs:
           # themselves when there is no JDK, so a runner without one still
           # tells the truth about everything else.
           - { os: macos-latest, node: 24, label: macOS }
+          # Windows is the platform this tool was never run on. Nothing in it
+          # needs compiling -- node:sqlite ships inside Node and the grammars
+          # are WASM -- so the question is whether the paths, the permissions
+          # and the watcher hold up, and the only honest way to find out is to
+          # run them there.
+          - { os: windows-latest, node: 24, label: Windows, experimental: true }
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
