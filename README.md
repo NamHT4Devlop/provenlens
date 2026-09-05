@@ -1330,10 +1330,19 @@ the second.
   cap. `init`, `index` and `sync` now re-exec with half of physical memory (clamped to 4–16 GB), so
   the ceiling is the machine rather than V8; on a small machine a repository that size will still
   not fit. Two of 5,000 repositories reached it.
-- **Windows runs, and one test does not.** Every test but `multirepo`'s passes there, and the failure is in the
-  test harness rather than the tool: multirepo's teardown closes a server holding three recursive
-  watchers and then removes the workspace. Windows is in the matrix and reports on every pull
-  request; it does not gate one, because claiming green would be worse than saying this.
+- **Windows is in the matrix and reports on every pull request; it does not gate one**, because
+  claiming green would be worse than saying otherwise. This entry used to blame `multirepo`'s
+  teardown for closing a server and then removing the workspace. That was a guess, and it was
+  wrong. The runner log says what actually happened:
+
+      Assertion failed: !_wcsnicmp(filename, dir, dirlen), file src\win\fs-event.c, line 72
+
+  Every test in the file passed and then the process aborted -- not a JavaScript error but an
+  assertion inside libuv, which `fs.watch` fails when the path it was handed and the path Windows
+  reports for an event are written differently. `os.tmpdir()` on a runner is
+  `C:\Users\RUNNER~1\AppData\Local\Temp`, an 8.3 short name, and the events come back long. The
+  watcher now resolves its root with `realpathSync.native` first. That is a fix to the tool, not to
+  the test: `provenlens serve` on any such path aborted the same way.
 - **On Windows the index and the UI token are not protected by file permissions.** `.provenlens/`
   is created `0700` and the UI token `0600`, which Windows does not have: it carries ACLs, and Node's
   `mode` there means nothing. The index holds your source's structure and the token opens the local
