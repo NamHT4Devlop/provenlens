@@ -670,7 +670,10 @@ export async function startServer(
       // had said it was finished.
       try { p.db.close(); } catch { /* already closed by a caller */ }
     }
-    server.close();
+    // Resolves once the listening socket is really gone. `server.close` only
+    // stops accepting; a caller that removes the workspace or rebinds the port
+    // the moment this returns needs to know the release has happened.
+    return new Promise((done) => server.close(() => done()));
   };
   process.on('SIGINT', () => {
     close();

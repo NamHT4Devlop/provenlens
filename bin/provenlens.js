@@ -8,10 +8,10 @@ import { ensureHeadroom } from '../src/heap.js';
 ensureHeadroom();
 
 import { Command } from 'commander';
-import { resolve, join } from 'node:path';
+import { resolve, join, basename } from 'node:path';
 import { existsSync, rmSync } from 'node:fs';
 import { openDb, openProject, getMeta } from '../src/db.js';
-import { findProjectRoot, dbPathFor, INDEX_DIR, acquireIndexLock } from '../src/project.js';
+import { findProjectRoot, dbPathFor, INDEX_DIR, acquireIndexLock, repoRelative } from '../src/project.js';
 import { explainSymbol } from '../src/why.js';
 import { indexProject } from '../src/indexer.js';
 import {
@@ -87,7 +87,7 @@ function useScope(pathArg) {
   const start = pathArg ? resolve(pathArg) : process.cwd();
   if (findProjectRoot(start)) {
     const { root, db } = useProject(pathArg);
-    return [{ id: 0, name: root.split('/').pop(), root, db }];
+    return [{ id: 0, name: basename(root), root, db }];
   }
   const projects = openWorkspace(start);
   if (!projects.length) {
@@ -161,6 +161,11 @@ function reportIndex(stats) {
   if (stats.unparsable) {
     console.log(
       `${stats.unparsable} file(s) too large or malformed to parse — their calls are not in the graph`,
+    );
+  }
+  if (stats.packed) {
+    console.log(
+      `${stats.packed} file(s) refused as machine-packed (a bundle or minified file, not source)`,
     );
   }
   if (stats.pending) {
@@ -647,10 +652,9 @@ program
     if (!paths.length) die('no files given. Try: git diff --name-only | provenlens affected');
 
     // Accept absolute or cwd-relative paths and normalise to repo-relative.
-    const normalised = paths.map((p) => {
-      const abs = resolve(p);
-      return abs.startsWith(`${root}/`) ? abs.slice(root.length + 1) : p;
-    });
+    // A path outside the root is passed through as written, so the report can
+    // name it under "not in the index" rather than silently dropping it.
+    const normalised = paths.map((p) => repoRelative(root, p) ?? p.split('\\').join('/'));
     const r = affectedBy(db, normalised, { maxDepth: Number(opts.depth) });
 
     // The CI question: does anything already exercise what this change can
