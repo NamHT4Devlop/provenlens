@@ -4,7 +4,7 @@
  * fs.watch is recursive on macOS and Windows; on Linux it is not, so the
  * fallback there is a periodic sync rather than pretending to watch.
  */
-import { watch } from 'node:fs';
+import { watch, realpathSync } from 'node:fs';
 import { platform } from 'node:os';
 import { langForPath } from './lang.js';
 import { indexProject } from './indexer.js';
@@ -47,7 +47,24 @@ export function watchProject(db, root, { onSync } = {}) {
   const isIgnored = buildIgnoreFilter(root);
 
   if (recursive) {
-    const watcher = watch(root, { recursive: true }, (_event, filename) => {
+    // fs.watch keeps the path it was handed and compares it against the one
+    // Windows reports for every event. Hand it a path holding an 8.3 short
+    // name -- `C:\Users\RUNNER~1\AppData\Local\Temp\...`, which is what
+    // os.tmpdir() gives on a GitHub runner and what any account with a long
+    // name gives -- and the two never match. libuv does not report that as an
+    // error a caller could catch: it aborts the process on
+    // `!_wcsnicmp(filename, dir, dirlen)` in src/win/fs-event.c, taking the
+    // whole run with it. realpath resolves the short form away.
+    //
+    // Only the watcher gets the resolved path. Everything else keeps the root
+    // it was given, because the paths in the index are relative to that one.
+    let watched = root;
+    try {
+      watched = realpathSync.native(root);
+    } catch {
+      /* an unresolvable root is one fs.watch is about to refuse anyway */
+    }
+    const watcher = watch(watched, { recursive: true }, (_event, filename) => {
       if (!filename) return;
       const rel = String(filename).split('\\').join('/');
       if (isIgnored(rel)) return;
