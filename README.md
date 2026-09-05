@@ -574,6 +574,26 @@ The obvious levers were pulled and measured, and most of them did nothing:
 | **Install every missing dependency** (9 repos, npm/pnpm/yarn) | nx 95.4 → 95.5, astro unchanged, svelte +0.1. **No effect.** |
 | **Read JSDoc** — `@param {T}` and `@import` | svelte 82.4 → **87.9%**. Kept. |
 | **Type what a factory returns** — `return { … }` as a type | astro 80.9 → 80.3, axios 67.6 → 67.2. **Reverted.** |
+| **Infer a parameter's type from its call sites** | netron: **0** call sites pass a constructed value, and 2,574 of 2,628 pass the caller's own untyped parameter. **Not attempted** — measured first. |
+
+Two of those deserve more than a table row.
+
+**Inferring a parameter's type from its call sites** was proposed here on the strength of one
+number: netron reports 20,966 unresolved calls on `reader`, a parameter of `static decode(reader,
+position)` that plain JavaScript declares nowhere. If every caller passed the same type, the
+parameter would have one.
+
+They do not pass a type at all. Of roughly 2,628 `decode(...)` call sites, **2,574 pass `reader`** --
+the caller's own untyped parameter -- and **none passes a constructed value**. The type has no
+origin to infer *from*: it is threaded parameter to parameter, and one step of inference reaches
+nothing. Making it pay would need transitive propagation to a fixed point, which is a different and
+much larger feature -- and at that fixed point the call sites would disagree, because
+`flatbuffers.BinaryReader`, `base.BinaryReader` and `protobuf.BinaryReader` all flow into
+structurally identical decoders.
+
+There is a second reason it was not built: the extractors record argument expressions for Java
+only, and Java declares its parameter types already. The one language that needs this is the one
+with no input for it.
 
 The dependency result is worth stating plainly because it contradicts what this file said two
 rounds ago. express really does go 72.4% → 91.4% when `node_modules` appears — and express is the
