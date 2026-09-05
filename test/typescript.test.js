@@ -56,9 +56,39 @@ describe('type normalisation', () => {
     assert.equal(elementOf('Promise<Donation | undefined>'), 'Donation');
   });
 
+  test('keeps a type that points at a declaration instead of spelling one', () => {
+    // Both survive normalisation whole, because the name each one carries is
+    // the thing the resolver has to look up. Stripping the generic left the
+    // bare word `ReturnType`, which denotes nothing at all.
+    assert.equal(normalizeType("Receipt['donation']"), "Receipt['donation']");
+    assert.equal(normalizeType('ReturnType<typeof buildService>'), 'ReturnType<typeof buildService>');
+    assert.equal(normalizeType('ReturnType< typeof  build.service >'), 'ReturnType<typeof build.service>');
+    // Anything else in the brackets is still a generic and still stripped.
+    assert.equal(normalizeType('ReturnType<T>'), 'ReturnType');
+  });
+
   test('derives a module path from a file path', () => {
     assert.equal(modulePathOf('src/domain/donation.ts'), 'src/domain/donation');
     assert.equal(modulePathOf('src/lib/format.js'), 'src/lib/format');
+  });
+});
+
+describe('a type written as a pointer at a declaration', () => {
+  test("reads `Receipt['donation']` as the type that member is declared to hold", () => {
+    // The parameter is annotated with an indexed access, so the only way to
+    // type the receiver is to look up Receipt, find `donation`, and read its
+    // annotation. Nothing here is inferred.
+    assert.ok(calls('describeReceipt').includes('Donation#describe'));
+  });
+
+  test('reads `ReturnType<typeof f>` as what f is declared to return', () => {
+    assert.ok(calls('summariseVia').includes('DonationService#summarise'));
+  });
+
+  test('resolves both by declaration, never by name', () => {
+    // A method named `describe` or `summarise` existing exactly once would let
+    // the by-name fallback pass these tests with the feature deleted.
+    assert.equal(stats.resolve.typescript.uniqueName, 0);
   });
 });
 

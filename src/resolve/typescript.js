@@ -381,13 +381,56 @@ export function resolveTypeScript(db, root) {
    * Returns `undefined` for an array type: the receiver is then an Array, whose
    * members live in the runtime, not in this project.
    */
-  function resolveTypeName(name, fileId, module) {
+  function resolveTypeName(name, fileId, module, depth = 0) {
     if (!name) return null;
     // A chain hands this an already-resolved type as often as a name: the
     // regex below coerced one to a string harmlessly, but nothing else here
     // can, so say plainly which of the two arrived.
     if (typeof name !== 'string') return name.fqn ? name : null;
     if (/\[\]$/.test(name)) return undefined;
+
+    // Both forms below name a type by pointing at a declaration rather than
+    // spelling one, so each costs a hop -- and `interface Cell { next:
+    // Cell['next'] }` is a hop that never ends. The limit is there to end that
+    // rather than to ration: a real annotation is one or two hops deep.
+    if (depth > 4) return null;
+
+    // `INodeExecutionData['json']` -- an indexed access. TypeScript is not
+    // describing a type here, it is pointing at one this index already holds:
+    // the `json` member of `INodeExecutionData`, whose own annotation is the
+    // answer. Reading it is a declaration lookup, not an inference.
+    //
+    // Both forms are rare and this function runs millions of times, so each is
+    // gated on a character test before its regex.
+    const indexed = name.includes('[')
+      ? /^([A-Za-z_$][\w$.]*)\s*\[\s*['"]([^'"]+)['"]\s*\]$/.exec(name)
+      : null;
+    if (indexed) {
+      const owner = resolveTypeName(indexed[1], fileId, module, depth + 1);
+      const member = owner?.fqn ? findMember(owner, indexed[2]) : null;
+      if (!member?.type_name) return null;
+      // Resolved where the member was DECLARED, then where the call was
+      // written: the file naming `Config['db']` need never have imported the
+      // type that `db` happens to hold.
+      return (
+        resolveTypeName(member.type_name, member.file_id, member.module, depth + 1) ??
+        resolveTypeName(member.type_name, fileId, module, depth + 1)
+      );
+    }
+
+    // `ReturnType<typeof buildRouter>` -- likewise a pointer at a declaration:
+    // whatever `buildRouter` is annotated, or was inferred, to return.
+    const returned = name.startsWith('ReturnType<')
+      ? /^ReturnType<typeof ([A-Za-z_$][\w$]*)>$/.exec(name)
+      : null;
+    if (returned) {
+      const fn = resolveValueName(returned[1], fileId, module);
+      if (!fn?.type_name) return null;
+      return (
+        resolveTypeName(fn.type_name, fn.file_id, fn.module, depth + 1) ??
+        resolveTypeName(fn.type_name, fileId, module, depth + 1)
+      );
+    }
 
     // `DirectusClient<unknown> & RestClient<unknown>`. An intersection is not
     // an ambiguity: TypeScript says the value has every one of these, which is
@@ -473,6 +516,29 @@ export function resolveTypeScript(db, root) {
       const target = resolveModule(module, imp.fqn);
       const hit = target && resolveExport(target, imp.orig ?? name);
       if (hit?.kind === 'function') return asType(hit);
+    }
+    return null;
+  }
+
+  /**
+   * The module-level VALUE a bare identifier denotes -- the declaration row
+   * itself, not a type built from it. `asConstructible` above answers the
+   * neighbouring question and cannot serve: it reports the name as a class,
+   * which is what `new f()` makes, whereas `typeof f` wants what `f` returns.
+   */
+  function resolveValueName(name, fileId, module) {
+    const here = (symbolsByModule.get(module) ?? []).find(
+      (s) => s.name === name && ['function', 'field'].includes(s.kind),
+    );
+    if (here) return here;
+
+    for (const imp of importsByFile.get(fileId) ?? []) {
+      if (imp.kind !== 'import' || imp.simple !== name) continue;
+      const target = resolveModule(module, imp.fqn);
+      // Named a module outside this project: the answer is "not ours", and
+      // falling through to a same-named function elsewhere resolves wrong.
+      if (!target) return null;
+      return resolveExport(target, imp.orig ?? name);
     }
     return null;
   }
