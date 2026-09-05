@@ -986,14 +986,21 @@ describe('the MCP entry the installer writes', () => {
   test('runs the bin directly, which resolves node at run time', async () => {
     const { serverEntry } = await import('../src/install.js');
     const entry = serverEntry();
-    assert.match(entry.command, /bin\/provenlens\.js$/);
+    // resolve() gives a native path, so the separator is \ on Windows.
+    assert.match(entry.command, /bin[\\/]provenlens\.js$/);
     assert.deepEqual(entry.args, ['mcp']);
 
-    // The command is only safe to spawn if the file really is executable and really carries a
-    // shebang -- the two facts the entry now depends on.
-    const stat = statSync(entry.command);
-    assert.ok(stat.mode & 0o111, 'the bin must be executable');
+    // The shebang is what lets the file be the command on a POSIX system, and
+    // it must name node without pinning an interpreter -- true everywhere, so
+    // asserted everywhere.
     assert.match(readFileSync(entry.command, 'utf8').split('\n')[0], /^#!.*\bnode\b/);
+
+    // The executable bit is a POSIX fact. Windows has no such mode and npm
+    // writes .cmd/.ps1 shims instead, so asserting it there would fail for a
+    // reason that says nothing about whether the entry works.
+    if (process.platform !== 'win32') {
+      assert.ok(statSync(entry.command).mode & 0o111, 'the bin must be executable');
+    }
   });
 });
 
@@ -1310,6 +1317,18 @@ describe('a repository you clone to read must not get to run anything', () => {
 
   test('a symlink inside the repository is not read, whatever it points at', async () => {
     const { symlinkSync } = await import('node:fs');
+    // Windows refuses symlinks without Developer Mode or an elevated shell.
+    // The rule still holds there -- nothing can create the link to test it.
+    const probe = mkdtempSync(join(tmpdir(), 'provenlens-symlink-probe-'));
+    try {
+      writeFileSync(join(probe, 'target'), 'x');
+      symlinkSync(join(probe, 'target'), join(probe, 'link'));
+    } catch {
+      rmSync(probe, { recursive: true, force: true });
+      return; // the platform will not make one; there is nothing to assert
+    }
+    rmSync(probe, { recursive: true, force: true });
+
     const outside = mkdtempSync(join(tmpdir(), 'provenlens-secret-'));
     const secret = join(outside, 'id_rsa');
     writeFileSync(secret, 'function PRIVATE_KEY_MATERIAL_DO_NOT_INDEX() {}\n');
