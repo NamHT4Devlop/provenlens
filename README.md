@@ -1026,7 +1026,7 @@ it automatically.
 yarn test
 ```
 
-224 tests across five fixture suites plus regression, security and multi-repo coverage:
+225 tests across five fixture suites plus regression, security and multi-repo coverage:
 
 | Fixture | Simulates | The chain grep cannot follow |
 |---|---|---|

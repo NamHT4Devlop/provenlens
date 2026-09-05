@@ -19,9 +19,15 @@ const HERE = dirname(fileURLToPath(import.meta.url));
  * first run.
  */
 let dbSeq = 0;
-const created = new Set();
+/** path -> the open handle, so exit can close before it deletes. */
+const created = new Map();
 process.on('exit', () => {
-  for (const path of created) {
+  for (const [path, db] of created) {
+    // Windows refuses to delete a file another handle still holds open, and at
+    // exit every database opened here is still open. On POSIX the unlink
+    // succeeds regardless and the difference never shows -- which is why this
+    // only surfaced when a Windows runner was added.
+    try { db.close(); } catch { /* a test may have closed it already */ }
     for (const suffix of ['', '-wal', '-shm']) rmSync(`${path}${suffix}`, { force: true });
   }
 });
@@ -32,9 +38,10 @@ export async function buildIndex(fixture) {
   const slug = fixture.replace(/[^a-zA-Z0-9]+/g, '_') || 'root';
   const dbPath = join(HERE, '..', '__fixtures__', `.test-${slug}-${process.pid}-${dbSeq++}.db`);
   for (const suffix of ['', '-wal', '-shm']) rmSync(`${dbPath}${suffix}`, { force: true });
-  created.add(dbPath);
+
 
   const db = openDb(dbPath, { create: true });
+  created.set(dbPath, db);
   const stats = await indexProject(db, root, { full: true });
 
   const one = (query) => {

@@ -661,7 +661,15 @@ export async function startServer(
   }
 
   const close = () => {
-    for (const p of projects) p.watcher.close();
+    for (const p of projects) {
+      p.watcher.close();
+      // The databases were opened here, so they are this function's to release.
+      // Leaving them open kept a handle on every index the server had touched:
+      // harmless where a deleted file simply unlinks, and on Windows the reason
+      // nothing could remove an index afterwards -- EPERM, from a process that
+      // had said it was finished.
+      try { p.db.close(); } catch { /* already closed by a caller */ }
+    }
     server.close();
   };
   process.on('SIGINT', () => {
