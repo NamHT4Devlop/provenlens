@@ -74,6 +74,12 @@ export function normalizeType(raw) {
   // apart would give the receiver different behaviour by syntax alone.
   const arrayGeneric = /^(?:Array|ReadonlyArray)\s*<\s*([\w$.]+)\s*>$/.exec(t);
   if (arrayGeneric) t = `${arrayGeneric[1]}[]`;
+  // `ReturnType<typeof handler>` names a declaration this index already holds:
+  // whatever `handler` returns. `stripGenerics` below would reduce it to the
+  // bare word `ReturnType`, which denotes nothing, so it is kept whole and
+  // read at resolve time -- where the function it names can be looked up.
+  const returnOf = /^ReturnType\s*<\s*typeof\s+([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*>$/.exec(t);
+  if (returnOf) return `ReturnType<typeof ${returnOf[1]}>`;
   const isArray = /\[\s*\]\s*$/.test(t);
   t = stripGenerics(t);
   t = t.replace(/\[\s*\]/g, '').trim();

@@ -575,8 +575,9 @@ The obvious levers were pulled and measured, and most of them did nothing:
 | **Read JSDoc** — `@param {T}` and `@import` | svelte 82.4 → **87.9%**. Kept. |
 | **Type what a factory returns** — `return { … }` as a type | astro 80.9 → 80.3, axios 67.6 → 67.2. **Reverted.** |
 | **Infer a parameter's type from its call sites** | netron: **0** call sites pass a constructed value, and 2,574 of 2,628 pass the caller's own untyped parameter. **Not attempted** — measured first. |
+| **Read a type that points at a declaration** — `T['key']`, `ReturnType<typeof f>` | n8n: 159 receivers typed, and correctly; **+10 edges of 1,123,583**. Headline and floor both unchanged. **Kept** — it reads a declaration and adds no guess — and stated at its true size. |
 
-Two of those deserve more than a table row.
+Three of those deserve more than a table row.
 
 **Inferring a parameter's type from its call sites** was proposed here on the strength of one
 number: netron reports 20,966 unresolved calls on `reader`, a parameter of `static decode(reader,
@@ -594,6 +595,46 @@ structurally identical decoders.
 There is a second reason it was not built: the extractors record argument expressions for Java
 only, and Java declares its parameter types already. The one language that needs this is the one
 with no input for it.
+
+**Reading a type that points at a declaration** is the opposite case, and it was built. `INode['parameters']`
+and `ReturnType<typeof createDataSource>` do not describe a type; they point at one this index
+already holds — the `parameters` member of `INode`, the return annotation of `createDataSource`. So
+reading them is a declaration lookup, adds no guess, and cannot lower the floor. It also works:
+on n8n it types 159 receivers, and correctly — `INode['parameters']` becomes `INodeParameters`,
+`IPollFunctions['helpers']` becomes the four-way intersection that interface really declares, and
+`ReturnType<typeof createDataSource>` becomes typeorm's `DataSource`.
+
+Those 159 types are worth **ten edges out of 1,123,583 calls**. The headline stays 77.8%, the floor
+stays 64.3%, and indexing takes 121.3s against a 120.9s baseline. A receiver that becomes typed is
+usually calling a member that lives in a library anyway, so the call was already booked correctly
+as a library call; typing the receiver changes which *proof* is cited, not the count.
+
+The form is also rarer than grepping for it suggests. n8n's sources contain 2,016 indexed accesses,
+of which 577 ever reach a receiver that gets called on; directus contains 520 and reaches **none**.
+Most sit nested inside a generic, where they are stripped along with it.
+
+Where the rest go was measured too, across six TypeScript repositories:
+
+| | n8n | six repos |
+|---|---|---|
+| `T['key']` reached a receiver | 577 | 697 |
+| …resolved | 116 | 144 |
+| …owner not in the index | 423 | 490 |
+| …member declared without a type | 38 | 63 |
+| `ReturnType<typeof f>` reached a receiver | 2,170 | 2,210 |
+| …resolved | 43 | 54 |
+| …`f` found, but declaring no return type | 1,292 | 1,294 |
+| …`f` not found | 835 | 862 |
+
+Two rows there say not to go further. **328 of n8n's 423 unknown owners are spelled `ReturnType`** —
+that is `ReturnType<typeof f>['key']`, the two forms composed, which this does not read. Extending
+to it would feed those 328 into the `ReturnType` path, and that path resolves 2% of what it is
+given, so the extension is worth single-digit types.
+
+And the reason it resolves 2% is the honest one: **`ReturnType<typeof f>` is what an author writes
+precisely because `f` has no written return type.** The annotation is a pointer at the one
+declaration that is missing, which is why 1,292 of 2,170 uses find the function and cannot type it.
+Reading the pointer cannot conjure the thing pointed at.
 
 The dependency result is worth stating plainly because it contradicts what this file said two
 rounds ago. express really does go 72.4% → 91.4% when `node_modules` appears — and express is the
@@ -1061,7 +1102,7 @@ it automatically.
 yarn test
 ```
 
-247 tests across five fixture suites plus regression, security and multi-repo coverage:
+251 tests across five fixture suites plus regression, security and multi-repo coverage:
 
 | Fixture | Simulates | The chain grep cannot follow |
 |---|---|---|
@@ -1140,7 +1181,7 @@ the second.
   cap. `init`, `index` and `sync` now re-exec with half of physical memory (clamped to 4–16 GB), so
   the ceiling is the machine rather than V8; on a small machine a repository that size will still
   not fit. Two of 5,000 repositories reached it.
-- **Windows runs, and one test does not.** The suite is 224 of 225 there, and the failure is in the
+- **Windows runs, and one test does not.** The suite is 250 of 251 there, and the failure is in the
   test harness rather than the tool: multirepo's teardown closes a server holding three recursive
   watchers and then removes the workspace. Windows is in the matrix and reports on every pull
   request; it does not gate one, because claiming green would be worse than saying this.
@@ -1154,6 +1195,10 @@ the second.
   the method.
 - **NestJS token DI** (`{ provide: 'X', useClass: Y }` matched to `@Inject('X')`) needs
   object-literal extraction the TS extractor does not do yet; decorators themselves are recorded.
+- **A type spelled by composing two pointers** — `ReturnType<typeof useStore>['items']` — is not
+  read. Each half is, separately. The composition is n8n's largest single reason an indexed access
+  fails to resolve (328 of 423), and it is left out because the `ReturnType` half resolves 2% of
+  what reaches it, so composing them buys single-digit types.
 
 ## Roadmap
 
