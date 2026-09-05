@@ -4,6 +4,7 @@ import { buildIndex } from './helpers.js';
 import { calleesOf, callersOf } from '../src/query.js';
 import { normalizeUri } from '../src/bindings/camel.js';
 import { queueName } from '../src/bindings/sqs.js';
+import { topicName } from '../src/bindings/kafka.js';
 import { tablesIn, tablesReferenced } from '../src/bindings/flyway.js';
 
 let db;
@@ -13,6 +14,15 @@ let stats;
 before(async () => {
   ({ db, one, stats } = await buildIndex('bindings'));
 });
+
+/** Endpoints a plugin recorded, with the symbol each is attached to. */
+const endpointsOf = (plugin) =>
+  db
+    .prepare(
+      `SELECT b.role, b.key, s.fqn FROM bindings b JOIN symbols s ON s.id = b.symbol_id
+        WHERE b.plugin = ?`,
+    )
+    .all(plugin);
 
 /** Edges a plugin created, as "from -> to" pairs. */
 const wiredBy = (plugin) =>
@@ -195,5 +205,89 @@ describe('sqs across TypeScript', () => {
       wired.includes('src/order_events_handler:ShipmentPublisher#notifyShipped -> OrderWorker'),
       `the TS producer must reach the Ruby worker; saw: ${wired.join(' | ')}`,
     );
+  });
+});
+
+describe('kafka', () => {
+  test('a topic name is refused when it names a config key or a pattern', () => {
+    assert.equal(topicName('orders'), 'orders');
+    assert.equal(topicName('  orders  '), 'orders');
+    // A placeholder names a key whose value lives in a file this cannot read.
+    // Wiring two services on the spelling of the key would be an invention.
+    assert.equal(topicName('${app.topic.audit}'), null);
+    assert.equal(topicName('#{topicName}'), null);
+    // A pattern subscribes to many topics and names none of them.
+    assert.equal(topicName('orders.*'), null);
+    assert.equal(topicName('/orders-.+/'), null);
+    assert.equal(topicName('two words'), null);
+    assert.equal(topicName(''), null);
+  });
+
+  test('a @KafkaListener declares the handler, and its group id is not a topic', () => {
+    const endpoints = endpointsOf('kafka');
+    const shipments = endpoints.filter((e) => e.key === 'shipments' && e.role === 'provider');
+    assert.equal(shipments.length, 1);
+    assert.match(shipments[0].fqn, /ShipmentListener#onShipment/);
+
+    // topics = {"returns", "refunds"}, groupId = "returns-service" -- str_args
+    // keeps the values and drops the attribute names, so all three arrive
+    // together and only the annotation text can tell them apart.
+    for (const topic of ['returns', 'refunds']) {
+      assert.ok(
+        endpoints.some((e) => e.key === topic && e.role === 'provider'),
+        `${topic} is a topic`,
+      );
+    }
+    for (const notATopic of ['shipping-service', 'returns-service']) {
+      assert.ok(!endpoints.some((e) => e.key === notATopic), `${notATopic} is a group id`);
+    }
+  });
+
+  test('a producer reaches the handler, across languages', () => {
+    const wired = wiredBy('kafka');
+    // Java -> Java, and the two that no call graph could see at all.
+    assert.ok(
+      wired.some((w) => /OrderProducer#ship -> .*ShipmentListener#onShipment/.test(w)),
+      `java producer should reach the listener, saw ${JSON.stringify(wired)}`,
+    );
+    assert.ok(
+      wired.some((w) => /AuditWorker#forward -> .*ShipmentListener#onShipment/.test(w)),
+      'a Ruby producer reaches a Java listener',
+    );
+    assert.ok(
+      wired.some((w) => /kafka_consumer:emitOrder -> .*ShipmentListener#onShipment/.test(w)),
+      'a KafkaJS producer reaches a Java listener',
+    );
+  });
+
+  test('KafkaJS and Karafka name the topic in a place str_args never sees', () => {
+    // `send({ topic: 'x' })` is an object argument, and the extractors record
+    // only string literals that are arguments in their own right. Without the
+    // source-level read these three links do not exist at all.
+    const endpoints = endpointsOf('kafka');
+    assert.ok(
+      endpoints.some((e) => e.key === 'audit-log' && /kafka_consumer:startAudit/.test(e.fqn)),
+      'KafkaJS subscribe() declares a handler',
+    );
+    assert.ok(
+      endpoints.some((e) => e.key === 'audit-log' && /AuditWorker/.test(e.fqn)),
+      'Karafka `topic :x do` declares a handler',
+    );
+  });
+
+  test('a topic named by configuration produces no endpoint at all', () => {
+    // OrderProducer#configured sends to "${app.topic.audit}". Guessing that
+    // the key is the topic would wire services together on a coincidence.
+    const endpoints = endpointsOf('kafka');
+    assert.ok(!endpoints.some((e) => /configured/.test(e.fqn)), 'the placeholder is refused');
+  });
+
+  test('it does not claim another plugin\'s endpoints', () => {
+    // `sqsTemplate.send("order-events")` matched an earlier version of the
+    // receiver test, which accepted any `template`. One plugin inventing links
+    // out of another's fixture is the failure mode worth a test of its own.
+    const endpoints = endpointsOf('kafka');
+    assert.ok(!endpoints.some((e) => e.key === 'order-events'), 'order-events belongs to sqs');
+    assert.ok(!endpoints.some((e) => /sqs/i.test(e.fqn)), 'no SQS symbol is a kafka endpoint');
   });
 });
