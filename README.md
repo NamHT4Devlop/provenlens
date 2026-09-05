@@ -1102,7 +1102,7 @@ it automatically.
 yarn test
 ```
 
-247 tests across five fixture suites plus regression, security and multi-repo coverage:
+251 tests across five fixture suites plus regression, security and multi-repo coverage:
 
 | Fixture | Simulates | The chain grep cannot follow |
 |---|---|---|
@@ -1181,7 +1181,7 @@ the second.
   cap. `init`, `index` and `sync` now re-exec with half of physical memory (clamped to 4–16 GB), so
   the ceiling is the machine rather than V8; on a small machine a repository that size will still
   not fit. Two of 5,000 repositories reached it.
-- **Windows runs, and one test does not.** The suite is 224 of 225 there, and the failure is in the
+- **Windows runs, and one test does not.** The suite is 250 of 251 there, and the failure is in the
   test harness rather than the tool: multirepo's teardown closes a server holding three recursive
   watchers and then removes the workspace. Windows is in the matrix and reports on every pull
   request; it does not gate one, because claiming green would be worse than saying this.
