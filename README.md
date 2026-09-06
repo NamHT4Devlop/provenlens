@@ -14,6 +14,13 @@ and file reads.
 It runs **100% offline**. No API calls, no telemetry, no network egress of any kind, and **nothing
 to compile** — `node:sqlite` ships inside Node 22+, and the grammars are WASM.
 
+**Contents** — [What is different](#what-is-different-about-this-one) · [Setup](#setup) ·
+[Languages](#languages) · [Framework bindings](#framework-bindings) ·
+[Reading the numbers honestly](#reading-the-numbers-honestly) · [Commands](#commands) ·
+[Using it from Claude Code](#using-it-from-claude-code) · [Architecture](#architecture) ·
+[Tests](#tests) · [In continuous integration](#in-continuous-integration) ·
+[Prior art](#prior-art) · [Known limits](#known-limits) · [Roadmap](#roadmap) · [License](#license)
+
 ## What is different about this one
 
 Indexing code into a call graph is old work — ctags has done a version of it since 1992. The three
@@ -53,7 +60,7 @@ an agent that cannot tell.
 |---|---|
 | **Node.js 22 or newer** | provenlens uses `node:sqlite`, which only exists from Node 22. Nothing else is needed — no compiler, no native modules, no database server. |
 | **Yarn 1.22 (Classic)** | The package manager this project is set up for; `packageManager` in `package.json` pins it. |
-| A shell on macOS or Linux | Windows works under WSL. |
+| macOS, Linux or Windows | All three run the whole test suite on every pull request and all three gate a merge: Node 22 and 24 on Linux, 24 on macOS and on Windows. Nothing is compiled, so nothing is platform-specific to build. |
 
 Check what you have:
 
@@ -71,11 +78,11 @@ npm install -g yarn
 ### 2. Get the code and install dependencies
 
 ```bash
-git clone git@github.com:NamHT4Devlop/provenlens.git ~/AI-TOOL/provenlens
+git clone https://github.com/NamHT4Devlop/provenlens.git ~/provenlens
 ```
 
 ```bash
-cd ~/AI-TOOL/provenlens && yarn install
+cd ~/provenlens && yarn install
 ```
 
 That pulls exactly four packages: `commander`, `ignore`, `web-tree-sitter` and
@@ -87,7 +94,7 @@ vulnerabilities across all four.
 ### 3. Put `provenlens` on your PATH
 
 ```bash
-ln -sf ~/AI-TOOL/provenlens/bin/provenlens.js ~/.local/bin/provenlens
+ln -sf ~/provenlens/bin/provenlens.js ~/.local/bin/provenlens
 ```
 
 Use a symlink rather than `yarn link` or `npm link`. Both install into the bin directory of *the
@@ -99,6 +106,11 @@ If `~/.local/bin` is not already on your PATH, add it:
 ```bash
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc
 ```
+
+On Windows there is no symlink step. Either run it as `node C:\path\to\provenlens\bin\provenlens.js`,
+or put a `provenlens.cmd` on your PATH containing `@node "C:\path\to\provenlens\bin\provenlens.js" %*`.
+`provenlens install` writes the interpreter into the agent config for you on Windows, for the same
+reason.
 
 Verify:
 
@@ -321,11 +333,17 @@ rm ~/.local/bin/provenlens
 ```
 
 ```bash
-rm -rf ~/AI-TOOL/provenlens
+rm -rf ~/provenlens
 ```
 
 The first removes one repository's index, the second removes the command, the third removes
 provenlens itself.
+
+The agent side is two edits, because there is no `provenlens uninstall` yet: remove the
+`provenlens` entry under `mcpServers` in `~/.claude.json` (or `claude mcp remove provenlens`), and
+remove the two entries whose command ends in `provenlens.js" hook` from `PostToolUse` and
+`SessionStart` in `~/.claude/settings.json`. Both files were backed up as `.bak` when they were
+written, and nothing else in either was touched.
 
 ### Troubleshooting setup
 
@@ -348,7 +366,7 @@ provenlens itself.
 | Ruby | ✅ | ✅ | **Rails conventions**: `belongs_to`/`has_many`/`attr_*`/`scope`/`delegate` produce typed virtual methods; `include` mixins and concern `included do` blocks; `method_missing` as a labelled last resort; **RSpec** `let`/`subject`/`described_class` are typed, so a spec connects to the code it tests |
 | TypeScript / TSX | ✅ | ✅ | **Real module resolution**: tsconfig `paths`, barrel files, `export *`, and **CommonJS `require()`**; parameter properties; return types inferred from `return new X()` when unannotated; `await` unwraps `Promise<T>`; **decorators recorded like Java annotations** (so `@SqsMessageHandler` binds queues); `Array<T>` read as `T[]` and carried into callbacks |
 | JavaScript | ✅ | ✅ | Shares the module graph with TypeScript |
-| XML, SQL | — | — | No grammar, but **read by the binding plugins** (MyBatis mappers, Flyway migrations) |
+| XML, SQL, GraphQL, `.proto` | — | — | No grammar, but **read by the binding plugins**: MyBatis mappers, Flyway migrations, GraphQL schemas, gRPC service definitions |
 | `db/schema.rb` | — | — | Database columns become ActiveRecord attributes. `account.uri` works because a column exists, and the schema file is the **only** place in the source that records it |
 
 ## Framework bindings
@@ -1193,6 +1211,9 @@ That returns which symbols changed, what reaches them, and **which existing test
 other words, the list of tests to re-run. On spring-petclinic, touching `Owner.java` produces 18
 relevant tests.
 
+With the hooks installed this happens without asking: every edit Claude makes is followed by the
+same answer for that file. The command is for the terminal, and for a diff at once.
+
 As a pre-push gate, `--fail-if-untested` exits 2 when the diff touches production code that no
 existing test reaches:
 
@@ -1210,7 +1231,7 @@ It prints the change before writing and always keeps a `.bak`. Targets are `clau
 `claude-project` and `cursor`. Or do it by hand:
 
 ```bash
-claude mcp add provenlens -- node ~/AI-TOOL/provenlens/bin/provenlens.js mcp
+claude mcp add provenlens -- node ~/provenlens/bin/provenlens.js mcp
 ```
 
 Five tools: `provenlens_explore`, `provenlens_why`, `provenlens_impact`, `provenlens_affected`,
@@ -1218,6 +1239,38 @@ Five tools: `provenlens_explore`, `provenlens_why`, `provenlens_impact`, `proven
 takes a `projectPath`, so **one server serves every repository** — and a `projectPath` naming a
 folder of checkouts serves them **all at once**, each answer labelled with the repository it came
 from. Indexes stay current through the file watcher.
+
+**Three pieces, and what each one buys.**
+
+| Piece | Command | What it changes |
+|---|---|---|
+| The MCP server | `provenlens install claude-user` | The five tools exist. Claude can ask. |
+| The hooks | `provenlens install --hooks` | Claude is *told*, after every edit, what the file reaches and which tests cover it — and at session start, that the index is there. It no longer has to remember to ask. Measured to work: see [step 9](#9-optional--wire-it-into-claude-code). |
+| A `CLAUDE.md` paragraph | you write it | Claude reaches for the graph *before* grep, and says so when it could not. |
+
+The third is the one people skip, and it is what turns five tools an agent *may* call into a habit.
+This is the paragraph, for a global or a per-repository `CLAUDE.md`:
+
+```markdown
+## provenlens
+
+`provenlens` is a pre-built call graph: symbols, who-calls-what, and the framework string-bindings
+a call graph structurally cannot see. It runs offline and covers Java, Ruby, TypeScript and
+JavaScript only.
+
+In a repository with a `.provenlens/` index at the root, reach for it BEFORE grep or reading files
+whenever the question is about who calls what: `provenlens_explore` answers most code questions in
+one call — verbatim line-numbered source, callers, callees, blast radius. `provenlens_impact` is
+the blast radius alone; `provenlens_affected` takes changed files and returns what they reach plus
+the tests that already cover them; `provenlens_status` reports index coverage.
+
+Two rules. Check before trusting: run `provenlens_status` once — a stale or thin index is worse
+than none, because it looks authoritative. Say when you fell back: no index, or a language it does
+not cover, means grep, and the answer must say so — a grep hit is not a resolved call.
+
+If there is no `.provenlens/` directory, skip provenlens entirely. Do not run `provenlens init`
+unprompted; it walks the whole tree, and indexing is the user's decision.
+```
 
 `provenlens install` only auto-detects agents that already have a config file. The project-scoped
 variant (`.mcp.json` in the current directory) is **never** automatic — you have to name it
@@ -1319,8 +1372,14 @@ The blast radius of a pull request, from the call graph rather than a text searc
 ```yaml
 - uses: actions/checkout@v7
   with: { fetch-depth: 0 }   # the merge-base has to be in the clone
-- uses: NamHT4Devlop/provenlens@v1
+- uses: NamHT4Devlop/provenlens@main
 ```
+
+`@main`, not `@v1`: no release has been tagged yet, and a tag will only be cut once the action has
+been exercised from a repository other than this one. The `fetch-depth: 0` is not optional — the
+default checkout is one commit deep, and the merge-base the diff is taken against is not in it.
+The action is the `action.yml` at the root of this repository; it installs provenlens onto the
+runner, indexes the checkout, and runs `affected` on the pull request's diff.
 
 It writes to the job summary, which every run can write — including a pull
 request from a fork, which gets a read-only token and no secrets. Nothing here
@@ -1405,6 +1464,8 @@ the second.
 
 ## Roadmap
 
+- [ ] `provenlens uninstall`, so removing the MCP entry and the hooks is one command rather than
+      two edits by hand. `install` knows exactly what it wrote; it should be able to take it back.
 - [ ] NestJS custom-provider tokens as a binding plugin (needs object-literal extraction)
 - [x] Read `.d.ts` from `node_modules` and signatures from JARs, to keep a chain alive past a
       library hop. Done — see *Optional: install the project's dependencies* above.
