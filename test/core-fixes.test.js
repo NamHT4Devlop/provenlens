@@ -275,9 +275,11 @@ describe('init on an index an older version built', () => {
       assert.equal(again.status, 0, `init must recover from an older index:\n${again.stderr}`);
       assert.match(again.stdout, /reset \(older schema\)/);
       assert.match(again.stdout, /indexed 1 file/);
-      // And the index it leaves behind is the current shape.
-      const { staleSchema } = openProject(dbPathFor(root));
-      assert.equal(staleSchema, false);
+      // And the index it leaves behind is the current shape. Closed before
+      // the directory goes: Windows refuses to delete a file a handle holds.
+      const reopened = openProject(dbPathFor(root));
+      reopened.db.close();
+      assert.equal(reopened.staleSchema, false);
       assert.ok(existsSync(dbPathFor(root)));
     } finally {
       rmSync(root, { recursive: true, force: true });
