@@ -292,6 +292,24 @@ debug log, and the sole channel to Claude is **exit code 2 with the text on stde
 nothing, because the edit is already on disk. `SessionStart` is the reverse: its stdout is context.
 `provenlens hook` reads the event on stdin and does the right one.
 
+**Measured, not assumed.** Whether Claude *uses* what a hook puts in front of it is a separate
+question from whether the hook runs, so it was tested in a way that could have failed: a headless
+`claude -p` session in a clone of this repository, told to add one JSDoc line above `callersOf` and
+then to say which existing tests it would run before merging. The prompt never mentioned provenlens.
+The five MCP tools were **disallowed** for the session, and the transcript shows zero calls to them
+— so the only way any provenlens fact could reach the answer was the hook. The answer named the
+tests the hook had listed (`test/regressions.test`, `test/typescript.test`, `test/multirepo.test`,
+`test/server.test`, `test/bindings.test`), gave the hook's count of **12**, and cited the reached
+symbols (`format:formatExplore`, `mcp:callTool`, `server:locate`) as its reason. That 12 is the
+clone's own number — the main checkout says 11 — which pins the source to the hook rather than to
+anything remembered. Four turns, $0.20.
+
+One thing worth knowing if you try to verify this yourself: `--output-format stream-json` does not
+emit hook feedback at all. It is in the session's transcript under `~/.claude/projects/`, as an
+attachment of type `hook_blocking_error` with the text in `blockingError` — Claude Code's name for
+what an exit-2 hook said, kept even though a `PostToolUse` hook cannot block anything. That entry
+is what Claude read, and that is where to look for it.
+
 ### Uninstalling
 
 ```bash
