@@ -468,6 +468,11 @@ sampled across star bands from 200 upward, cloned shallow, indexed, and deleted.
 | javascript | 1049 | **88.7%** | 82.1% | 72.0% | 48% |
 | **all** | **4482** | **94.0%** | 89.6% | 83.9% | **66%** |
 
+**These are the figures the old code printed, kept as the record of that run.** The ten-thousand
+were run again after the review -- see *The same ten thousand, after the review* below -- and the
+Ruby column here is known to be inflated by the identifier-read count described there; the current
+numbers are in that section.
+
 **The median repository reads 94.0%, and two in three clear 90%.** The weighted column is the honest
 counterweight: bigger repositories are harder, and weighting by call sites pulls the same population
 down to 83.9%.
@@ -487,6 +492,9 @@ entirely from it. The table is not a typical sample. It is close to a worst case
 it useful for finding bugs and misleading as a summary. Both are now stated.
 
 ### Run again over ten thousand, and the two samples agree where it counts
+
+*This table is the run as the old code counted it; the same ten thousand, re-run after the review,
+are in the next section, and that is where the current numbers live.*
 
 The 5,000 above were sampled from **200 stars upward**. A second run took **10,000 repositories from
 5 stars upward** — 2,500 per language, across eleven star bands — which is a different population:
@@ -549,6 +557,75 @@ The scale paid for itself three times over, on defects no curated set could reac
 
 Eight repositories exceeded a ten-minute budget and one clone failed; those are harness limits, not
 results. Eight more were skipped above 1.5 GB, all of them asset monorepos.
+
+### The same ten thousand, after the review
+
+The review described under *A full review, and what it moved* changed what is counted as well as
+what is resolved, so the ten thousand were run again -- the same repositories, the same shuffled
+order, the reviewed code. **9,946 indexed, 1 clone failed, 53 skipped above 400 MB, 0 crashed or timed out.** Under the
+same rule as the tables above, 5,996 remain with **33,627,957 call sites**.
+
+| Language | Repos | Median | Mean | Weighted by call sites | Floor median | Clear 90% |
+|---|---:|---:|---:|---:|---:|---:|
+| java | 1774 | **98.1%** | 95.9% | 90.7% | 96.9% | **89%** |
+| ruby | 1450 | **91.2%** | 87.5% | 67.8% | 71.5% | **54%** |
+| typescript | 1550 | **97.7%** | 93.1% | 85.9% | 95.7% | **78%** |
+| javascript | 1222 | **94.2%** | 87.2% | 71.3% | 90.5% | **59%** |
+| **all** | 5996 | **96.5%** | 91.4% | 83.1% | 93.1% | **72%** |
+
+Set beside the table above it, every number is lower or close, and three things in the count --
+not in the resolver -- are why. The earlier run counted an identifier read the Ruby resolver could
+not resolve as a linked call, and Ruby's median repository was small enough for those reads to be
+most of its "calls". It counted a Java annotation carrying a string as a call that resolved. And it
+predates the rule that refuses a file packed by a machine: an Angular `docs/` bundle or a
+`.min.js` under `static/` resolves its own calls almost perfectly, and thousands of them per file
+went into both the numerator and the denominator. npnm/NpnSlider is the shape: 33 files and 2,616
+symbols before, 25 files and 110 symbols after, the other eight being bundles. The two runs are the
+same repositories, so they can be paired -- 5,986 of them -- and read per language:
+
+| Language | Repos | Median before → after | Weighted before → after | Clear 90% before → after | Improved / same / worse |
+|---|---:|---:|---:|---:|---:|
+| java | 1774 | 97.8% → **98.1%** | 89.0% → **90.7%** | 87% → **89%** | 650 / 794 / 330 |
+| ruby | 1450 | 97.1% → **91.2%** | 85.5% → **67.8%** | 84% → **54%** | 79 / 301 / 1070 |
+| typescript | 1547 | 97.9% → **97.7%** | 84.6% → **85.9%** | 76% → **78%** | 524 / 625 / 398 |
+| javascript | 1215 | 95.2% → **94.2%** | 71.2% → **71.2%** | 62% → **59%** | 285 / 552 / 378 |
+| **all** | 5986 | 97.3% → **96.5%** | 84.1% → **83.1%** | 78% → **72%** | 1538 / 2272 / 2176 |
+
+The last column counts repositories whose figure moved by more than 0.05 points either way. None of
+the "before" columns is a fair baseline in the way the ten-repository table above has one; the
+resolver fixes -- static imports, method references, destructuring, class fields, `extends
+Base<User>`, the tsconfig and package shapes, the Ruby singleton classes and reopened models -- are
+inside these figures together with the three count corrections, and separating them would mean
+re-running the old code with the count corrected, which is not a number worth the day it would
+cost. The call-site counts say how much the count itself moved:
+
+| Language | Call sites before → after | Linked before → after |
+|---|---:|---:|
+| java | 13,825,920 → 12,158,711 | 5,739,269 → 5,375,357 |
+| ruby | 8,868,835 → 5,734,997 | 4,013,326 → 1,292,889 |
+| typescript | 8,380,124 → 8,340,633 | 2,038,747 → 2,123,832 |
+| javascript | 10,625,646 → 7,359,391 | 2,219,255 → 1,340,616 |
+| **all** | 41,700,525 → 33,593,732 | 14,010,597 → 10,132,694 |
+
+Size decides the number here exactly as it did before, and the largest band reads lower than it
+did -- 68.5% against 77.7% -- which is the bundles and the identifier reads leaving the big
+repositories, where most of them lived:
+
+| Call sites | Repos | Median | Clear 90% |
+|---|---:|---:|---:|
+| 200 – 1,000 | 3103 | **98.8%** | 79% |
+| 1,000 – 5,000 | 1894 | **95.5%** | 68% |
+| 5,000 – 20,000 | 702 | **93.0%** | 60% |
+| 20,000 – 100,000 | 252 | **85.4%** | 46% |
+| 100,000+ | 45 | **68.5%** | 31% |
+
+Defect signals, the two shapes the first sweep watched for: 47 repositories parsed thirty or more
+files into fewer than 1.5 symbols a file, against 58 in the first run and the same repositories
+(jonnylin13/omega heads both lists at 22,223 files and 800 symbols); none indexed twenty files and
+recorded no call. Nothing crashed and nothing timed out. The slowest repository, ZoranLi/wechat_reversing
+at 14,172 Java files and 250,000 symbols, took 283 seconds against 197 before: the static-import
+and method-reference passes cost real time on a tree that size, and it stayed inside the ten-minute
+budget by a margin worth watching rather than a comfortable one.
 
 ### The forty-three read closely
 
