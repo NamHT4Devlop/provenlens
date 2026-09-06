@@ -1046,10 +1046,13 @@ describe('the MCP entry the installer writes', () => {
       // which cannot run a .js file. So the interpreter is named -- as the bare
       // word, resolved from PATH when the host starts it, never as a pinned path.
       assert.equal(entry.command, 'node');
-      assert.equal(entry.args.length, 2);
-      assert.match(entry.args[0], bin);
-      assert.equal(entry.args[1], 'mcp');
-      binPath = entry.args[0];
+      // `--no-warnings` first: with no shebang to carry it, node:sqlite's
+      // experimental notice would otherwise open every hook message.
+      assert.deepEqual(entry.args.slice(0, 1), ['--no-warnings']);
+      assert.equal(entry.args.length, 3);
+      assert.match(entry.args[1], bin);
+      assert.equal(entry.args[2], 'mcp');
+      binPath = entry.args[1];
     } else {
       assert.match(entry.command, bin);
       assert.deepEqual(entry.args, ['mcp']);

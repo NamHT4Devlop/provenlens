@@ -3,7 +3,7 @@ import { mkdirSync, rmSync, existsSync, chmodSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 /** Bump whenever the schema changes: the index is a cache, so it is rebuilt. */
-export const SCHEMA_VERSION = 8;
+export const SCHEMA_VERSION = 9;
 
 const SCHEMA = `
 PRAGMA journal_mode = WAL;
@@ -57,7 +57,12 @@ CREATE TABLE IF NOT EXISTS symbols (
   start_byte    INTEGER,
   end_byte      INTEGER,
   modifiers     TEXT,
-  annotations   TEXT
+  annotations   TEXT,
+  -- JSON array of the raw supertype names this declaration wrote. Kept on the
+  -- symbol so the types view can be rebuilt from every declaration of a
+  -- name: a Ruby class reopened in a second file used to replace the first
+  -- file's row and take its ancestors with it.
+  supertypes    TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_sym_name      ON symbols(name);
 CREATE INDEX IF NOT EXISTS idx_sym_fqn       ON symbols(fqn);
@@ -135,9 +140,15 @@ CREATE INDEX IF NOT EXISTS idx_refs_file ON refs(file_id);
 CREATE INDEX IF NOT EXISTS idx_refs_name ON refs(name);
 
 -- Resolved graph.
+--
+-- Both ends cascade. Without that, the edges of a symbol deleted on a sync
+-- outlived it: they kept counting in status, kept a function off the dead
+-- list after its last caller was removed, and -- once SQLite reused the id --
+-- attached to a stranger. Three rebuilds of one repository tripled its edge
+-- count without a single file changing.
 CREATE TABLE IF NOT EXISTS edges (
-  from_symbol_id INTEGER NOT NULL,
-  to_symbol_id   INTEGER NOT NULL,
+  from_symbol_id INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
+  to_symbol_id   INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
   kind           TEXT NOT NULL,
   confidence     REAL DEFAULT 1.0,
   via            TEXT,

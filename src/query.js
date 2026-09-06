@@ -246,10 +246,42 @@ export function projectStats(db) {
 
 /** Heuristics for "is this a test file", shared by impact reporting. */
 const TEST_PATH = /(^|\/)(tests?|specs?|__tests__)\//i;
-const TEST_FILE = /(Test|Tests|IT)\.java$|_spec\.rb$|_test\.rb$|\.(test|spec)\.[cm]?[jt]sx?$/i;
+// Case matters for Java: the suffixes are class-name conventions, and read
+// case-blind they swallowed `Deposit.java`, `Credit.java`, `Commit.java`,
+// `Audit.java`, `Unit.java` and `Latest.java` -- sixty production classes in
+// quarkus alone -- so `affected` reported a change to an account as covered
+// by its deposits, and `--fail-if-untested` passed with no test in sight.
+const TEST_FILE_JAVA = /(Test|Tests|IT)\.java$/;
+const TEST_FILE = /_spec\.rb$|_test\.rb$|\.(test|spec)\.[cm]?[jt]sx?$/i;
 
 export function isTestPath(path) {
-  return TEST_PATH.test(path) || TEST_FILE.test(path);
+  return TEST_PATH.test(path) || TEST_FILE_JAVA.test(path) || TEST_FILE.test(path);
+}
+
+/**
+ * The one symbol a name means, or the tie that says it means several.
+ *
+ * `callers save` in a repository with three `save` methods used to answer
+ * about whichever sorted first, and said nothing. The MCP tools did the same.
+ * An answer about the wrong `save` looks exactly like an answer about the
+ * right one, so a tie at the top is reported rather than broken.
+ */
+export function bestMatch(db, name, { limit = 10 } = {}) {
+  const matches = searchSymbols(db, name, { limit });
+  if (!matches.length) return { hit: null, ties: [] };
+  const top = matches[0].score;
+  const ties = matches.filter((m) => m.score === top);
+  return { hit: matches[0], ties: ties.length > 1 ? ties : [] };
+}
+
+/** The text that names a tie, shared by the CLI and the MCP tools. */
+export function ambiguityNote(name, ties) {
+  return [
+    `Ambiguous "${name}" — ${ties.length} matches:`,
+    ...ties.map((m) => `  ${m.fqn ?? m.name}  (${m.file_path}:${m.start_line})`),
+    '',
+    'Re-run with a fully qualified name, e.g. Type#method.',
+  ].join('\n');
 }
 
 /**

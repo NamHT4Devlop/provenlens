@@ -10,12 +10,14 @@ ensureHeadroom();
 import { Command } from 'commander';
 import { resolve, join, basename } from 'node:path';
 import { existsSync, rmSync } from 'node:fs';
-import { openDb, openProject, getMeta } from '../src/db.js';
+import { openProject, getMeta } from '../src/db.js';
 import { findProjectRoot, dbPathFor, INDEX_DIR, acquireIndexLock, changedPath } from '../src/project.js';
 import { explainSymbol } from '../src/why.js';
 import { indexProject } from '../src/indexer.js';
 import {
   searchSymbols,
+  bestMatch,
+  ambiguityNote,
   projectStats,
   callersOf,
   calleesOf,
@@ -27,6 +29,7 @@ import {
 } from '../src/query.js';
 import { formatExplore, formatNode, formatImpact, formatRelations, formatAffected, toMermaid, formatPath, pathLines, symbolLabel, formatWhy } from '../src/format.js';
 import { IMPLEMENTED_LANGUAGES } from '../src/extract/index.js';
+import { BINDING_LANGS } from '../src/bindings/index.js';
 import { openWorkspace, locateSymbol, pathAcross } from '../src/workspace.js';
 
 const program = new Command();
@@ -100,6 +103,14 @@ function useScope(pathArg) {
 function pickAcross(projects, name) {
   const found = locateSymbol(projects, name);
   if (!found) die(`no symbol matches "${name}" in ${projects.length} repositor${projects.length === 1 ? 'y' : 'ies'}.`);
+  // Within the repository that answered, a tie at the top is an ambiguity to
+  // report, not a choice to make silently: `callers save` with three `save`
+  // methods used to answer about whichever sorted first.
+  const { ties } = bestMatch(found.project.db, name);
+  if (ties.length) {
+    console.error(ambiguityNote(name, ties));
+    process.exit(1);
+  }
   if (projects.length > 1) {
     // Same-scored hits in other repos deserve a mention, not a guess.
     const elsewhere = projects
@@ -115,15 +126,13 @@ function pickAcross(projects, name) {
 
 /** Resolves a user-typed name to exactly one symbol, or reports the ambiguity. */
 function pickSymbol(db, name) {
-  const matches = searchSymbols(db, name, { limit: 10 });
-  if (!matches.length) die(`no symbol matches "${name}".`);
-  if (matches.length > 1 && matches[0].score === matches[1].score) {
-    console.error(`Ambiguous "${name}" — ${matches.length} matches:`);
-    for (const m of matches) console.error(`  ${m.fqn ?? m.name}  (${m.file_path}:${m.start_line})`);
-    console.error('\nRe-run with a fully qualified name, e.g. Type#method.');
+  const { hit, ties } = bestMatch(db, name);
+  if (!hit) die(`no symbol matches "${name}".`);
+  if (ties.length) {
+    console.error(ambiguityNote(name, ties));
     process.exit(1);
   }
-  return matches[0];
+  return hit;
 }
 
 /**
@@ -207,8 +216,15 @@ program
     if (!existsSync(root)) die(`no such directory: ${root}`);
     const dbPath = dbPathFor(root);
     const fresh = !existsSync(dbPath);
-    const db = openDb(dbPath, { create: true });
-    console.log(`${fresh ? 'created' : 'reusing'} ${INDEX_DIR}/ in ${root}`);
+    // Through openProject, so an index built by an older schema is reset the
+    // same way every other command resets it. Opened directly, `init` kept
+    // the old tables, stamped them with the new version, and crashed on the
+    // first missing column -- and so did `index` after it, since the stamp
+    // now said nothing was wrong.
+    const { db, staleSchema } = openProject(dbPath);
+    console.log(
+      `${fresh ? 'created' : staleSchema ? 'reset (older schema)' : 'reusing'} ${INDEX_DIR}/ in ${root}`,
+    );
     await withIndexLock(root, async () =>
       reportIndex(await indexProject(db, root, { full: true })),
     );
@@ -517,7 +533,7 @@ function printStatus(root, db) {
       // they are covered, just not parsed.
       const note = IMPLEMENTED_LANGUAGES.includes(l.lang)
         ? ''
-        : ['xml', 'sql'].includes(l.lang)
+        : BINDING_LANGS.includes(l.lang)
           ? '  (read by framework bindings)'
           : '  (no extractor yet)';
       console.log(`  ${l.lang.padEnd(12)} ${String(l.n).padStart(5)}${note}`);

@@ -129,15 +129,29 @@ function hasFrameworkMarker(row) {
   const names = annotations.map((a) => String(a).replace(/^@/, '').split('(')[0]);
   if (names.some((n) => CALLED_BY_FRAMEWORK.includes(n))) return true;
 
-  let modifiers = [];
-  try {
-    modifiers = JSON.parse(row.modifiers || '[]');
-  } catch {
-    modifiers = [];
-  }
   // An abstract or interface member is implemented elsewhere and called
-  // through the declaration; `export` means another package may call it.
-  return modifiers.some((m) => ['abstract', 'export', 'default', 'external'].includes(m));
+  // through the declaration.
+  return modifiersOf(row).some((m) => ['abstract', 'external'].includes(m));
+}
+
+function modifiersOf(row) {
+  try {
+    return JSON.parse(row.modifiers || '[]');
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Exported, or public: reachable from outside this repository, so held back
+ * unless asked for. `export` used to count as a framework marker and was
+ * dropped before `--public` could ask, which left that flag unable to show
+ * the very names its help text promised.
+ */
+function isPublic(row) {
+  const modifiers = modifiersOf(row);
+  if (modifiers.some((m) => ['export', 'default'].includes(m))) return true;
+  return !(/(^_|^private)/.test(row.name) || modifiers.includes('private'));
 }
 
 /**
@@ -186,8 +200,7 @@ export function deadCode(db, root, { limit = 50, includeTests = false, onlyCerta
     // outside the file could be calling it, so the graph has seen everything
     // there is to see. A public one may simply be somebody else's API --
     // sinatra has 225 of those, and every one is a working entry point.
-    const isPrivate = /(^_|^private)/.test(row.name) || /"private"/.test(row.modifiers || '');
-    candidates.push({ ...row, confidence: isPrivate ? 'high' : 'medium' });
+    candidates.push({ ...row, confidence: isPublic(row) ? 'medium' : 'high' });
   }
 
   candidates.sort((a, b) => (a.confidence === b.confidence ? 0 : a.confidence === 'high' ? -1 : 1));

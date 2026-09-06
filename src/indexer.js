@@ -33,6 +33,44 @@ function sha1(text) {
   return createHash('sha1').update(text).digest('hex');
 }
 
+/** The kinds that are types for method lookup. 'module' matters: a Ruby mixin is one. */
+const TYPE_KINDS = new Set(['class', 'interface', 'enum', 'record', 'annotation', 'module']);
+
+/**
+ * The `types` view of this project's own declarations, derived from `symbols`.
+ *
+ * One row per name, holding the UNION of every declaration's supertypes. Ruby
+ * reopens classes as a matter of course -- `app/models/user.rb` inherits and
+ * mixes in, `lib/user_ext.rb` adds a method -- and an insert-or-replace keyed
+ * on the name kept whichever file the walk reached last, so the model lost
+ * `ApplicationRecord` and every `save` on it fell from a declaration to a
+ * guess. Rebuilt every run: it is a cache of the symbols, not a record of
+ * its own, and a row keyed on one file's symbol vanished with that file.
+ * Dependency declarations are left alone; their readers keep their own rows.
+ */
+function rebuildTypes(db) {
+  db.exec(`DELETE FROM types WHERE symbol_id IN (
+             SELECT s.id FROM symbols s JOIN files f ON f.id = s.file_id WHERE f.external = 0)`);
+  const merged = new Map(); // fqn -> { symbol_id, kind, supertypes: Set }
+  for (const row of db
+    .prepare(
+      `SELECT s.id, s.fqn, s.kind, s.supertypes FROM symbols s JOIN files f ON f.id = s.file_id
+        WHERE f.external = 0 AND s.fqn IS NOT NULL AND s.supertypes IS NOT NULL ORDER BY s.id`,
+    )
+    .all()) {
+    let entry = merged.get(row.fqn);
+    if (!entry) {
+      entry = { symbol_id: row.id, kind: row.kind, supertypes: new Set() };
+      merged.set(row.fqn, entry);
+    }
+    for (const sup of JSON.parse(row.supertypes || '[]')) entry.supertypes.add(sup);
+  }
+  const insert = db.prepare(
+    'INSERT OR REPLACE INTO types (fqn, symbol_id, kind, supertypes) VALUES (?, ?, ?, ?)',
+  );
+  for (const [fqn, t] of merged) insert.run(fqn, t.symbol_id, t.kind, JSON.stringify([...t.supertypes]));
+}
+
 /**
  * One entry per resolver, not per language: the TS resolver handles .ts, .tsx
  * and .js together because they share a module graph.
@@ -48,7 +86,12 @@ const RESOLVERS = [
  * `full: true` reparses everything even when hashes match.
  */
 export async function indexProject(db, root, { full = false, onProgress } = {}) {
-  const paths = discoverFiles(root);
+  // A file over the size cap is discovery's to refuse, and it used to refuse
+  // silently: the cap in this file was never reached, `status` never counted
+  // the file, and a call into it was reported as proven to leave the
+  // repository. Discovery now hands the refused ones back to be counted.
+  const oversized = [];
+  const paths = discoverFiles(root, { oversized });
 
   // Files owned by the binding plugins are rebuilt by them, not discovered
   // here, so they must stay out of the change/removal accounting.
@@ -96,11 +139,8 @@ export async function indexProject(db, root, { full = false, onProgress } = {}) 
   const insertSymbol = db.prepare(
     `INSERT INTO symbols
        (file_id, name, fqn, kind, container_fqn, type_name, type_args, signature, arity, params,
-        start_line, end_line, start_byte, end_byte, modifiers, annotations)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  );
-  const insertType = db.prepare(
-    'INSERT OR REPLACE INTO types (fqn, symbol_id, kind, supertypes) VALUES (?, ?, ?, ?)',
+        start_line, end_line, start_byte, end_byte, modifiers, annotations, supertypes)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const insertImport = db.prepare(
     `INSERT INTO imports (file_id, fqn, simple, is_wildcard, is_static, orig, kind)
@@ -256,13 +296,10 @@ export async function indexProject(db, root, { full = false, onProgress } = {}) 
             s.end_byte,
             JSON.stringify(s.modifiers ?? []),
             JSON.stringify(s.annotations ?? []),
+            TYPE_KINDS.has(s.kind) ? JSON.stringify(s.supertypes ?? []) : null,
           ).lastInsertRowid,
         );
         tmpToReal.set(s.tmpId, id);
-        // 'module' matters: a Ruby mixin is a real type for method lookup.
-        if (['class', 'interface', 'enum', 'record', 'annotation', 'module'].includes(s.kind)) {
-          insertType.run(s.fqn, id, s.kind, JSON.stringify(s.supertypes ?? []));
-        }
         stats.symbols++;
       }
 
@@ -307,6 +344,14 @@ export async function indexProject(db, root, { full = false, onProgress } = {}) 
       onProgress?.(rel, stats);
     }
 
+    // Refused for size: counted, and no longer in the index if it once was.
+    for (const rel of oversized) {
+      seen.add(rel);
+      stats.scanned++;
+      stats.unparsable++;
+      if (existing.has(rel)) deleteFileRows.run(rel);
+    }
+
     // Files that disappeared from disk.
     for (const [path] of existing) {
       if (!seen.has(path)) {
@@ -315,6 +360,7 @@ export async function indexProject(db, root, { full = false, onProgress } = {}) 
       }
     }
 
+    rebuildTypes(db);
     db.exec('COMMIT');
   } catch (err) {
     db.exec('ROLLBACK');

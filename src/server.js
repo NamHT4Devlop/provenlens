@@ -19,7 +19,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join, basename } from 'node:path';
 import { homedir } from 'node:os';
 import { openProject } from './db.js';
-import { discoverProjects, dbPathFor } from './project.js';
+import { discoverProjects, dbPathFor, tryIndexLock } from './project.js';
 import { indexProject } from './indexer.js';
 import { watchProject } from './watch.js';
 import { pathAcross } from './workspace.js';
@@ -288,7 +288,16 @@ export async function startServer(
   const projects = [];
   for (const [id, root] of roots.entries()) {
     const { db } = openProject(dbPathFor(root));
-    await indexProject(db, root, { full: false });
+    // Under the index lock, like every other writer; a held lock means another
+    // process is already bringing this index up to date.
+    const release = tryIndexLock(root);
+    if (release) {
+      try {
+        await indexProject(db, root, { full: false });
+      } finally {
+        release();
+      }
+    }
     const watcher = watchProject(db, root, {
       onSync: (stats) => process.stdout.write(`${basename(root)}: reindexed ${stats.parsed} file(s)\n`),
     });
