@@ -45,6 +45,20 @@ export function serverEntry() {
   return { command: BIN, args: ['mcp'] };
 }
 
+/**
+ * Keeps the previous file as .bak before it is rewritten. A plain copy that
+ * tolerates absence, rather than existsSync followed by copyFileSync: between
+ * the check and the copy the file can change, which is a race CodeQL flags
+ * and, for a config the user owns, one worth not having.
+ */
+function keepBackup(file) {
+  try {
+    copyFileSync(file, `${file}.bak`);
+  } catch (err) {
+    if (err?.code !== 'ENOENT') throw err;
+  }
+}
+
 function readJson(file) {
   if (!existsSync(file)) return {};
   try {
@@ -85,7 +99,7 @@ export function applyInstall(targetName) {
   config[target.key].provenlens = serverEntry();
 
   mkdirSync(dirname(target.file), { recursive: true });
-  if (existsSync(target.file)) copyFileSync(target.file, `${target.file}.bak`);
+  keepBackup(target.file);
   writeFileSync(target.file, `${JSON.stringify(config, null, 2)}\n`);
   return plan;
 }
@@ -143,7 +157,7 @@ export function applyHooks() {
     config.hooks[event] = [...(config.hooks[event] ?? []), ...plan.entries[event]];
   }
   mkdirSync(dirname(HOOK_SETTINGS), { recursive: true });
-  if (existsSync(HOOK_SETTINGS)) copyFileSync(HOOK_SETTINGS, `${HOOK_SETTINGS}.bak`);
+  keepBackup(HOOK_SETTINGS);
   writeFileSync(HOOK_SETTINGS, `${JSON.stringify(config, null, 2)}\n`);
   return plan;
 }
