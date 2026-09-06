@@ -770,9 +770,17 @@ declaration used to hit the `files.path` UNIQUE constraint and abort the whole i
 later fixed where it belonged, at the insert, which now says `ON CONFLICT(path) DO NOTHING` and lets
 the project's own copy win. The guard outlived the thing it guarded.
 
-An **explicit negation** in the repository's own `.gitignore` now wins, and nothing else does; a
-repository that never mentions `build/` still has it skipped. The authority is the right one: git
-tracks what you wrote and does not track what you installed.
+An **explicit negation** in the repository's own `.gitignore` then won, and nothing else did; a
+repository that never mentioned `build/` still had it skipped. The authority was the right one --
+git tracks what you wrote and does not track what you installed -- and the review that followed
+took that sentence at its word. The by-name skip list matched at any depth, so a Java package called
+`build` was compiler output as far as the tool knew: **295 tracked files** in spring-boot, 52 in
+spring-framework, 33 in quarkus, and every call into them was reported as proven to leave the
+repository. A `.gitignore` in a subdirectory was never read at all. Discovery now asks git directly
+-- `git ls-files`, tracked plus untracked-not-ignored, minus anything forced past the ignore rules --
+and falls back to the rules only where there is no repository to ask. A committed dependency tree
+is still a dependency tree unless the repository's `.gitignore` puts it back, which is the node-red
+case above.
 
 | node-red | before | after |
 |---|---|---|
@@ -1355,7 +1363,7 @@ it automatically.
 yarn test
 ```
 
-284 tests across six fixture suites plus regression, security and multi-repo coverage:
+362 tests across ten fixture suites plus regression, security and multi-repo coverage:
 
 | Fixture | Simulates | The chain grep cannot follow |
 |---|---|---|
@@ -1364,7 +1372,15 @@ yarn test
 | `ts` | TS + JS: barrel files, tsconfig aliases, constructor DI | an import through `export *` before reaching the real class |
 | `bindings` | MyBatis, Camel, SQS, Kafka, Spring events, GraphQL, gRPC, Flyway | a Java producer → a Ruby Shoryuken worker, matched on queue name |
 | `vendored` | A repository that keeps its own source inside `packages/node_modules` | that the directory a project's `.gitignore` puts back is source, and a tree re-excluded after it is not |
+| `java2` | What a review found: static imports, `var` from a nested call, method references, `this(...)`/`super(...)`, enum constants, comments in argument lists | `import static Helper.compute; compute()` reaching the project's own method rather than "a library" |
+| `ruby2` | A model reopened in `lib/`, `class << self`, top-level defs, `super(x)`, writers, `Struct.new`, callbacks, scope lambdas | `u.save` on a reopened model still landing on `ApplicationRecord#save` as a declaration |
+| `ts2` | Destructuring, `extends Base<User>`, arrow fields, `super`, `for-of`, `export * as ns`, `import x = require`, tsconfig `extends`, `exports` maps, `.d.ts` | `const { data } = await client.get('/x')` reaching `Client#get` at all |
+| `bindings2` | Spring class-level `@RequestMapping`, `method = POST`, `produces`, Kafka multi-line topics, a MyBatis statement in a comment, Rails `namespace`/`only:`/`member`, gRPC option bodies | `GET /api/orders/{}` served by the method and called by the client, with the prefix applied |
 | all of `__fixtures__` | One repo containing all four languages | resolvers not wiping each other's graphs |
+
+`test/core-fixes.test.js`, `test/bindings-review.test.js`, `test/ruby-review.test.js`,
+`test/typescript-review.test.js` and `test/java-review.test.js` each pin one defect a full review
+found to the probe that found it; the section *A full review, and what it moved* below lists them.
 
 `test/regressions.test.js` locks down every bug that has been fixed: LIKE wildcards, scoring order,
 duplicate edge collapsing, file accounting on sync, the watcher's ignore rules, test detection, and
@@ -1461,6 +1477,19 @@ the second.
   UI, so on a shared Windows machine both inherit whatever the parent directory allows. Nothing
   else about the tool differs.
 - **The Ruby inflector** is simple and does not handle irregulars (`people`/`person`).
+- **Two files that name one module** — `same.ts` beside `same.js`, a dual-package `twin.mjs` and
+  `twin.cjs` — share one module path, so their types merge and a call in one can land in the
+  other. The review found it; it is left as it is because the right split (by extension, or by
+  `package.json` conditions) changes every fqn in such a repository, and none of the ten measured
+  ones has the shape.
+- **Three bindings are read from one side only.** A Camel route written in the XML DSL is not read
+  (the Java DSL is); an Express route's provider is the module that registered it rather than the
+  handler function, and `app.use('/api', router)` prefixes are not applied; a Spring `@EventListener`
+  on a supertype of the published event does not match. Each is a design gap rather than a defect,
+  and each is listed here so it is not mistaken for coverage.
+- **A file nested a few thousand levels deep** -- 2,000 chained `+` operands, 1,500 nested blocks
+  -- overflows the recursive walk and is counted as unparsable. Nothing written by hand comes
+  near it; generated data tables can. The file is reported, not lost silently.
 - **Annotation-style MyBatis** (`@Select` on the method) needs no binding — the SQL is already in
   the method.
 - **NestJS token DI** (`{ provide: 'X', useClass: Y }` matched to `@Inject('X')`) needs

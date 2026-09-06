@@ -407,6 +407,18 @@ export function resolveRuby(db) {
     refOutcome.set(refId, { external: false });
     stats.unresolved++;
   };
+  /**
+   * A bare identifier that matched nothing is a variable read, not a call,
+   * and the extractor only recorded it in case it was one. Left in the table
+   * it was counted as a call site with no unresolved row -- that is, as a
+   * LINKED call. sidekiq reported 10,294 linked calls of which 7,112 were
+   * identifier reads; its 86.2% was 66.3% once they were taken out.
+   */
+  const deleteRef = db.prepare('DELETE FROM refs WHERE id = ?');
+  const dropRef = (refId) => {
+    deleteRef.run(refId);
+    stats.dropped++;
+  };
   /** A call into a gem or Ruby core: expected, not a miss. */
   const insertExternal = (refId, owner) => {
     if (owner === RECEIVER_NOT_DECLARED) {
@@ -474,7 +486,7 @@ export function resolveRuby(db) {
   for (const ref of refs) {
     if (ref.from_symbol_id == null) {
       if (ref.kind !== 'ident_call') insertUnresolved(ref.id, 'no-enclosing-symbol');
-      else stats.dropped++;
+      else dropRef(ref.id);
       continue;
     }
 
@@ -518,7 +530,7 @@ export function resolveRuby(db) {
 
     if (info === undefined) {
       const carried = inheritedExternal(ref);
-      if (ref.kind === 'ident_call') stats.dropped++;
+      if (ref.kind === 'ident_call') dropRef(ref.id);
       else if (!methodsByName.has(ref.name)) insertNotInProject(ref.id);
       else if (carried !== undefined) insertExternal(ref.id, carried);
       else insertUnresolved(ref.id, 'complex-receiver-chain');
@@ -604,7 +616,7 @@ export function resolveRuby(db) {
       // by this point self has been searched, so a global name match could only
       // land on something out of scope -- always the wrong edge.
       if (ref.kind === 'ident_call') {
-        stats.dropped++;
+        dropRef(ref.id);
         continue;
       }
       // Proof first: a name this repository declares nowhere cannot be
@@ -620,7 +632,7 @@ export function resolveRuby(db) {
       insertEdge.run(ref.from_symbol_id, byName[0].id, 'calls', 0.4, 'unique-name', ref.line);
       stats.uniqueName++;
     } else if (ref.kind === 'ident_call') {
-      stats.dropped++; // almost certainly a local variable read
+      dropRef(ref.id); // almost certainly a local variable read
     } else if (byName.length) {
       insertUnresolved(ref.id, 'ambiguous-name');
     } else {
