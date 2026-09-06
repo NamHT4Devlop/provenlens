@@ -19,7 +19,7 @@ tree-sitter-wasms@0.1.13, tree-sitter-wasms@^0.1.11:
   dependencies:
     tree-sitter-wasms "^0.1.11"
 
-web-tree-sitter@0.25.10:
-  version "0.25.10"
-  resolved "https://registry.yarnpkg.com/web-tree-sitter/-/web-tree-sitter-0.25.10.tgz#b21f1df7aaa87ad235b4c3d07005168349496706"
-  integrity sha512-Y09sF44/13XvgVKgO2cNDw5rGk6s26MgoZPXLESvMXeefBf7i6/73eFurre0IsTW6E14Y0ArIzhUMmjoc7xyzA==
+web-tree-sitter@0.27.0:
+  version "0.27.0"
+  resolved "https://registry.yarnpkg.com/web-tree-sitter/-/web-tree-sitter-0.27.0.tgz#72ed2c61bfbbec2489f3af6113ece9ecd47252fa"
+  integrity sha512-XK08gj6RwTMQatAG7uVRP8MunqotL/XC19vHgkSPKmELgbGPBj4ECvB8haHOUnyj6ls2B8t42UTro14zxGgAHg==
