@@ -260,12 +260,37 @@ bookmark keeps working tomorrow. `provenlens serve --new-token` retires it if yo
 ### 9. Optional — wire it into Claude Code
 
 ```bash
-provenlens install claude-user
+provenlens install claude-user --hooks
 ```
 
-This prints the change before writing it and always leaves a `.bak`. See
-[Using it from Claude Code](#using-it-from-claude-code) for the manual form and for what the four
-MCP tools do.
+This prints the change before writing it and always leaves a `.bak`. Without `--hooks` it registers
+the MCP server only. See [Using it from Claude Code](#using-it-from-claude-code) for the manual form
+and for what the five MCP tools do.
+
+**What `--hooks` changes.** The MCP tools answer when Claude asks. Claude does not always ask — an
+agent in the middle of implementing something has to *remember* that the graph exists, and that is
+the weak link. Two hooks remove it:
+
+- After every `Edit`, `Write` or `MultiEdit`, Claude sees what the file reaches and which tests
+  already cover it, unasked. On this repository, editing `src/query.js` puts this in front of it:
+
+  ```
+  provenlens · src/query.js: 22 symbol(s) here reach 23 symbol(s) in 8 other file(s)
+    reached: bin/provenlens, bin/provenlens:pickSymbol, src/format:formatExplore, src/mcp:callTool … +17
+    covered by 11 test(s): test/helpers:one, test/regressions.test, test/typescript.test … +5
+    (provenlens_impact <name> for the full radius; index is as of the last sync)
+  ```
+
+- At the start of a session in an indexed repository, one paragraph says the index is there, how
+  well it resolves, and to use it before grep.
+
+Both are silent when there is nothing to say: no index, a file outside it, a file with no symbols.
+A hook that talks on every keystroke gets muted, so neither does.
+
+The mechanics are the documented ones, not guessed: a `PostToolUse` hook's stdout goes only to the
+debug log, and the sole channel to Claude is **exit code 2 with the text on stderr** — which blocks
+nothing, because the edit is already on disk. `SessionStart` is the reverse: its stdout is context.
+`provenlens hook` reads the event on stdin and does the right one.
 
 ### Uninstalling
 
@@ -988,7 +1013,8 @@ a convention. No amount of engineering turns that into a declaration, because Ru
 | `provenlens path <from> <to>` | **Shortest directed chain** between two symbols, hop by hop — across repositories when a binding bridges them |
 | `provenlens affected [files...] [--fail-if-untested]` | What changed files reach, and **which tests already cover it**; the flag exits 2 when nothing does — a CI gate |
 | `provenlens export [name] [-f json\|mermaid]` | The graph around a symbol as JSON or a **Mermaid diagram** ready for a README or PR |
-| `provenlens install [target]` | Register the MCP server with an agent (`--dry-run` to preview) |
+| `provenlens install [target] [--hooks]` | Register the MCP server with an agent, and with `--hooks` the Claude Code hooks that report blast radius after every edit (`--dry-run` to preview) |
+| `provenlens hook` | What those hooks run: reads a Claude Code event on stdin, reports what the edited file reaches |
 | `provenlens uninit [path]` | Remove the index from a project |
 | `provenlens serve [paths...] [-p 7777] [-o] [--new-token]` | **Web UI** — search and browse the graph, one repo or **many at once** |
 | `provenlens mcp [path]` | MCP server over stdio |
@@ -1250,7 +1276,7 @@ it automatically.
 yarn test
 ```
 
-268 tests across six fixture suites plus regression, security and multi-repo coverage:
+276 tests across six fixture suites plus regression, security and multi-repo coverage:
 
 | Fixture | Simulates | The chain grep cannot follow |
 |---|---|---|

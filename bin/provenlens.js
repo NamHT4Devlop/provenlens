@@ -770,11 +770,24 @@ program
   .command('install')
   .argument('[target]', 'claude-user | claude-project | cursor')
   .option('-n, --dry-run', 'show what would change without writing')
+  .option('--hooks', 'also register the Claude Code hooks that report blast radius after every edit')
   .description('register the MCP server with an agent')
   .action(async (target, opts) => {
-    const { TARGETS, planInstall, applyInstall, detectTargets, serverEntry } = await import(
-      '../src/install.js'
-    );
+    const { TARGETS, planInstall, applyInstall, detectTargets, serverEntry, planHooks, applyHooks } =
+      await import('../src/install.js');
+
+    if (opts.hooks) {
+      const plan = opts.dryRun ? planHooks() : applyHooks();
+      if (plan.action === 'unchanged') {
+        console.log(`Claude Code hooks: already registered (${plan.file})`);
+      } else {
+        const verb = opts.dryRun ? `would ${plan.action}` : `${plan.action}d`;
+        console.log(`Claude Code hooks: ${verb} ${plan.file} (${plan.events.join(', ')})`);
+        if (opts.dryRun) console.log(JSON.stringify({ hooks: plan.entries }, null, 2));
+      }
+      if (!target && !opts.dryRun) console.log('\nRestart Claude Code to pick up the hooks.');
+      if (!target) return;
+    }
 
     const targets = target ? [target] : detectTargets();
     if (!targets.length) {
@@ -820,6 +833,23 @@ program
     } catch (err) {
       die(err.message);
     }
+  });
+
+program
+  .command('hook')
+  .description('Claude Code hook: reads the event on stdin, reports what an edited file reaches')
+  .action(async () => {
+    const { readEvent, runHook } = await import('../src/hook.js');
+    // Every failure path exits 0 on purpose. A hook that errors shows the
+    // user a notice on every edit; one that says nothing costs nothing.
+    let code = 0;
+    try {
+      code = await runHook(await readEvent());
+    } catch (err) {
+      process.stderr.write(`provenlens hook: ${err.message}\n`);
+      code = 0;
+    }
+    process.exit(code);
   });
 
 program
