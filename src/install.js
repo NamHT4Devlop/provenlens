@@ -131,9 +131,51 @@ export function hookEntries() {
 
 const HOOK_SETTINGS = join(homedir(), '.claude', 'settings.json');
 
+/** Whether one hook command is ours: the bin, whatever path it was written at, running `hook`. */
+const isOurHook = (h) => /provenlens(\.js)?"? hook$/.test(h?.command ?? '');
+
 /** True when a hook array already carries one of ours. */
-const hasOurs = (list) =>
-  (list ?? []).some((group) => (group.hooks ?? []).some((h) => /provenlens(\.js)?"? hook$/.test(h.command ?? '')));
+const hasOurs = (list) => (list ?? []).some((group) => (group.hooks ?? []).some(isOurHook));
+
+/**
+ * The config with our hooks taken out and nothing else touched. Pure, so it
+ * can be tested on an object rather than on somebody's settings file.
+ *
+ * A group that also holds somebody else's hook keeps that hook; a group left
+ * empty goes; an event left with no groups goes; `hooks` itself goes only if
+ * it ends up empty. Returns how many of ours were removed.
+ */
+export function withoutOurHooks(config) {
+  const out = { ...config };
+  let removed = 0;
+  if (config.hooks && typeof config.hooks === 'object') {
+    const hooks = {};
+    for (const [event, groups] of Object.entries(config.hooks)) {
+      const kept = [];
+      for (const group of Array.isArray(groups) ? groups : []) {
+        const mine = (group.hooks ?? []).filter(isOurHook).length;
+        removed += mine;
+        const rest = (group.hooks ?? []).filter((h) => !isOurHook(h));
+        if (rest.length || !mine) kept.push(mine ? { ...group, hooks: rest } : group);
+      }
+      if (kept.length) hooks[event] = kept;
+    }
+    if (Object.keys(hooks).length) out.hooks = hooks;
+    else delete out.hooks;
+  }
+  return { config: out, removed };
+}
+
+/** The config with the `provenlens` server entry gone from `key`, and whether it was there. */
+export function withoutMcpEntry(config, key) {
+  if (!config[key] || !Object.hasOwn(config[key], 'provenlens')) return { config, removed: false };
+  const servers = { ...config[key] };
+  delete servers.provenlens;
+  const out = { ...config };
+  if (Object.keys(servers).length) out[key] = servers;
+  else delete out[key];
+  return { config: out, removed: true };
+}
 
 export function planHooks() {
   const config = readJson(HOOK_SETTINGS);
@@ -159,6 +201,44 @@ export function applyHooks() {
   mkdirSync(dirname(HOOK_SETTINGS), { recursive: true });
   keepBackup(HOOK_SETTINGS);
   writeFileSync(HOOK_SETTINGS, `${JSON.stringify(config, null, 2)}\n`);
+  return plan;
+}
+
+export function planUnhook() {
+  const config = readJson(HOOK_SETTINGS);
+  const { removed } = withoutOurHooks(config);
+  return { file: HOOK_SETTINGS, action: removed ? 'update' : 'unchanged', removed };
+}
+
+/** Takes our hook entries back out of settings.json; everything else stays as it was. */
+export function applyUnhook() {
+  const plan = planUnhook();
+  if (plan.action === 'unchanged') return plan;
+  const { config } = withoutOurHooks(readJson(HOOK_SETTINGS));
+  keepBackup(HOOK_SETTINGS);
+  writeFileSync(HOOK_SETTINGS, `${JSON.stringify(config, null, 2)}\n`);
+  return plan;
+}
+
+export function planUninstall(targetName) {
+  const target = TARGETS[targetName];
+  if (!target) throw new Error(`unknown target: ${targetName}`);
+  const { removed } = withoutMcpEntry(readJson(target.file), target.key);
+  return { target: targetName, label: target.label, file: target.file, action: removed ? 'update' : 'unchanged' };
+}
+
+/**
+ * Takes the `provenlens` server entry back out of an agent's config. The key
+ * is what `install` wrote and the only thing looked at: whatever the entry
+ * says, removing it is what the command was asked to do.
+ */
+export function applyUninstall(targetName) {
+  const target = TARGETS[targetName];
+  const plan = planUninstall(targetName);
+  if (plan.action === 'unchanged') return plan;
+  const { config } = withoutMcpEntry(readJson(target.file), target.key);
+  keepBackup(target.file);
+  writeFileSync(target.file, `${JSON.stringify(config, null, 2)}\n`);
   return plan;
 }
 

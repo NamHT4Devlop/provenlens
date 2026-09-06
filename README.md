@@ -339,11 +339,18 @@ rm -rf ~/provenlens
 The first removes one repository's index, the second removes the command, the third removes
 provenlens itself.
 
-The agent side is two edits, because there is no `provenlens uninstall` yet: remove the
-`provenlens` entry under `mcpServers` in `~/.claude.json` (or `claude mcp remove provenlens`), and
-remove the two entries whose command ends in `provenlens.js" hook` from `PostToolUse` and
-`SessionStart` in `~/.claude/settings.json`. Both files were backed up as `.bak` when they were
-written, and nothing else in either was touched.
+The agent side is one command:
+
+```bash
+provenlens uninstall
+```
+
+It takes back exactly what `install` wrote — the `provenlens` entry under `mcpServers` in every
+agent config it detects, and the two hooks whose command is this bin running `hook` — and touches
+nothing else: a hook of somebody else's sharing the same event stays, and a group or key left empty
+is removed rather than left as `[]`. `--dry-run` shows the plan, `--keep-hooks` removes the MCP
+entry only, and a `.bak` is written beside each file it changes. Do this **before** `rm -rf` on the
+clone, since it is the clone that knows what it wrote.
 
 ### Troubleshooting setup
 
@@ -1051,6 +1058,7 @@ a convention. No amount of engineering turns that into a declaration, because Ru
 | `provenlens export [name] [-f json\|mermaid]` | The graph around a symbol as JSON or a **Mermaid diagram** ready for a README or PR |
 | `provenlens install [target] [--hooks]` | Register the MCP server with an agent, and with `--hooks` the Claude Code hooks that report blast radius after every edit (`--dry-run` to preview) |
 | `provenlens hook` | What those hooks run: reads a Claude Code event on stdin, reports what the edited file reaches |
+| `provenlens uninstall [target] [--keep-hooks]` | Take back what `install` wrote: the MCP entry from the named agent (or every detected one), and the Claude Code hooks (`--dry-run` to preview) |
 | `provenlens uninit [path]` | Remove the index from a project |
 | `provenlens serve [paths...] [-p 7777] [-o] [--new-token]` | **Web UI** — search and browse the graph, one repo or **many at once** |
 | `provenlens mcp [path]` | MCP server over stdio |
@@ -1347,7 +1355,7 @@ it automatically.
 yarn test
 ```
 
-276 tests across six fixture suites plus regression, security and multi-repo coverage:
+284 tests across six fixture suites plus regression, security and multi-repo coverage:
 
 | Fixture | Simulates | The chain grep cannot follow |
 |---|---|---|
@@ -1464,8 +1472,8 @@ the second.
 
 ## Roadmap
 
-- [ ] `provenlens uninstall`, so removing the MCP entry and the hooks is one command rather than
-      two edits by hand. `install` knows exactly what it wrote; it should be able to take it back.
+- [x] `provenlens uninstall`, so removing the MCP entry and the hooks is one command rather than
+      two edits by hand. Done: it removes by the key and the command `install` wrote, and nothing else.
 - [ ] NestJS custom-provider tokens as a binding plugin (needs object-literal extraction)
 - [x] Read `.d.ts` from `node_modules` and signatures from JARs, to keep a chain alive past a
       library hop. Done — see *Optional: install the project's dependencies* above.

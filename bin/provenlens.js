@@ -836,6 +836,46 @@ program
   });
 
 program
+  .command('uninstall')
+  .argument('[target]', 'claude-user | claude-project | cursor; every detected one when omitted')
+  .option('-n, --dry-run', 'show what would change without writing')
+  .option('--keep-hooks', 'remove the MCP entry only; leave the Claude Code hooks in place')
+  .description('take back what install wrote: the MCP entry, and the Claude Code hooks')
+  .action(async (target, opts) => {
+    const { TARGETS, planUninstall, applyUninstall, detectTargets, planUnhook, applyUnhook } =
+      await import('../src/install.js');
+    const verb = (plan) => (opts.dryRun ? `would ${plan.action}` : `${plan.action}d`);
+
+    // `install` knows exactly what it wrote, so this knows exactly what to take
+    // back: the entry under the key it used, and the hooks whose command is ours.
+    const targets = target ? [target] : detectTargets();
+    for (const name of targets) {
+      if (!TARGETS[name]) die(`unknown target "${name}". Known: ${Object.keys(TARGETS).join(', ')}`);
+      try {
+        const plan = opts.dryRun ? planUninstall(name) : applyUninstall(name);
+        console.log(
+          plan.action === 'unchanged'
+            ? `${plan.label}: no provenlens entry in ${plan.file}`
+            : `${plan.label}: ${verb(plan)} ${plan.file} (removed mcpServers.provenlens)`,
+        );
+      } catch (err) {
+        console.error(`${name}: ${err.message}`);
+      }
+    }
+    if (!targets.length) console.log('No agent config found; nothing to remove the MCP entry from.');
+
+    if (!opts.keepHooks) {
+      const plan = opts.dryRun ? planUnhook() : applyUnhook();
+      console.log(
+        plan.action === 'unchanged'
+          ? `Claude Code hooks: none of ours in ${plan.file}`
+          : `Claude Code hooks: ${verb(plan)} ${plan.file} (removed ${plan.removed} hook(s))`,
+      );
+    }
+    if (!opts.dryRun) console.log('\nRestart the agent for the change to take effect.');
+  });
+
+program
   .command('hook')
   .description('Claude Code hook: reads the event on stdin, reports what an edited file reaches')
   .action(async () => {
