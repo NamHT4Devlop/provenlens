@@ -1,11 +1,13 @@
 /**
  * Auto-sync: re-index shortly after files stop changing.
  *
- * fs.watch is recursive on macOS and Windows; on Linux it is not, so the
- * fallback there is a periodic sync rather than pretending to watch.
+ * A recursive fs.watch is asked for everywhere. This file used to say Linux
+ * had none and polled there instead -- rehashing the whole tree every five
+ * seconds -- which was true of Node 18 and has not been since 20; the floor
+ * this package declares is 22. Polling stays as the fallback for a platform
+ * that actually refuses the watch, which is now none of the three tested.
  */
 import { watch, realpathSync } from 'node:fs';
-import { platform } from 'node:os';
 import { langForPath } from './lang.js';
 import { indexProject } from './indexer.js';
 import { buildIgnoreFilter } from './project.js';
@@ -43,10 +45,9 @@ export function watchProject(db, root, { onSync } = {}) {
     timer = setTimeout(() => sync(reason), DEBOUNCE_MS);
   }
 
-  const recursive = platform() === 'darwin' || platform() === 'win32';
   const isIgnored = buildIgnoreFilter(root);
 
-  if (recursive) {
+  try {
     // fs.watch keeps the path it was handed and compares it against the one
     // Windows reports for every event. Hand it a path holding an 8.3 short
     // name -- `C:\Users\RUNNER~1\AppData\Local\Temp\...`, which is what
@@ -72,6 +73,10 @@ export function watchProject(db, root, { onSync } = {}) {
       schedule(rel);
     });
     return { close: () => (clearTimeout(timer), watcher.close()), mode: 'watch' };
+  } catch (err) {
+    // ERR_FEATURE_UNAVAILABLE_ON_PLATFORM is the one to expect; anything else
+    // fs.watch throws here is equally a reason to fall back rather than die.
+    process.stderr.write(`provenlens: recursive watch unavailable (${err.code ?? err.message}); polling\n`);
   }
 
   const interval = setInterval(() => schedule('poll'), POLL_MS);

@@ -746,6 +746,25 @@ describe('affected --fail-if-untested', () => {
     assert.match(r.errOut, /no test reaches/);
   });
 
+  test('reads a repo-relative path from a subdirectory, the way git prints one', async () => {
+    // `git diff --name-only | provenlens affected` is the documented use, and
+    // git prints paths relative to the repository root wherever it is run.
+    // Resolving them against the working directory doubled the path from any
+    // subdirectory -- `src/Price.java` became `src/src/Price.java` -- and
+    // reported a file that was in the index as missing from it.
+    const r = await run(join(covered, 'src'), ['affected', 'src/Price.java', '--json']);
+    assert.equal(r.code, 0, r.errOut);
+    const parsed = JSON.parse(r.out);
+    assert.deepEqual(parsed.missingFiles, []);
+    assert.ok(parsed.changed.some((s) => s.name === 'total'), 'the changed method must be found');
+  });
+
+  test('still accepts a path relative to the working directory', async () => {
+    const r = await run(join(covered, 'src'), ['affected', 'Price.java', '--json']);
+    assert.equal(r.code, 0, r.errOut);
+    assert.deepEqual(JSON.parse(r.out).missingFiles, []);
+  });
+
   test('a diff that only touches tests passes by definition', async () => {
     const r = await run(covered, ['affected', 'test/PriceTest.java', '--fail-if-untested']);
     assert.equal(r.code, 0, r.errOut);
