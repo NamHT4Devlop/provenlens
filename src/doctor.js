@@ -11,7 +11,7 @@
  * predicted.
  */
 import { existsSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, delimiter } from 'node:path';
 import { builtinModules } from 'node:module';
 import { execFileSync } from 'node:child_process';
 import { nodeModulesRoots, importedPackages } from './ambient.js';
@@ -141,7 +141,7 @@ function dependencyCoverage(db, root, langs) {
     } else {
       const unread = unresolvedImports(db);
       const classpath = classpathFor(root);
-      const jars = classpath ? classpath.split(':').length : 0;
+      const jars = classpath ? classpath.split(delimiter).length : 0;
       if (!jars) {
         findings.push({
           level: 'blocking',

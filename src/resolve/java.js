@@ -71,19 +71,33 @@ export function resolveJava(db) {
    * scope for Inner.
    */
   const typeVarsByFqn = new Map();
-  for (const [fqn, t] of types) {
+  const noteTypeVars = (fqn, rawModifiers) => {
     let modifiers = [];
     try {
-      modifiers = JSON.parse(t.modifiers || '[]');
+      modifiers = JSON.parse(rawModifiers || '[]');
     } catch {
       modifiers = [];
     }
     const own = modifiers.filter((m) => String(m).startsWith('tp:')).map((m) => m.slice(3));
     if (own.length) typeVarsByFqn.set(fqn, new Set(own));
-  }
+  };
+  for (const [fqn, t] of types) noteTypeVars(fqn, t.modifiers);
+  /**
+   * Whether `name` is a type variable where `enclosing` is: the declaration
+   * itself, or any it is nested in. A method's own variables were never
+   * recorded, so `<Entity> void each(Entity e) { e.save(); }` linked to a
+   * real class called Entity with a declaration's confidence.
+   */
   function isTypeVariable(name, enclosing) {
     if (name.includes('.') || !/^[A-Za-z_$][\w$]*$/.test(name)) return false;
-    for (let scope = enclosing; scope; ) {
+    let scope = enclosing;
+    // A method scope is `com.acme.Repo#each`: its own variables first, then
+    // the type's.
+    if (scope?.includes('#')) {
+      if (typeVarsByFqn.get(scope)?.has(name)) return true;
+      scope = scope.slice(0, scope.indexOf('#'));
+    }
+    for (; scope; ) {
       if (typeVarsByFqn.get(scope)?.has(name)) return true;
       const dot = scope.lastIndexOf('.');
       scope = dot === -1 ? null : scope.slice(0, dot);
@@ -106,12 +120,13 @@ export function resolveJava(db) {
   for (const row of db
     .prepare(
       `SELECT s.id, s.name, s.kind, s.arity, s.container_fqn, s.type_name, s.type_args, s.params,
-              s.file_id, f.external AS isExternal, f.owner AS extOwner
+              s.file_id, s.fqn, s.modifiers, f.external AS isExternal, f.owner AS extOwner
          FROM symbols s JOIN files f ON f.id = s.file_id
         WHERE f.lang = 'java' AND s.kind IN ('method','constructor','field')`,
     )
     .all()) {
     if (!row.container_fqn) continue;
+    if (row.kind !== 'field' && row.fqn) noteTypeVars(row.fqn, row.modifiers);
     if (row.kind === 'field') {
       if (!fieldsByContainer.has(row.container_fqn)) fieldsByContainer.set(row.container_fqn, new Map());
       fieldsByContainer.get(row.container_fqn).set(row.name, row.type_name);
@@ -352,13 +367,31 @@ export function resolveJava(db) {
    * against the argument types we could work out. Falls back to arity alone,
    * which is what the previous version did for every call.
    */
+  /** Whether a declaration takes `arity` arguments: exactly, or through varargs. */
+  function acceptsArity(m, arity) {
+    if (arity == null || m.arity === arity) return true;
+    let params = [];
+    try {
+      params = JSON.parse(m.params || '[]');
+    } catch {
+      params = [];
+    }
+    const last = params[params.length - 1];
+    return typeof last === 'string' && last.endsWith('...') && arity >= params.length - 1;
+  }
+
   function findMethod(typeFqn, name, arity, ref = null, enclosingFqn = null) {
     for (const t of typeChain(typeFqn)) {
       const candidates = (methodsByContainer.get(t.fqn) ?? []).filter((m) => m.name === name);
       if (!candidates.length) continue;
 
-      const sameArity = candidates.filter((m) => m.arity === arity);
-      if (sameArity.length <= 1) return sameArity[0] ?? candidates[0];
+      // Only a declaration that takes this many arguments can be the one
+      // called. The fallback to any candidate at all linked `log("failed",
+      // ex)` to `log(String)` and hid the library ancestor that really has
+      // it. A method reference has no arguments to count, and takes any.
+      const sameArity = candidates.filter((m) => acceptsArity(m, arity));
+      if (!sameArity.length) continue;
+      if (sameArity.length === 1) return sameArity[0];
 
       const tokens = ref?.arg_types ? JSON.parse(ref.arg_types) : null;
       if (!tokens) return sameArity[0];
@@ -436,6 +469,24 @@ export function resolveJava(db) {
    *   {external}-> provably a library call, with the owner named where possible
    *   null      -> unknown
    */
+  /**
+   * The project method a static import names, when it names one of ours.
+   * `import static com.acme.Helper.compute; compute();` was reported as
+   * proven to leave the repository -- the import's package was read as a
+   * library before anyone looked for the class in the index.
+   */
+  function staticImportTarget(ref) {
+    for (const imp of importsByFile.get(ref.file_id) ?? []) {
+      if (!imp.is_static) continue;
+      const owner = imp.is_wildcard ? imp.fqn : imp.fqn.slice(0, imp.fqn.lastIndexOf('.'));
+      if (!imp.is_wildcard && imp.simple !== ref.name) continue;
+      if (!types.has(owner) || types.get(owner)?.isExternal) continue;
+      const hit = findMethod(owner, ref.name, ref.arity, ref, owner);
+      if (hit) return hit;
+    }
+    return null;
+  }
+
   /** `import static org.assertj...Assertions.assertThat` -> the owning library. */
   function staticImportOwner(methodName, fileId) {
     let wildcard = null;
@@ -676,6 +727,8 @@ export function resolveJava(db) {
     // ever imported. Everything that was not a bare identifier or a single
     // `this.x` used to fall straight through to "complex" below.
     if (depth < 8 && /^(?:this\.)?[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+$/.test(raw)) {
+      // `com.acme.a.Helper.compute()` names the type outright.
+      if (types.has(raw)) return raw;
       const segments = raw.split('.');
       let current = receiverType(
         { ...ref, receiver: segments[0], receiver_ref_id: null },
@@ -684,6 +737,12 @@ export function resolveJava(db) {
       );
       for (let i = 1; i < segments.length; i++) {
         if (typeof current !== 'string' || !current) break;
+        // `Helper.Inner.create()`: the next segment is a nested type, not a
+        // field. It used to end here as "complex".
+        if (types.has(`${current}.${segments[i]}`)) {
+          current = `${current}.${segments[i]}`;
+          continue;
+        }
         let fieldType = null;
         for (const t of typeChain(current)) {
           const hit = fieldsByContainer.get(t.fqn)?.get(segments[i]);
@@ -734,8 +793,12 @@ export function resolveJava(db) {
         // method name here would invent edges, so stop instead.
         return { complex: true };
       }
-      const hit = resolveTypeName(local.type, ref.file_id, enclosing);
+      const hit = resolveTypeName(local.type, ref.file_id, fromSymbol?.fqn ?? enclosing);
       if (hit) return hit;
+      // `Item i` where Item is `class Repo<Item>`'s variable: whatever it
+      // holds, a by-name guess from `i.save()` would be a class the code
+      // never named.
+      if (isTypeVariable(local.type, fromSymbol?.fqn ?? enclosing)) return { complex: true };
       const owner = externalOwner(local.type, ref.file_id);
       return owner ? { external: owner } : null;
     }
@@ -825,7 +888,7 @@ export function resolveJava(db) {
   {
     const pending = db
       .prepare(
-        `SELECT l.id, l.scope_symbol_id, l.name, l.line
+        `SELECT l.id, l.scope_symbol_id, l.name, l.line, l.owner_ref_id
            FROM locals l JOIN files f ON f.id = l.file_id
           WHERE f.lang = 'java' AND l.type_name IS NULL AND l.init_kind = 'call'`,
       )
@@ -837,7 +900,10 @@ export function resolveJava(db) {
     );
 
     for (const local of pending) {
-      const ref = refAt.get(local.scope_symbol_id, local.line);
+      // The initialiser's own call, recorded by node; the last call on the
+      // line was the innermost argument whenever the initialiser had one.
+      const ref = (local.owner_ref_id != null ? refById.get(local.owner_ref_id) : null)
+        ?? refAt.get(local.scope_symbol_id, local.line);
       if (!ref) continue;
       const fromSymbol = symbolById.get(ref.from_symbol_id);
       const recv = receiverType(ref, fromSymbol, 0);
@@ -1014,6 +1080,23 @@ export function resolveJava(db) {
 
     const recv = receiverType(ref, fromSymbol, 0);
 
+    // `super(...)` calls the parent's constructor, whose name is the parent's.
+    if (ref.name === '<init>') {
+      if (typeof recv === 'string' && recv) {
+        const ctor = findMethod(recv, recv.split('.').pop(), ref.arity, ref, fromSymbol?.container_fqn);
+        if (ctor) {
+          insertEdge.run(ref.from_symbol_id, ctor.id, 'calls', 1.0, 'constructor', ref.line);
+          stats.direct++;
+          continue;
+        }
+        const inherited = externalAncestor(recv) ?? externalOwner(recv, ref.file_id);
+        insertExternal(ref.id, inherited);
+        continue;
+      }
+      insertExternal(ref.id, recv && typeof recv === 'object' ? recv.external : 'java.lang');
+      continue;
+    }
+
     if (recv && typeof recv === 'object') {
       const carried = inheritedExternal(ref);
       if (!recv.complex) insertExternal(ref.id, recv.external);
@@ -1062,6 +1145,15 @@ export function resolveJava(db) {
         }
         continue;
       }
+      // A bare call that a static import names: one of this project's own
+      // methods first, and only then a library's.
+      const viaStatic = !ref.receiver ? staticImportTarget(ref) : null;
+      if (viaStatic) {
+        insertEdge.run(ref.from_symbol_id, viaStatic.id, 'calls', 1.0, 'direct', ref.line);
+        refOutcome.set(ref.id, { external: false });
+        stats.direct++;
+        continue;
+      }
       // The type is known but the method is not on it. Three ways that can be
       // explained without guessing, in order of how much they tell us.
       const inherited = externalAncestor(recvType);
@@ -1091,8 +1183,19 @@ export function resolveJava(db) {
       continue;
     }
 
+    // A bare call reaching here has no enclosing type at all; a static import
+    // may still name it.
+    if (!ref.receiver) {
+      const viaStatic = staticImportTarget(ref);
+      if (viaStatic) {
+        insertEdge.run(ref.from_symbol_id, viaStatic.id, 'calls', 1.0, 'direct', ref.line);
+        stats.direct++;
+        continue;
+      }
+    }
+
     const byName = methodsByName.get(ref.name) ?? [];
-    const arityMatch = byName.filter((m) => m.arity === ref.arity);
+    const arityMatch = byName.filter((m) => acceptsArity(m, ref.arity));
     const pool = arityMatch.length ? arityMatch : byName;
     if (pool.length === 1) {
       insertEdge.run(ref.from_symbol_id, pool[0].id, 'calls', 0.5, 'unique-name', ref.line);
