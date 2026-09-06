@@ -21,12 +21,12 @@ jobs:
   suite:
     name: Test suite · Node ${{ matrix.node }} · ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
-    # Windows reports but does not gate. 224 of 225 pass there; the one that
-    # does not is multirepo's teardown, where a server with three recursive
-    # watchers is closed and the workspace removed. Blocking every merge on an
-    # unfinished investigation would buy nothing, and marking it green would be
-    # a lie -- so it runs, and what it says is visible on every pull request.
-    continue-on-error: ${{ matrix.experimental == true }}
+    # Every leg gates. Windows used to report without gating, while one test
+    # aborted there on a libuv assertion nobody had yet read; that was found
+    # (fs.watch handed an 8.3 short-name path), fixed at the watcher, and the
+    # leg has passed 264/264 on every run since. A leg that passes and does
+    # not gate is a regression waiting to go unnoticed.
+    continue-on-error: false
     strategy:
       fail-fast: false
       matrix:
@@ -40,12 +40,11 @@ jobs:
           # themselves when there is no JDK, so a runner without one still
           # tells the truth about everything else.
           - { os: macos-latest, node: 24, label: macOS }
-          # Windows is the platform this tool was never run on. Nothing in it
-          # needs compiling -- node:sqlite ships inside Node and the grammars
-          # are WASM -- so the question is whether the paths, the permissions
-          # and the watcher hold up, and the only honest way to find out is to
-          # run them there.
-          - { os: windows-latest, node: 24, label: Windows, experimental: true }
+          # Windows is where the paths, the permissions and the watcher differ.
+          # Nothing needs compiling -- node:sqlite ships inside Node and the
+          # grammars are WASM -- and it has already found one real defect the
+          # other three could not: a process abort inside libuv.
+          - { os: windows-latest, node: 24, label: Windows }
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7

@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync, readFileSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { acquireIndexLock } from '../src/project.js';
@@ -18,6 +18,36 @@ describe('index lock', () => {
       release();
       // Released, so the next run may proceed.
       acquireIndexLock(root)();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('takes over a lock held by a live PID that is far too old to be a run', () => {
+    // A PID is reused once its process exits, so "alive" can be true of a
+    // stranger. Our own PID is certainly alive; a lock in its name that is
+    // hours old is not a run of ours still going, because no run is.
+    const root = mkdtempSync(join(tmpdir(), 'provenlens-lock-'));
+    try {
+      mkdirSync(join(root, '.provenlens'));
+      const lock = join(root, '.provenlens', 'index.lock');
+      writeFileSync(lock, String(process.pid));
+      const fourHoursAgo = (Date.now() - 4 * 60 * 60 * 1000) / 1000;
+      utimesSync(lock, fourHoursAgo, fourHoursAgo);
+      const release = acquireIndexLock(root);
+      assert.equal(readFileSync(lock, 'utf8'), String(process.pid), 'the lock is ours now');
+      release();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('still refuses a fresh lock held by a live PID', () => {
+    const root = mkdtempSync(join(tmpdir(), 'provenlens-lock-'));
+    try {
+      mkdirSync(join(root, '.provenlens'));
+      writeFileSync(join(root, '.provenlens', 'index.lock'), String(process.pid));
+      assert.throws(() => acquireIndexLock(root), (err) => err.code === 'PROVENLENS_LOCKED');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

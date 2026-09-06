@@ -199,6 +199,27 @@ export function repoRelative(root, given) {
   return rel.split(sep).join('/');
 }
 
+/**
+ * A changed file as the index spells it, from either way a caller writes one.
+ *
+ * `git diff --name-only` prints paths relative to the repository root, and
+ * that output piped into `affected` is the documented use. A shell user types
+ * a path relative to wherever they are. Resolving both against the working
+ * directory -- which is what happened -- doubled the git one whenever the
+ * command ran from a subdirectory: `com/acme/Donation.java` became
+ * `com/acme/com/acme/Donation.java` and was reported as not in the index.
+ *
+ * So the repo-relative reading wins whenever it names something real: a path
+ * the index knows, or one on disk under the root. Only then is the working
+ * directory consulted. `known` lets the caller vouch for a file that git says
+ * changed but that is no longer on disk -- a deletion is a change too.
+ */
+export function changedPath(root, given, { known = () => false } = {}) {
+  const asWritten = String(given).split('\\').join('/').replace(/^\.\//, '');
+  if (asWritten && (known(asWritten) || existsSync(join(root, asWritten)))) return asWritten;
+  return repoRelative(root, given) ?? asWritten;
+}
+
 /** Every source file with a grammar, as repo-relative paths. */
 export function discoverFiles(root, opts) {
   return walkFiles(root, (rel) => Boolean(langForPath(rel)), opts);
@@ -229,6 +250,12 @@ export function acquireIndexLock(root) {
 
   const lockPath = join(lockDir, 'index.lock');
   const mine = String(process.pid);
+  // A PID is reused once its process exits, so "that process is alive" can be
+  // true of a stranger. No index run takes anything like this long -- the
+  // largest of 10,000 repositories finished inside the ten-minute budget --
+  // so a lock this old held by a live PID is far likelier to be a recycled
+  // number than a run still going, and is taken over rather than obeyed.
+  const MAX_LOCK_AGE_MS = 3 * 60 * 60 * 1000;
 
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
@@ -258,6 +285,16 @@ export function acquireIndexLock(root) {
         alive = probe?.code === 'EPERM';
       }
       if (alive) {
+        let ageMs = 0;
+        try {
+          ageMs = Date.now() - statSync(lockPath).mtimeMs;
+        } catch {
+          continue; // vanished; the write is retried
+        }
+        if (ageMs > MAX_LOCK_AGE_MS) {
+          rmSync(lockPath, { force: true });
+          continue;
+        }
         const error = new Error(
           `another provenlens index is running on this project (pid ${holder}). ` +
             `Wait for it, or remove ${lockPath} if that process is gone.`,

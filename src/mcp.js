@@ -8,7 +8,7 @@ import { resolve, join, basename } from 'node:path';
 import { existsSync } from 'node:fs';
 import { openProject } from './db.js';
 import { explainSymbol } from './why.js';
-import { dbPathFor, discoverProjects, repoRelative } from './project.js';
+import { dbPathFor, discoverProjects, repoRelative, changedPath } from './project.js';
 import { indexProject } from './indexer.js';
 import { watchProject } from './watch.js';
 import { formatExplore, formatImpact, formatAffected, formatWhy } from './format.js';
@@ -187,7 +187,8 @@ async function callTool(name, args, defaultRoot) {
           all.find((p) => repoRelative(p.root, f) !== null) ??
           all.find((p) => existsSync(join(p.root, f))) ??
           all[0];
-        const rel = repoRelative(home.root, f) ?? f.split('\\').join('/');
+        const inIndex = home.db.prepare('SELECT 1 FROM files WHERE path = ?');
+        const rel = changedPath(home.root, f, { known: (q) => !!inIndex.get(q) });
         if (!byRepo.has(home.root)) byRepo.set(home.root, { db: home.db, files: [] });
         byRepo.get(home.root).files.push(rel);
       }

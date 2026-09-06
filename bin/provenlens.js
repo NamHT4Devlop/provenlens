@@ -11,7 +11,7 @@ import { Command } from 'commander';
 import { resolve, join, basename } from 'node:path';
 import { existsSync, rmSync } from 'node:fs';
 import { openDb, openProject, getMeta } from '../src/db.js';
-import { findProjectRoot, dbPathFor, INDEX_DIR, acquireIndexLock, repoRelative } from '../src/project.js';
+import { findProjectRoot, dbPathFor, INDEX_DIR, acquireIndexLock, changedPath } from '../src/project.js';
 import { explainSymbol } from '../src/why.js';
 import { indexProject } from '../src/indexer.js';
 import {
@@ -245,7 +245,7 @@ program
     console.log(
       handle.mode === 'watch'
         ? 'watching for changes — Ctrl-C to stop'
-        : `polling every 5s (no recursive watch on this platform) — Ctrl-C to stop`,
+        : `polling every 5s (this platform refused a recursive watch) — Ctrl-C to stop`,
     );
     process.on('SIGINT', () => {
       handle.close();
@@ -651,10 +651,10 @@ program
     }
     if (!paths.length) die('no files given. Try: git diff --name-only | provenlens affected');
 
-    // Accept absolute or cwd-relative paths and normalise to repo-relative.
-    // A path outside the root is passed through as written, so the report can
-    // name it under "not in the index" rather than silently dropping it.
-    const normalised = paths.map((p) => repoRelative(root, p) ?? p.split('\\').join('/'));
+    // As git prints them, or as the shell resolves them -- and a file git says
+    // changed may already be gone from disk, so the index vouches for it too.
+    const inIndex = db.prepare('SELECT 1 FROM files WHERE path = ?');
+    const normalised = paths.map((p) => changedPath(root, p, { known: (q) => !!inIndex.get(q) }));
     const r = affectedBy(db, normalised, { maxDepth: Number(opts.depth) });
 
     // The CI question: does anything already exercise what this change can
