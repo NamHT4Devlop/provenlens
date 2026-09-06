@@ -11,14 +11,23 @@ import { classify, singularize } from '../extract/ruby.js';
 
 const MIGRATION = /(?:^|\/)(V[\d._]+__|R__|U[\d._]+__)([\w.-]+)\.sql$/i;
 
+/**
+ * A table name as SQL writes it: bare, quoted, or schema-qualified with each
+ * part quoted on its own. `"public"."comments"` read by a pattern that
+ * stopped at the closing quote named the schema and never the table.
+ */
+const NAME = `((?:["'\`]?\\w+["'\`]?\\.)*["'\`]?\\w+["'\`]?)`;
 const TABLE_STATEMENTS = [
-  /\bCREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?["'`]?([\w.]+)["'`]?/gi,
-  /\bALTER\s+TABLE\s+["'`]?([\w.]+)["'`]?/gi,
-  /\bDROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?["'`]?([\w.]+)["'`]?/gi,
-  /\bINSERT\s+INTO\s+["'`]?([\w.]+)["'`]?/gi,
-  /\bUPDATE\s+["'`]?([\w.]+)["'`]?\s+SET\b/gi,
-  /\bCREATE\s+(?:UNIQUE\s+)?INDEX\s+\S+\s+ON\s+["'`]?([\w.]+)["'`]?/gi,
+  new RegExp(`\\bCREATE\\s+TABLE\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?${NAME}`, 'gi'),
+  new RegExp(`\\bALTER\\s+TABLE\\s+${NAME}`, 'gi'),
+  new RegExp(`\\bDROP\\s+TABLE\\s+(?:IF\\s+EXISTS\\s+)?${NAME}`, 'gi'),
+  new RegExp(`\\bINSERT\\s+INTO\\s+${NAME}`, 'gi'),
+  new RegExp(`\\bUPDATE\\s+${NAME}\\s+SET\\b`, 'gi'),
+  new RegExp(`\\bCREATE\\s+(?:UNIQUE\\s+)?INDEX\\s+\\S+\\s+ON\\s+${NAME}`, 'gi'),
 ];
+
+/** The unqualified, unquoted, lower-cased table out of a matched name. */
+const tableOf = (name) => name.replace(/["'`]/g, '').split('.').pop().toLowerCase();
 
 /** Table names a migration touches, lower-cased and unqualified. */
 export function tablesIn(sql) {
@@ -26,18 +35,18 @@ export function tablesIn(sql) {
   const withoutComments = sql.replace(/--[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
   for (const pattern of TABLE_STATEMENTS) {
     for (const [, name] of withoutComments.matchAll(pattern)) {
-      found.add(name.split('.').pop().toLowerCase());
+      found.add(tableOf(name));
     }
   }
   return [...found];
 }
 
 const REFERENCE_STATEMENTS = [
-  /\bFROM\s+["'`]?([\w.]+)["'`]?/gi,
-  /\bJOIN\s+["'`]?([\w.]+)["'`]?/gi,
-  /\bINSERT\s+INTO\s+["'`]?([\w.]+)["'`]?/gi,
-  /\bUPDATE\s+["'`]?([\w.]+)["'`]?\s+SET\b/gi,
-  /\bDELETE\s+FROM\s+["'`]?([\w.]+)["'`]?/gi,
+  new RegExp(`\\bFROM\\s+${NAME}`, 'gi'),
+  new RegExp(`\\bJOIN\\s+${NAME}`, 'gi'),
+  new RegExp(`\\bINSERT\\s+INTO\\s+${NAME}`, 'gi'),
+  new RegExp(`\\bUPDATE\\s+${NAME}\\s+SET\\b`, 'gi'),
+  new RegExp(`\\bDELETE\\s+FROM\\s+${NAME}`, 'gi'),
 ];
 
 /** Tables a query reads or writes -- the other half of the migration link. */
@@ -46,7 +55,7 @@ export function tablesReferenced(sql) {
   const withoutComments = sql.replace(/--[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
   for (const pattern of REFERENCE_STATEMENTS) {
     for (const [, name] of withoutComments.matchAll(pattern)) {
-      found.add(name.split('.').pop().toLowerCase());
+      found.add(tableOf(name));
     }
   }
   return [...found];
@@ -87,7 +96,7 @@ export default {
       });
 
       for (const table of tables) {
-        ctx.emit({ role: 'provider', key: `table:${table}`, symbolId, fileId: file.id, detail: table });
+        ctx.emit({ role: 'provider', key: `table:${table}`, symbolId, fileId: file.id, line: 1, detail: table });
         if (!byTable.has(table)) byTable.set(table, []);
         byTable.get(table).push(symbolId);
       }
@@ -96,18 +105,23 @@ export default {
     if (!byTable.size) return;
 
     // Consumers: types whose name matches the table by the usual convention,
-    // plus MyBatis statements whose SQL names the table outright.
-    const types = ctx.db
+    // plus MyBatis statements whose SQL names the table outright. Types are
+    // indexed by name once: scanning all of them per table was tables x types,
+    // ten seconds for two thousand tables over fifty thousand classes.
+    const typesByName = new Map();
+    for (const t of ctx.db
       .prepare(
         `SELECT s.id, s.name, s.file_id, s.start_line FROM symbols s
           WHERE s.kind IN ('class', 'interface')`,
       )
-      .all();
+      .all()) {
+      if (!typesByName.has(t.name)) typesByName.set(t.name, []);
+      typesByName.get(t.name).push(t);
+    }
 
     for (const [table] of byTable) {
-      const names = classNamesFor(table);
-      for (const t of types) {
-        if (!names.has(t.name)) continue;
+      for (const name of classNamesFor(table)) {
+        for (const t of typesByName.get(name) ?? []) {
         ctx.emit({
           role: 'consumer',
           key: `table:${table}`,
@@ -116,12 +130,13 @@ export default {
           line: t.start_line,
           detail: table,
         });
+        }
       }
     }
 
     for (const statement of ctx.db
       .prepare(
-        `SELECT s.id, s.file_id, s.start_byte, s.end_byte, f.path
+        `SELECT s.id, s.file_id, s.start_byte, s.end_byte, s.start_line, f.path
            FROM symbols s JOIN files f ON f.id = s.file_id
           WHERE s.kind = 'sql-statement'`,
       )
@@ -139,6 +154,7 @@ export default {
           key: `table:${table}`,
           symbolId: statement.id,
           fileId: statement.file_id,
+          line: statement.start_line,
           detail: table,
         });
       }

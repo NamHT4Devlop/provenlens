@@ -11,9 +11,14 @@
 const STATEMENT = /<\s*(select|insert|update|delete)\b([^>]*)>/gi;
 const ATTR = (name, text) => new RegExp(`\\b${name}\\s*=\\s*["']([^"']+)["']`, 'i').exec(text)?.[1];
 
-/** Line number of a character offset, 1-based. */
-function lineAt(content, index) {
-  return content.slice(0, index).split('\n').length;
+/**
+ * The file with its comments blanked out, offsets preserved. A statement
+ * inside `<!-- retired: ... -->` was indexed as live and wired to its mapper
+ * method; nothing MyBatis reads it. Blanking rather than cutting keeps every
+ * byte offset and line number where the file has them.
+ */
+function withoutComments(content) {
+  return content.replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, ' '));
 }
 
 export default {
@@ -27,17 +32,18 @@ export default {
     const namespaces = new Map(); // namespace -> [{ key, symbolId }]
 
     for (const file of ctx.files) {
-      const namespace = ATTR('namespace', /<\s*mapper\b[^>]*>/i.exec(file.content)?.[0] ?? '');
+      const content = withoutComments(file.content);
+      const namespace = ATTR('namespace', /<\s*mapper\b[^>]*>/i.exec(content)?.[0] ?? '');
       if (!namespace) continue; // not a MyBatis mapper
 
-      for (const match of file.content.matchAll(STATEMENT)) {
+      for (const match of content.matchAll(STATEMENT)) {
         const [tag, verb, attrs] = [match[0], match[1], match[2]];
         const id = ATTR('id', attrs);
         if (!id) continue;
 
         const start = match.index;
         const closing = new RegExp(`</\\s*${verb}\\s*>`, 'i');
-        const rest = file.content.slice(start);
+        const rest = content.slice(start);
         const endMatch = closing.exec(rest);
         const end = start + (endMatch ? endMatch.index + endMatch[0].length : tag.length);
 
@@ -51,14 +57,14 @@ export default {
           kind: 'sql-statement',
           containerFqn: namespace,
           signature: `<${verb.toLowerCase()} id="${id}">`,
-          startLine: lineAt(file.content, start),
-          endLine: lineAt(file.content, end),
+          startLine: file.lineAt(start),
+          endLine: file.lineAt(end),
           startByte: start,
           endByte: end,
           annotations: [verb.toLowerCase()],
         });
 
-        ctx.emit({ role: 'provider', key, symbolId, fileId: file.id, line: lineAt(file.content, start) });
+        ctx.emit({ role: 'provider', key, symbolId, fileId: file.id, line: file.lineAt(start) });
         if (!namespaces.has(namespace)) namespaces.set(namespace, []);
         namespaces.get(namespace).push(key);
       }

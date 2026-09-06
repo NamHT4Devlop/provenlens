@@ -17,6 +17,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { walkFiles } from '../project.js';
+import { lineIndex } from './text.js';
 import mybatis from './mybatis.js';
 import camel from './camel.js';
 import sqs from './sqs.js';
@@ -37,6 +38,21 @@ export const PLUGINS = [mybatis, camel, sqs, flyway, http, kafka, springevent, g
 export const BINDING_LANGS = ['xml', 'sql', 'graphql', 'proto'];
 
 export function runBindings(db, root) {
+  // One transaction for the whole pass. Each plugin's inserts used to commit
+  // one by one -- 27,000 endpoints, 18,000 edges and 9,000 symbols on one
+  // repository took 2.7 s that way and 0.6 s inside a transaction.
+  db.exec('BEGIN');
+  try {
+    const stats = collectBindings(db, root);
+    db.exec('COMMIT');
+    return stats;
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+function collectBindings(db, root) {
   db.exec("DELETE FROM edges WHERE via LIKE 'binding:%'");
   db.exec('DELETE FROM bindings');
   // Files a plugin owns are rebuilt from scratch each run, so a deleted XML
@@ -79,10 +95,13 @@ export function runBindings(db, root) {
     const id = Number(
       insertFile.run(rel, lang, '', null, content.split('\n').length, Date.now()).lastInsertRowid,
     );
-    extraFiles.set(rel, { path: rel, content, id });
+    extraFiles.set(rel, { path: rel, content, id, lineAt: lineIndex(content) });
   }
 
   const stats = {};
+  // Read once per run, not once per statement: the Flyway plugin re-read an
+  // 880 KB mapper ten thousand times, once for every statement inside it.
+  const sourceCache = new Map();
 
   for (const plugin of PLUGINS) {
     const emitted = [];
@@ -99,11 +118,22 @@ export function runBindings(db, root) {
               ${where ? `WHERE ${where}` : ''}`,
           )
           .all()
-          .map((r) => ({ ...r, strArgs: r.str_args ? JSON.parse(r.str_args) : [] }));
+          .map((r) => ({
+            ...r,
+            strArgs: r.str_args ? JSON.parse(r.str_args) : [],
+            // An annotation's argument list as written, attribute names and
+            // all; null for a call.
+            raw: r.kind === 'annotation' && r.arg_types ? (JSON.parse(r.arg_types)[0] ?? '') : null,
+          }));
       },
       /** Raw text of an already-indexed source file, for regex-based plugins. */
       readSource(relPath) {
-        return readFileSync(join(root, relPath), 'utf8');
+        let cached = sourceCache.get(relPath);
+        if (cached === undefined) {
+          cached = readFileSync(join(root, relPath), 'utf8');
+          sourceCache.set(relPath, cached);
+        }
+        return cached;
       },
       addSymbol(spec) {
         return Number(

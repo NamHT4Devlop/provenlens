@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+import "google/api/annotations.proto";
+
+service OrderService {
+  rpc GetOrder (GetOrderRequest) returns (Order) {
+    option (google.api.http) = {
+      get: "/v1/orders/{id}"
+    };
+  }
+  rpc ListOrders (ListOrdersRequest) returns (OrderList);
+  rpc CancelOrder (CancelOrderRequest) returns (Order);
+}
+
+message GetOrderRequest { string id = 1; }
+message ListOrdersRequest {}
+message CancelOrderRequest { string id = 1; }
+message Order { string id = 1; }
+message OrderList { repeated Order orders = 1; }

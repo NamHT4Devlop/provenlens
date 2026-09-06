@@ -231,8 +231,13 @@ export function projectStats(db) {
          JOIN files f ON f.id = s.file_id WHERE f.external = 0`,
     ).n,
     edges: one('SELECT COUNT(*) AS n FROM edges').n,
+    // An annotation rides the ref table so the binding plugins can read it,
+    // but it is not a call and the resolvers never try it. Counting it made
+    // every `@Value("...")` a linked call: with four annotations and four
+    // library calls, `status` said half the calls were linked and none were.
     refs: one(
-      'SELECT COUNT(*) AS n FROM refs r JOIN files f ON f.id = r.file_id WHERE f.external = 0',
+      `SELECT COUNT(*) AS n FROM refs r JOIN files f ON f.id = r.file_id
+        WHERE f.external = 0 AND r.kind != 'annotation'`,
     ).n,
     unresolved: one(
       `SELECT COUNT(*) AS n FROM unresolved u JOIN refs r ON r.id = u.ref_id

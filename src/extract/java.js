@@ -67,6 +67,11 @@ function firstOfType(node, type) {
   return namedChildrenOfType(node, type)[0] ?? null;
 }
 
+/** Spring's route annotations, which mean something even with no argument. */
+const ROUTE_ANNOTATIONS = new Set([
+  'RequestMapping', 'GetMapping', 'PostMapping', 'PutMapping', 'DeleteMapping', 'PatchMapping',
+]);
+
 /**
  * Collects `@Foo` / `@Foo(...)` names from a `modifiers` node.
  * `withArgs` also returns the string literals each annotation was given, which
@@ -95,9 +100,21 @@ function readModifiers(node, src) {
         if (/\bchain\s*=\s*true/.test(raw)) annotations.push('Accessors.chain');
         if (/\bfluent\s*=\s*true/.test(raw)) annotations.push('Accessors.fluent');
       }
-      const strings = [...text(c, src).matchAll(/"([^"\\]*(?:\\.[^"\\]*)*)"/g)].map((m) => m[1]);
-      if (strings.length) {
-        annotationArgs.push({ name, strings, line: c.startPosition.row + 1 });
+      const raw = text(c, src);
+      const strings = [...raw.matchAll(/"([^"\\]*(?:\\.[^"\\]*)*)"/g)].map((m) => m[1]);
+      // The argument text travels too: `str_args` keeps the values and drops
+      // the attribute names, and `@GetMapping(produces = "application/json",
+      // value = "/list")` cannot be read without them. A route annotation is
+      // kept even with no argument at all -- `@PostMapping` alone serves the
+      // class prefix, and dropping it dropped the route.
+      if (strings.length || ROUTE_ANNOTATIONS.has(name)) {
+        const open = raw.indexOf('(');
+        annotationArgs.push({
+          name,
+          strings,
+          raw: open === -1 ? '' : raw.slice(open + 1, raw.lastIndexOf(')')),
+          line: c.startPosition.row + 1,
+        });
       }
     } else if (!c.isNamed) {
       modifiers.push(text(c, src));
@@ -295,7 +312,7 @@ export function extractJava(tree, src) {
       const simpleName = text(nameNode, src);
       const nextStack = [...typeStack, simpleName];
       const fqn = [pkg, ...nextStack].filter(Boolean).join('.');
-      const { modifiers, annotations } = readModifiers(node, src);
+      const { modifiers, annotations, annotationArgs } = readModifiers(node, src);
       // The type variables this declaration introduces travel with it.
       modifiers.push(...readTypeParams(node, src));
 
@@ -312,6 +329,24 @@ export function extractJava(tree, src) {
         annotations,
         ...pos(node),
       });
+
+      // A class-level `@RequestMapping("/api/orders")` is the prefix of every
+      // route the class declares. Methods have always sent their annotations
+      // down the ref pipeline; types discarded theirs, so the prefix was never
+      // read and every Spring route in every repository was keyed without it.
+      for (const ann of annotationArgs) {
+        refs.push({
+          fromTmpId: id,
+          name: `@${ann.name}`,
+          receiver: null,
+          receiverRefTmp: null,
+          arity: ann.strings.length,
+          str_args: ann.strings,
+          arg_types: [ann.raw],
+          line: ann.line,
+          kind: 'annotation',
+        });
+      }
 
       // A record's header params are also fields -- and each one compiles to
       // an accessor of the same name. `Request(String name)` gives you
@@ -395,6 +430,9 @@ export function extractJava(tree, src) {
           receiverRefTmp: null,
           arity: ann.strings.length,
           str_args: ann.strings,
+          // For an annotation, the one "argument" is its whole argument list
+          // as written, attribute names included.
+          arg_types: [ann.raw],
           line: ann.line,
           kind: 'annotation',
         });

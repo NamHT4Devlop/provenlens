@@ -76,7 +76,11 @@ export function explainSymbol(db, symbolId) {
   });
 
   const callers = callersOf(db, symbolId).map(link);
-  const callees = calleesOf(db, symbolId).map(link);
+  // An edge's line is where the call was written, which is inside THIS symbol.
+  // For a callee the file shown is the callee's, so the line shown must be
+  // the callee's declaration: a MyBatis statement was being placed at the
+  // Java method's line inside the XML.
+  const callees = calleesOf(db, symbolId).map((row) => ({ ...link(row), line: row.start_line }));
 
   // Calls written inside this symbol that never became an edge. They are the
   // other half of the account: a symbol with six proven callees and forty
