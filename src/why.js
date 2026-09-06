@@ -49,6 +49,9 @@ function outcomeOf(row) {
     if (row.reason === 'external:not-reachable-from-scope') {
       return { tier: 'proof', label: 'proven to leave: nothing in scope here declares it' };
     }
+    if (row.reason === 'external:receiver-not-declared') {
+      return { tier: 'proof', label: 'proven to leave: the receiver is declared nowhere here' };
+    }
     if (row.owner) return { tier: 'proof', label: `proven to leave: it belongs to ${row.owner}` };
     return { tier: 'proof', label: 'proven to leave this repository' };
   }
@@ -76,7 +79,11 @@ export function explainSymbol(db, symbolId) {
   });
 
   const callers = callersOf(db, symbolId).map(link);
-  const callees = calleesOf(db, symbolId).map(link);
+  // An edge's line is where the call was written, which is inside THIS symbol.
+  // For a callee the file shown is the callee's, so the line shown must be
+  // the callee's declaration: a MyBatis statement was being placed at the
+  // Java method's line inside the XML.
+  const callees = calleesOf(db, symbolId).map((row) => ({ ...link(row), line: row.start_line }));
 
   // Calls written inside this symbol that never became an edge. They are the
   // other half of the account: a symbol with six proven callees and forty

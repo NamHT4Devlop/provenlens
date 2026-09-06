@@ -112,7 +112,7 @@ export function readTsconfigScopes(root, maxDepth = 2) {
   const scopes = [];
   const visit = (dir, depth) => {
     const config = readTsconfigPaths(dir);
-    if (Object.keys(config.paths).length) {
+    if (Object.keys(config.paths).length || config.baseUrl !== '.') {
       const prefix = relative(root, dir).replace(/\\/g, '/');
       scopes.push({ ...config, dir: prefix });
     }
@@ -148,7 +148,10 @@ export function readWorkspacePackages(root, maxDepth = 3) {
       const meta = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'));
       if (meta.name) {
         const rel = relative(root, dir).replace(/\\/g, '/');
-        const entry = meta.types ?? meta.typings ?? meta.module ?? meta.main ?? null;
+        // `exports` is what a modern package resolves through; `main` may be
+        // absent when it is present, and the package then had no entry.
+        const entry =
+          meta.types ?? meta.typings ?? meta.module ?? meta.main ?? exportEntry(meta.exports) ?? null;
         found.push({ name: meta.name, dir: rel, entry });
       }
     } catch {
@@ -172,25 +175,77 @@ export function readWorkspacePackages(root, maxDepth = 3) {
   return found.sort((a, b) => b.name.length - a.name.length);
 }
 
+/** The file `exports['.']` names, through its conditions, or null. */
+function exportEntry(exports) {
+  if (!exports) return null;
+  if (typeof exports === 'string') return exports;
+  const dot = exports['.'] ?? exports;
+  if (typeof dot === 'string') return dot;
+  if (dot && typeof dot === 'object') {
+    for (const key of ['types', 'import', 'default', 'require', 'node']) {
+      const value = dot[key];
+      if (typeof value === 'string') return value;
+      if (value && typeof value === 'object') {
+        const inner = exportEntry({ '.': value });
+        if (inner) return inner;
+      }
+    }
+  }
+  return null;
+}
+
 /** Reads `compilerOptions.paths` so alias imports resolve like the compiler does. */
 export function readTsconfigPaths(root) {
   for (const name of ['tsconfig.json', 'jsconfig.json']) {
-    try {
-      const raw = readFileSync(join(root, name), 'utf8');
-      // Strip comments and trailing commas: tsconfig is JSONC in practice.
-      const cleaned = raw
-        .replace(/\/\*[\s\S]*?\*\//g, '')
-        .replace(/(^|[^:])\/\/.*$/gm, '$1')
-        .replace(/,(\s*[}\]])/g, '$1');
-      const config = JSON.parse(cleaned);
-      const opts = config.compilerOptions ?? {};
-      if (!opts.paths) continue;
-      return { baseUrl: opts.baseUrl ?? '.', paths: opts.paths };
-    } catch {
-      /* missing or unparseable config just means no aliases */
-    }
+    const opts = compilerOptionsOf(join(root, name), new Set());
+    if (!opts) continue;
+    // A `baseUrl` alone -- no `paths` -- still resolves `import 'domain/foo'`
+    // to `<baseUrl>/domain/foo`, and used to be skipped as if it said nothing.
+    if (!opts.paths && !opts.baseUrl) continue;
+    return { baseUrl: opts.baseUrl ?? '.', paths: opts.paths ?? {} };
   }
   return { baseUrl: '.', paths: {} };
+}
+
+/**
+ * The compiler options one tsconfig ends up with, its `extends` chain
+ * included: a workspace keeps `@lib/*` in `tsconfig.base.json` and every
+ * package's tsconfig says only `"extends": "../../tsconfig.base.json"`.
+ * Read alone, the package's file declared no aliases at all.
+ */
+function compilerOptionsOf(file, seen) {
+  if (seen.has(file)) return null;
+  seen.add(file);
+  let raw;
+  try {
+    raw = readFileSync(file, 'utf8');
+  } catch {
+    return null;
+  }
+  let config;
+  try {
+    // Strip comments and trailing commas: tsconfig is JSONC in practice.
+    config = JSON.parse(
+      raw
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/(^|[^:])\/\/.*$/gm, '$1')
+        .replace(/,(\s*[}\]])/g, '$1'),
+    );
+  } catch {
+    return null;
+  }
+  const own = config.compilerOptions ?? {};
+  const bases = Array.isArray(config.extends) ? config.extends : config.extends ? [config.extends] : [];
+  let merged = {};
+  for (const base of bases) {
+    // A package name (`@tsconfig/node20`) lives in node_modules and declares
+    // no paths of this repository's; only a relative file is followed.
+    if (typeof base !== 'string' || !base.startsWith('.')) continue;
+    const target = base.endsWith('.json') ? base : `${base}.json`;
+    const inherited = compilerOptionsOf(join(dirname(file), target), seen);
+    if (inherited) merged = { ...merged, ...inherited };
+  }
+  return { ...merged, ...own };
 }
 
 export function resolveTypeScript(db, root) {
@@ -253,6 +308,14 @@ export function resolveTypeScript(db, root) {
       }
     }
 
+    // `baseUrl` without `paths`: a bare specifier is relative to it.
+    for (const scope of ordered) {
+      if (scope.baseUrl === '.' && !Object.keys(scope.paths).length) continue;
+      if (scope.dir && !fromModule.startsWith(scope.dir)) continue;
+      const hit = probe(normalize(join(scope.dir, scope.baseUrl, specifier)).replace(/\\/g, '/'));
+      if (hit) return hit;
+    }
+
     // A name this repository publishes is this repository, not a dependency.
     for (const pkg of workspaces) {
       if (specifier !== pkg.name && !specifier.startsWith(`${pkg.name}/`)) continue;
@@ -301,7 +364,10 @@ export function resolveTypeScript(db, root) {
   }
 
   const symbolsByModule = new Map(); // module -> [top-level symbol rows]
+  const moduleIndex = new Map(); // module -> Map name -> [rows], the same rows by name
   const membersByContainer = new Map();
+  /** Functions declared inside another symbol, by the fqn of that symbol. */
+  const nestedFunctions = new Map(); // container fqn -> Map name -> row
   const allSymbols = db
     .prepare(
       `SELECT s.id, s.name, s.kind, s.arity, s.fqn, s.container_fqn, s.type_name, s.type_args,
@@ -321,11 +387,26 @@ export function resolveTypeScript(db, root) {
     ) {
       if (!symbolsByModule.has(row.module)) symbolsByModule.set(row.module, []);
       symbolsByModule.get(row.module).push(row);
+      if (!moduleIndex.has(row.module)) moduleIndex.set(row.module, new Map());
+      const byName = moduleIndex.get(row.module);
+      if (!byName.has(row.name)) byName.set(row.name, []);
+      byName.get(row.name).push(row);
+    } else if (row.kind === 'function' && row.container_fqn) {
+      if (!nestedFunctions.has(row.container_fqn)) nestedFunctions.set(row.container_fqn, new Map());
+      nestedFunctions.get(row.container_fqn).set(row.name, row);
     }
     if (['method', 'constructor', 'field'].includes(row.kind) && row.container_fqn) {
       if (!membersByContainer.has(row.container_fqn)) membersByContainer.set(row.container_fqn, []);
       membersByContainer.get(row.container_fqn).push(row);
     }
+  }
+  /** The module-level rows of `module` named `name` -- a lookup, not a scan of the module. */
+  const inModule = (module, name) => moduleIndex.get(module)?.get(name) ?? [];
+
+  const typesByName = new Map(); // simple name -> [type rows]
+  for (const t of types.values()) {
+    if (!typesByName.has(t.name)) typesByName.set(t.name, []);
+    typesByName.get(t.name).push(t);
   }
 
   // Both of these answer "does THIS repository declare that name?", which is
@@ -340,11 +421,24 @@ export function resolveTypeScript(db, root) {
   }
 
   /** Follows re-exports until it finds where a name is actually declared. */
+  const exportMemo = new Map();
   function resolveExport(module, name, seen = new Set()) {
     if (!module || seen.has(`${module}|${name}`)) return null;
+    // Memoised only for a fresh search: a barrel of N re-exports asked by N
+    // importers walked the same chain N x N times. A result reached inside a
+    // cycle may be null only because the cycle was cut, so it is not kept.
+    const top = seen.size === 0;
+    const key = `${module}|${name}`;
+    if (top && exportMemo.has(key)) return exportMemo.get(key);
+    const found = resolveExportUncached(module, name, seen);
+    if (top) exportMemo.set(key, found);
+    return found;
+  }
+
+  function resolveExportUncached(module, name, seen) {
     seen.add(`${module}|${name}`);
 
-    const local = (symbolsByModule.get(module) ?? []).find((s) => s.name === name);
+    const local = inModule(module, name)[0];
     if (local) return local;
 
     // `require('./view')` asks the module for its whole value, and CommonJS
@@ -456,9 +550,7 @@ export function resolveTypeScript(db, root) {
     // resolved them where they were written.
     if (types.has(name)) return types.get(name);
 
-    const local = (symbolsByModule.get(module) ?? []).find(
-      (s) => s.name === name && ['class', 'interface'].includes(s.kind),
-    );
+    const local = inModule(module, name).find((s) => ['class', 'interface'].includes(s.kind));
     if (local) return types.get(local.fqn) ?? null;
 
     for (const imp of importsByFile.get(fileId) ?? []) {
@@ -481,12 +573,14 @@ export function resolveTypeScript(db, root) {
     // last resort -- they exist to prove a call leaves the project, never to
     // outvote a type the project declares, and letting them into this vote
     // turned resolutions into nothing by making the match ambiguous.
-    const mine = [...types.values()].filter((t) => t.name === name && !t.isExternal);
+    // By name, from an index: this ran for every unresolved name -- `string`,
+    // `JSON`, `Promise` -- and each run scanned every type in the repository
+    // twice, which is what made the resolver quadratic in it.
+    const named = typesByName.get(name) ?? [];
+    const mine = named.filter((t) => !t.isExternal);
     if (mine.length === 1) return mine[0];
     if (mine.length > 1) return null;
-
-    const matches = [...types.values()].filter((t) => t.name === name);
-    if (matches.length === 1) return matches[0];
+    if (named.length === 1) return named[0];
 
     // Before classes, a constructor in JavaScript was a function, and plenty
     // of Node code still is: `function User(...)` then `new User(...)`. Such a
@@ -506,9 +600,7 @@ export function resolveTypeScript(db, root) {
       supertypes: [],
     });
 
-    const here = (symbolsByModule.get(module) ?? []).find(
-      (s) => s.name === name && s.kind === 'function',
-    );
+    const here = inModule(module, name).find((s) => s.kind === 'function');
     if (here) return asType(here);
 
     for (const imp of importsByFile.get(fileId) ?? []) {
@@ -527,9 +619,7 @@ export function resolveTypeScript(db, root) {
    * which is what `new f()` makes, whereas `typeof f` wants what `f` returns.
    */
   function resolveValueName(name, fileId, module) {
-    const here = (symbolsByModule.get(module) ?? []).find(
-      (s) => s.name === name && ['function', 'field'].includes(s.kind),
-    );
+    const here = inModule(module, name).find((s) => ['function', 'field'].includes(s.kind));
     if (here) return here;
 
     for (const imp of importsByFile.get(fileId) ?? []) {
@@ -618,6 +708,8 @@ export function resolveTypeScript(db, root) {
   }
 
   const symbolById = new Map(allSymbols.map((s) => [s.id, s]));
+  const symbolByFqn = new Map();
+  for (const s of allSymbols) if (s.fqn && !symbolByFqn.has(s.fqn)) symbolByFqn.set(s.fqn, s);
   const fileById = new Map(files.map((f) => [f.id, f]));
 
   // A function sees the module's variables. Without this, every module-level
@@ -689,11 +781,65 @@ export function resolveTypeScript(db, root) {
     if (chainMemo.has(ref.id)) return chainMemo.get(ref.id);
     chainMemo.set(ref.id, null);
 
+    // `new X().m()`: the construction names its own type, and nothing needs
+    // resolving to know it. Every such chain used to end as complex.
+    if (ref.kind === 'new') {
+      const constructed = { type_name: ref.name, file_id: ref.file_id, module: moduleOf(ref.file_id) };
+      chainMemo.set(ref.id, constructed);
+      return constructed;
+    }
+
     const fromSymbol = symbolById.get(ref.from_symbol_id);
+    // A bare call's result is what the function it names returns, not a
+    // member of the enclosing class.
+    if (!ref.receiver) {
+      const callee = bareCallee(ref, fromSymbol);
+      chainMemo.set(ref.id, callee);
+      return callee;
+    }
     const recv = receiverType(ref, fromSymbol, depth + 1);
     const result = recv?.fqn ? findMember(recv, ref.name) : null;
     chainMemo.set(ref.id, result);
     return result;
+  }
+
+  /**
+   * The function a bare call names: one declared in an enclosing scope, then
+   * the module's own, then an import. `const t = make(); t.a()` used to type
+   * `t` as a member of the enclosing class, because a call with no receiver
+   * was handed the class as its receiver.
+   */
+  function bareCallee(ref, fromSymbol) {
+    const module = moduleOf(ref.file_id);
+    // `const load = () => ...` declared in this function or one around it.
+    for (let scope = fromSymbol; scope; scope = symbolByFqn.get(scope.container_fqn)) {
+      const nested = nestedFunctions.get(scope.fqn)?.get(ref.name);
+      if (nested) return nested;
+      if (scope.kind === 'file') break;
+    }
+    const localFn = inModule(module, ref.name).find((s) => s.kind === 'function');
+    if (localFn) return localFn;
+    for (const imp of importsByFile.get(ref.file_id) ?? []) {
+      if (imp.kind !== 'import' || imp.simple !== ref.name) continue;
+      const mod = resolveModule(module, imp.fqn);
+      const target = mod ? resolveExport(mod, imp.orig ?? ref.name) : null;
+      if (target) return target;
+    }
+    return null;
+  }
+
+  /**
+   * The module `name` denotes in `module` as a namespace: `export * as ns
+   * from './a'` there makes `ns` a name for module a.
+   */
+  function namespaceExport(module, name) {
+    const file = moduleToFile.get(module);
+    for (const imp of file ? (importsByFile.get(file.id) ?? []) : []) {
+      if (imp.kind === 'reexport' && imp.simple === name && imp.orig === '*') {
+        return resolveModule(module, imp.fqn);
+      }
+    }
+    return null;
   }
 
   function receiverType(ref, fromSymbol, depth = 0) {
@@ -707,6 +853,12 @@ export function resolveTypeScript(db, root) {
     const raw = (ref.receiver ?? '').replace(/!(?=\.|$)/g, '').replace(/\?\./g, '.');
 
     if (!raw || raw === 'this') return enclosingType;
+
+    // `super.describe()` is the method one class up.
+    if (raw === 'super') {
+      const parent = enclosingType ? typeChain(enclosingType)[1] : null;
+      return parent ?? (enclosingType ? { external: externalAncestor(enclosingType) } : { complex: true });
+    }
 
     // `svc.load().render()` -- carry the inner call's return type forward.
     if (ref.receiver_ref_id != null) {
@@ -841,7 +993,7 @@ export function resolveTypeScript(db, root) {
     // type carries the name. A module cannot reach another module's exports
     // without importing them, so the identifier is ambient: a host global like
     // `console`, or one a test runner injects such as `vi` or `jest`.
-    if (!(symbolsByModule.get(module) ?? []).some((sym) => sym.name === raw)) {
+    if (!inModule(module, raw).length) {
       return { ambient: true };
     }
 
@@ -900,6 +1052,53 @@ export function resolveTypeScript(db, root) {
     });
   }
 
+  // `for (const item of items)` holds one element of `items`; `({ store }:
+  // Props)` holds Props's `store`. Both point at a declaration this index
+  // already has, and neither was read: the names were proven ambient.
+  const derivedLocals = db
+    .prepare(
+      `SELECT l.id, l.file_id, l.scope_symbol_id, l.name, l.init_kind, l.init_path
+         FROM locals l JOIN files f ON f.id = l.file_id
+        WHERE f.lang IN (${LANG_LIST}) AND l.type_name IS NULL
+            AND l.init_kind IN ('element-of', 'member-of')`,
+    )
+    .all();
+  const updateLocalArgs = db.prepare('UPDATE locals SET type_name = ?, type_args = ? WHERE id = ?');
+  for (const local of derivedLocals) {
+    if (!local.init_path || local.scope_symbol_id == null) continue;
+    const scope = symbolById.get(local.scope_symbol_id);
+    const module = moduleOf(local.file_id);
+    let held = null;
+    // The element of what the name holds, for a lambda over it later.
+    let args = null;
+    if (local.init_kind === 'element-of') {
+      // The element of what the loop iterates: a local's declared element,
+      // or a field's.
+      const probe = { file_id: local.file_id, from_symbol_id: local.scope_symbol_id, receiver: local.init_path, receiver_ref_id: null };
+      const source = lookupLocal(probe, local.init_path);
+      if (source.found && source.args) held = source.args;
+      else if (!source.found) {
+        const owner = receiverType({ ...probe, receiver: local.init_path.replace(/\.[^.]+$/, '') }, scope);
+        const last = local.init_path.split('.').pop();
+        const field = owner?.fqn && local.init_path.includes('.') ? findMember(owner, last) : null;
+        if (field?.type_args) held = field.type_args;
+      }
+    } else {
+      const at = local.init_path.lastIndexOf('.');
+      const holder = resolveTypeName(local.init_path.slice(0, at), local.file_id, module);
+      const member = holder?.fqn ? findMember(holder, local.init_path.slice(at + 1)) : null;
+      if (member?.type_name) {
+        held = resolveTypeName(member.type_name, member.file_id, member.module)?.fqn ?? member.type_name;
+        args = member.type_args ?? null;
+      }
+    }
+    if (!held) continue;
+    const resolved = resolveTypeName(held, local.file_id, module)?.fqn ?? held;
+    updateLocalArgs.run(resolved, args, local.id);
+    if (!localsByScope.has(local.scope_symbol_id)) localsByScope.set(local.scope_symbol_id, new Map());
+    localsByScope.get(local.scope_symbol_id).set(local.name, { type: resolved, args, ownerRef: null });
+  }
+
   const pendingLocals = db
     .prepare(
       `SELECT l.id, l.scope_symbol_id, l.name, l.line, l.init_kind, l.owner_ref_id
@@ -913,10 +1112,17 @@ export function resolveTypeScript(db, root) {
     // matching: a chain spanning several lines used to find nothing.
     const ref = refById.get(local.owner_ref_id);
     if (!ref) continue;
-    const type = receiverType(ref, symbolById.get(ref.from_symbol_id));
-    // receiverType may report a library or an untypeable chain instead.
-    if (!type?.fqn) continue;
-    const target = findMember(type, ref.name);
+    let target;
+    if (!ref.receiver) {
+      // `const t = make()` holds what `make` returns -- the function, not a
+      // member of the class the call happens to be written in.
+      target = bareCallee(ref, symbolById.get(ref.from_symbol_id));
+    } else {
+      const type = receiverType(ref, symbolById.get(ref.from_symbol_id));
+      // receiverType may report a library or an untypeable chain instead.
+      if (!type?.fqn) continue;
+      target = findMember(type, ref.name);
+    }
     if (!target?.type_name) continue;
     // `await f()` on a `Promise<T>` holds the T, not the promise.
     const bare = local.init_kind === 'await' && target.type_args ? target.type_args : target.type_name;
@@ -1081,21 +1287,11 @@ export function resolveTypeScript(db, root) {
       continue;
     }
 
-    // A bare call is either a local function or an imported one.
+    // A bare call is a function in an enclosing scope, a local one, or an
+    // imported one.
     if (!ref.receiver) {
       const module = file?.pkg;
-      const localFn = (symbolsByModule.get(module) ?? []).find(
-        (s) => s.name === ref.name && s.kind === 'function',
-      );
-      let target = localFn;
-      if (!target) {
-        for (const imp of importsByFile.get(ref.file_id) ?? []) {
-          if (imp.kind !== 'import' || imp.simple !== ref.name) continue;
-          const mod = resolveModule(module, imp.fqn);
-          target = mod ? resolveExport(mod, imp.orig ?? ref.name) : null;
-          if (target) break;
-        }
-      }
+      const target = bareCallee(ref, fromSymbol);
       if (target) {
         insertEdge.run(ref.from_symbol_id, target.id, 'calls', 1.0, 'direct', ref.line);
         stats.direct++;
@@ -1120,9 +1316,13 @@ export function resolveTypeScript(db, root) {
       const module = file?.pkg;
       let viaNamespace = null;
       for (const imp of importsByFile.get(ref.file_id) ?? []) {
-        if (imp.kind !== 'import' || !imp.is_wildcard || imp.simple !== ref.receiver) continue;
+        if (imp.kind !== 'import' || imp.simple !== ref.receiver) continue;
         const mod = resolveModule(module, imp.fqn);
-        viaNamespace = mod ? resolveExport(mod, ref.name) : null;
+        if (!mod) continue;
+        // `import * as fmt` binds the module; `import { ns }` where the
+        // barrel wrote `export * as ns from './a'` binds module a.
+        const namespace = imp.is_wildcard ? mod : namespaceExport(mod, imp.orig ?? ref.receiver);
+        viaNamespace = namespace ? resolveExport(namespace, ref.name) : null;
         if (viaNamespace) break;
       }
       if (viaNamespace) {

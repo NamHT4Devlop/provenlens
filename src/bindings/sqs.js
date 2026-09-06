@@ -5,7 +5,18 @@
  * leaves the rest visible as unmatched endpoints.
  */
 
+import { attributeStrings, lineIndex } from './text.js';
+
 const JAVA_LISTENERS = new Set(['@SqsListener', '@SqsHandler', '@JmsListener', '@RabbitListener']);
+/** The attributes that name a queue; `factory`, `id` and `containerFactory` do not. */
+const QUEUE_ATTRIBUTES = ['value', 'queueNames', 'queues', 'destination'];
+/**
+ * `send` is the most common method name in a Spring service, and every
+ * messaging template has one: `kafkaTemplate.send("orders", ...)` was wired
+ * to an `@SqsListener("orders")` two files over, and `mailSender.send(...)`
+ * became a queue. Only a receiver that looks like a queue client sends here.
+ */
+const QUEUE_RECEIVER = /sqs|queue|jms|rabbit|amqp|messag/i;
 // NestJS (@ssut/nestjs-sqs) spells the same contract as a decorator.
 const TS_LISTENERS = new Set(['@SqsMessageHandler', '@SqsConsumerEventHandler']);
 const TS_SENDERS = new Set(['sendMessage', 'sendMessageBatch']);
@@ -37,7 +48,8 @@ export default {
       if (ref.from_symbol_id == null) continue;
 
       if (ref.kind === 'annotation' && JAVA_LISTENERS.has(ref.name)) {
-        for (const arg of ref.strArgs) {
+        const named = ref.raw != null ? attributeStrings(ref.raw, QUEUE_ATTRIBUTES) : ref.strArgs;
+        for (const arg of named) {
           const name = queueName(arg);
           if (!name) continue;
           ctx.emit({
@@ -53,6 +65,8 @@ export default {
       }
 
       if (JAVA_SENDERS.has(ref.name)) {
+        const generic = ref.name === 'send' || ref.name === 'convertAndSend';
+        if (generic && !QUEUE_RECEIVER.test(ref.receiver ?? '')) continue;
         const name = queueName(ref.strArgs?.[0]);
         if (!name) continue;
         ctx.emit({
@@ -151,13 +165,17 @@ export default {
         .get(file.id);
       if (!classSymbol) continue;
 
-      for (const [, name] of content.matchAll(SHORYUKEN_QUEUE)) {
-        ctx.emit({ role: 'provider', key: name, symbolId: classSymbol.id, fileId: file.id, detail: name });
+      // With a line: an edge keyed on a NULL line never matches another, so
+      // two sends to one queue from one class used to insert the same edge
+      // twice, and the listener read as having two callers.
+      const lineAt = lineIndex(content);
+      for (const m of content.matchAll(SHORYUKEN_QUEUE)) {
+        ctx.emit({ role: 'provider', key: m[1], symbolId: classSymbol.id, fileId: file.id, line: lineAt(m.index), detail: m[1] });
       }
-      for (const [, name] of content.matchAll(RUBY_SEND)) {
-        const clean = queueName(name);
+      for (const m of content.matchAll(RUBY_SEND)) {
+        const clean = queueName(m[1]);
         if (clean) {
-          ctx.emit({ role: 'consumer', key: clean, symbolId: classSymbol.id, fileId: file.id, detail: clean });
+          ctx.emit({ role: 'consumer', key: clean, symbolId: classSymbol.id, fileId: file.id, line: lineAt(m.index), detail: clean });
         }
       }
     }

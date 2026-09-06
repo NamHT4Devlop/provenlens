@@ -41,7 +41,11 @@ export function serverEntry() {
   // run a `.js` file, so the interpreter has to be named -- and it is named as the bare word
   // `node`, resolved from PATH when the host starts the server, for the same reason the
   // shebang says `env node` rather than a path: nothing is pinned to today's install.
-  if (process.platform === 'win32') return { command: 'node', args: [BIN, 'mcp'] };
+  //
+  // `--no-warnings` rides along there for the same reason the shebang carries
+  // it: `node:sqlite` announces itself as experimental on every start, and on
+  // a hook that text landed in front of Claude, above the message.
+  if (process.platform === 'win32') return { command: 'node', args: ['--no-warnings', BIN, 'mcp'] };
   return { command: BIN, args: ['mcp'] };
 }
 
@@ -111,7 +115,8 @@ export function applyInstall(targetName) {
  */
 export function hookEntries() {
   const entry = serverEntry();
-  const command = entry.command === 'node' ? `node "${entry.args[0]}" hook` : `"${entry.command}" hook`;
+  const command =
+    entry.command === 'node' ? `node --no-warnings "${entry.args[1]}" hook` : `"${entry.command}" hook`;
   return {
     // After every file edit: what it reaches and which tests cover it, shown
     // to Claude via exit 2 + stderr -- the documented channel for PostToolUse.

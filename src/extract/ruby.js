@@ -114,6 +114,21 @@ function keywordArg(args, key) {
 const COLLECTION_MACROS = new Set(['has_many', 'has_and_belongs_to_many']);
 const ATTR_MACROS = new Set(['attr_reader', 'attr_writer', 'attr_accessor']);
 
+/**
+ * Macros whose symbol arguments name methods Rails will call: `before_action
+ * :load_thing` is a call to `load_thing`, made by the framework on the
+ * class's behalf. Recorded as a call from the class so the method has a
+ * caller and `dead` stops listing it.
+ */
+const CALLBACK_MACROS = new Set([
+  'before_action', 'after_action', 'around_action', 'before_filter', 'after_filter', 'around_filter',
+  'before_validation', 'after_validation', 'validate', 'before_save', 'after_save', 'around_save',
+  'before_create', 'after_create', 'around_create', 'before_update', 'after_update', 'around_update',
+  'before_destroy', 'after_destroy', 'around_destroy', 'after_commit', 'after_rollback',
+  'after_initialize', 'after_find', 'after_touch', 'before_enqueue', 'after_enqueue',
+  'before_perform', 'after_perform', 'around_perform',
+]);
+
 function text(node, src) {
   return src.slice(node.startIndex, node.endIndex);
 }
@@ -252,7 +267,7 @@ export function extractRuby(tree, src, ctx = {}) {
     }
 
     if (macro === 'scope' && first) {
-      addSymbol({
+      return addSymbol({
         name: first,
         fqn: `${containerFqn}.${first}`,
         kind: 'class_method',
@@ -266,10 +281,37 @@ export function extractRuby(tree, src, ctx = {}) {
         generated: true,
         ...pos(callNode),
       });
-      return true;
     }
 
     return false;
+  }
+
+  /** `alias fresh old`: a method `fresh` that calls `old`. */
+  function aliasMethod(fresh, old, nest, node) {
+    const containerFqn = nest.join('::');
+    const id = addSymbol({
+      name: fresh,
+      fqn: `${containerFqn}#${fresh}`,
+      kind: 'method',
+      container_fqn: containerFqn,
+      type_name: null,
+      signature: `${fresh}  # alias of ${old}`,
+      arity: 0,
+      supertypes: [],
+      modifiers: ['generated'],
+      annotations: ['alias', `of:${old}`],
+      generated: true,
+      ...pos(node),
+    });
+    refs.push({
+      fromTmpId: id,
+      name: old,
+      receiver: null,
+      arity: 0,
+      str_args: null,
+      line: node.startPosition.row + 1,
+      kind: 'call',
+    });
   }
 
   // Created before the walk so RSpec bindings, which live at file level, have
@@ -334,8 +376,14 @@ export function extractRuby(tree, src, ctx = {}) {
    * Other, which is simply wrong, and a wrong type is worse than none.
    */
   function returnedTypeOf(bodyNode) {
-    if (!bodyNode || bodyNode.type !== 'body_statement' || !bodyNode.namedChildCount) return null;
-    let last = bodyNode.namedChild(bodyNode.namedChildCount - 1);
+    if (!bodyNode) return null;
+    // `def logger = LogAdapter.new(self)` -- an endless method's body is the
+    // expression itself, not a statement list.
+    let last = bodyNode;
+    if (bodyNode.type === 'body_statement') {
+      if (!bodyNode.namedChildCount) return null;
+      last = bodyNode.namedChild(bodyNode.namedChildCount - 1);
+    }
     if (!last) return null;
     // `@logger ||= X.new(...)` returns what it assigns.
     if (last.type === 'operator_assignment' || last.type === 'assignment') {
@@ -348,23 +396,62 @@ export function extractRuby(tree, src, ctx = {}) {
     return text(recv, src);
   }
 
-  function walk(node, nest, scopeId, inClassBody, classScopeId) {
+  /** Names bound in each scope, so a bare identifier that reads one is not a call. */
+  const boundNames = new Map(); // scopeTmpId -> Set of names
+  const bind = (scopeTmpId, name, extra) => {
+    if (scopeTmpId == null) return;
+    locals.push({ scopeTmpId, name, type_name: null, ...extra });
+    if (!boundNames.has(scopeTmpId)) boundNames.set(scopeTmpId, new Set());
+    boundNames.get(scopeTmpId).add(name);
+  };
+
+  /** `super`, with or without arguments: the method of this name one ancestor up. */
+  const superCall = (scopeId, node, arity) => {
+    const owner = symbols[scopeId];
+    if (!owner || !['method', 'class_method'].includes(owner.kind)) return;
+    refs.push({
+      fromTmpId: scopeId,
+      name: owner.name,
+      receiver: 'super',
+      arity,
+      line: node.startPosition.row + 1,
+      kind: 'call',
+    });
+  };
+
+  /** A class or module body, statement by statement, as class-body context. */
+  const walkClassBody = (body, nest, scopeId, singleton) => {
+    if (!body) return;
+    for (let i = 0; i < body.namedChildCount; i++) {
+      const c = body.namedChild(i);
+      if (c) walk(c, nest, scopeId, true, scopeId, singleton);
+    }
+  };
+
+  function walk(node, nest, scopeId, inClassBody, classScopeId, singleton = false) {
     // `super` with no arguments and no parentheses is a call -- to the method
     // of the same name, one step up the ancestor chain. tree-sitter gives it
     // its own node type rather than a `call`, so it was invisible: 467 of
     // them in discourse, every one a link the graph simply did not have.
     if (node.type === 'super' && scopeId != null) {
-      const owner = symbols[scopeId];
-      if (owner && ['method', 'class_method'].includes(owner.kind)) {
-        refs.push({
-          fromTmpId: scopeId,
-          name: owner.name,
-          receiver: 'super',
-          arity: null,
-          line: node.startPosition.row + 1,
-          kind: 'call',
-        });
-      }
+      superCall(scopeId, node, null);
+      return;
+    }
+
+    // `class << self ... end`: every def inside is a class method. Read as
+    // an ordinary block, its methods were indexed as instance methods and
+    // `Widget.build` answered to `Widget#build`.
+    if (node.type === 'singleton_class') {
+      walkClassBody(childByField(node, 'body') ?? node, nest, classScopeId ?? scopeId, true);
+      return;
+    }
+
+    // `alias new_name old_name` -- a second name for the same method, and a
+    // call to the old one as far as the graph is concerned.
+    if (node.type === 'alias' && nest.length) {
+      const fresh = childByField(node, 'name');
+      const old = childByField(node, 'alias');
+      if (fresh && old) aliasMethod(text(fresh, src).replace(/^:/, ''), text(old, src).replace(/^:/, ''), nest, node);
       return;
     }
 
@@ -399,13 +486,7 @@ export function extractRuby(tree, src, ctx = {}) {
 
       // Walked after the symbol exists, because `include Foo` appends to its
       // supertypes as it is encountered.
-      const body = childByField(node, 'body');
-      if (body) {
-        for (let i = 0; i < body.namedChildCount; i++) {
-          const c = body.namedChild(i);
-          if (c) walk(c, nextNest, id, true, id);
-        }
-      }
+      walkClassBody(childByField(node, 'body'), nextNest, id, false);
       return;
     }
 
@@ -413,8 +494,11 @@ export function extractRuby(tree, src, ctx = {}) {
       const nameNode = childByField(node, 'name');
       if (!nameNode) return;
       const simpleName = text(nameNode, src);
-      const containerFqn = nest.join('::') || null;
-      const isSingleton = node.type === 'singleton_method';
+      // A def outside any class is a private method on Object, callable
+      // from anywhere by its bare name. Its fqn used to read `null#name`,
+      // and nothing could ever resolve to it.
+      const containerFqn = nest.join('::') || 'Object';
+      const isSingleton = node.type === 'singleton_method' || singleton;
 
       const params = [];
       const paramsNode = childByField(node, 'parameters');
@@ -422,7 +506,8 @@ export function extractRuby(tree, src, ctx = {}) {
         for (let i = 0; i < paramsNode.namedChildCount; i++) {
           const p = paramsNode.namedChild(i);
           if (!p) continue;
-          params.push(text(p, src).split(/[:=]/)[0].trim());
+          // `&block`, `*rest` and `**opts` bind names too.
+          params.push(text(p, src).split(/[:=]/)[0].replace(/^[*&]+/, '').trim());
         }
       }
 
@@ -444,7 +529,7 @@ export function extractRuby(tree, src, ctx = {}) {
       // "a name this repository never declares". Only the second is proof that
       // the value came from outside.
       for (const name of params) {
-        if (/^[a-z_][\w]*$/.test(name)) locals.push({ scopeTmpId: id, name, type_name: null, init_kind: 'param' });
+        if (/^[a-z_][\w]*$/.test(name)) bind(id, name, { init_kind: 'param' });
       }
 
       const body = childByField(node, 'body');
@@ -456,6 +541,18 @@ export function extractRuby(tree, src, ctx = {}) {
       const methodNode = childByField(node, 'method');
       const receiverNode = childByField(node, 'receiver');
       const methodName = methodNode ? text(methodNode, src) : null;
+
+      // `super(x)` and `super x` are one call, to the ancestor's method of
+      // this name. Read as a call to a method named `super`, it produced a
+      // second, bogus ref that landed in the library column, and the real
+      // one lost its arity.
+      if (methodNode?.type === 'super') {
+        if (scopeId != null) superCall(scopeId, node, argNodes(node).length);
+        for (const c of argNodes(node)) walk(c, nest, scopeId, false, classScopeId, singleton);
+        const block = childByField(node, 'block');
+        if (block) walk(block, nest, scopeId, false, classScopeId, singleton);
+        return;
+      }
 
       // Class-body DSL calls define things rather than call them.
       if (inClassBody && !receiverNode && methodName) {
@@ -470,18 +567,90 @@ export function extractRuby(tree, src, ctx = {}) {
         // A concern's `included do ... end` runs in the includer's class body,
         // so its macros belong to this module the same way its instance
         // methods do -- the module->includer machinery carries both across.
-        if (methodName === 'included') {
+        // `class_methods do ... end` is the same idea for the singleton side.
+        if (methodName === 'included' || methodName === 'class_methods') {
           const block = childByField(node, 'block');
           const blockBody = block ? childByField(block, 'body') ?? block : null;
           if (blockBody) {
-            for (let i = 0; i < blockBody.namedChildCount; i++) {
-              const c = blockBody.namedChild(i);
-              if (c) walk(c, nest, scopeId, true, classScopeId);
-            }
+            walkClassBody(blockBody, nest, scopeId, methodName === 'class_methods');
             return;
           }
         }
-        if (containerFqn && applyMacro(node, containerFqn, nest[nest.length - 1])) return;
+        // `define_method(:name) do ... end` defines `name`, and the block is
+        // its body.
+        if ((methodName === 'define_method' || methodName === 'define_singleton_method') && containerFqn) {
+          const name = symbolArgName(argNodes(node)[0], src);
+          const block = childByField(node, 'block');
+          if (name) {
+            const isClassMethod = methodName === 'define_singleton_method' || singleton;
+            const id = addSymbol({
+              name,
+              fqn: `${containerFqn}${isClassMethod ? '.' : '#'}${name}`,
+              kind: isClassMethod ? 'class_method' : 'method',
+              container_fqn: containerFqn,
+              type_name: null,
+              signature: `${name}  # generated by ${methodName}`,
+              arity: 0,
+              supertypes: [],
+              modifiers: isClassMethod ? ['generated', 'singleton'] : ['generated'],
+              annotations: [methodName],
+              generated: true,
+              ...pos(node),
+            });
+            if (block) walk(block, nest, id, false, classScopeId);
+            return;
+          }
+        }
+        if (methodName === 'alias_method' && containerFqn) {
+          const [fresh, old] = argNodes(node).map((a) => symbolArgName(a, src));
+          if (fresh && old) {
+            aliasMethod(fresh, old, nest, node);
+            return;
+          }
+        }
+        if (CALLBACK_MACROS.has(methodName) && scopeId != null) {
+          for (const arg of argNodes(node)) {
+            const names = [];
+            if (arg.type === 'simple_symbol') names.push(symbolArgName(arg, src));
+            for (const key of ['if', 'unless']) {
+              const cond = keywordArg([arg], key);
+              if (cond && /^[a-z_]\w*[?!]?$/.test(cond)) names.push(cond);
+            }
+            for (const name of names.filter(Boolean)) {
+              refs.push({
+                fromTmpId: scopeId,
+                name,
+                receiver: null,
+                arity: 0,
+                str_args: null,
+                line: node.startPosition.row + 1,
+                kind: 'call',
+              });
+            }
+          }
+          // The block form, `before_action do ... end`, is code and is walked.
+          const block = childByField(node, 'block');
+          if (block) walk(block, nest, scopeId, false, classScopeId, singleton);
+          return;
+        }
+        if (containerFqn) {
+          const made = applyMacro(node, containerFqn, nest[nest.length - 1]);
+          if (made) {
+            // `scope :visible, -> { where(...) }` -- the lambda is the body of
+            // the method the macro defines, and `has_many :x, -> { ... }` is
+            // a scope on the association. Returning before the arguments were
+            // walked lost every call inside them.
+            const owner = typeof made === 'number' ? made : scopeId;
+            for (const arg of argNodes(node)) {
+              if (arg.type === 'lambda' || arg.type === 'block' || arg.type === 'do_block') {
+                walk(arg, nest, owner, false, classScopeId);
+              }
+            }
+            const block = childByField(node, 'block');
+            if (block) walk(block, nest, owner, false, classScopeId);
+            return;
+          }
+        }
       }
 
       // RSpec binds names with blocks rather than assignment: `let(:user) {
@@ -497,9 +666,9 @@ export function extractRuby(tree, src, ctx = {}) {
         // Recorded even untyped: `let(:thing)` still declares the name, and a
         // name this file declares must not be mistaken for one from a gem.
         if (bound) {
-          locals.push({ scopeTmpId: fileScopeId, name: bound, type_name: built ?? null, init_kind: 'let' });
+          bind(fileScopeId, bound, { type_name: built ?? null, init_kind: 'let' });
           if (methodName === 'subject' && bound !== 'subject') {
-            locals.push({ scopeTmpId: fileScopeId, name: 'subject', type_name: built ?? null, init_kind: 'let' });
+            bind(fileScopeId, 'subject', { type_name: built ?? null, init_kind: 'let' });
           }
         }
       }
@@ -545,11 +714,14 @@ export function extractRuby(tree, src, ctx = {}) {
       }
 
       // Arguments and any block still need walking; the receiver already was.
+      // Compared by span, not identity: web-tree-sitter hands out a fresh
+      // wrapper for every child, so `c === methodNode` was never true and the
+      // method node was walked a second time.
+      const spans = (a, b) => a && b && a.startIndex === b.startIndex && a.endIndex === b.endIndex;
       for (let i = 0; i < node.namedChildCount; i++) {
         const c = node.namedChild(i);
-        if (!c || c === receiverNode || c === methodNode) continue;
-        if (receiverNode && c.startIndex === receiverNode.startIndex) continue;
-        walk(c, nest, scopeId, false, classScopeId);
+        if (!c || spans(c, receiverNode) || spans(c, methodNode)) continue;
+        walk(c, nest, scopeId, false, classScopeId, singleton);
       }
       return;
     }
@@ -568,27 +740,123 @@ export function extractRuby(tree, src, ctx = {}) {
       }
       if (bp) {
         for (let i = 0; i < bp.namedChildCount; i++) {
-          const name = text(bp.namedChild(i), src).split(/[:=]/)[0].trim();
-          if (/^[a-z_][\w]*$/.test(name)) {
-            locals.push({ scopeTmpId: scopeId, name, type_name: null, init_kind: 'block-param' });
-          }
+          const name = text(bp.namedChild(i), src).split(/[:=]/)[0].replace(/^[*&]+/, '').trim();
+          if (/^[a-z_][\w]*$/.test(name)) bind(scopeId, name, { init_kind: 'block-param' });
         }
       }
     }
 
-    if (node.type === 'assignment') {
+    if (node.type === 'assignment' || node.type === 'operator_assignment') {
       const left = childByField(node, 'left');
       const right = childByField(node, 'right');
+
+      // `obj.attr = v` is a call to `attr=`, not a read of `attr`. The tree
+      // spells it as an assignment whose left side is a call, and walking
+      // that call linked every writer to the reader and left `attr=` with no
+      // caller at all. `obj.attr += v` reads and writes both.
+      if (left?.type === 'call' && scopeId != null) {
+        const attr = childByField(left, 'method');
+        const recv = childByField(left, 'receiver');
+        if (attr && attr.type === 'identifier') {
+          let receiverRefTmp = null;
+          if (recv) {
+            walk(recv, nest, scopeId, false, classScopeId, singleton);
+            receiverRefTmp = callRefByNode.get(recv.id) ?? null;
+          }
+          if (node.type === 'operator_assignment') {
+            refs.push({
+              fromTmpId: scopeId,
+              name: text(attr, src),
+              receiver: recv ? text(recv, src) : null,
+              receiverRefTmp,
+              arity: 0,
+              str_args: null,
+              line: node.startPosition.row + 1,
+              kind: 'call',
+            });
+          }
+          refs.push({
+            fromTmpId: scopeId,
+            name: `${text(attr, src)}=`,
+            receiver: recv ? text(recv, src) : null,
+            receiverRefTmp,
+            arity: 1,
+            str_args: null,
+            line: node.startPosition.row + 1,
+            kind: 'call',
+          });
+          if (right) walk(right, nest, scopeId, false, classScopeId, singleton);
+          return;
+        }
+      }
+
+      // `Point = Struct.new(:x, :y) do ... end` and `Derived = Class.new(Base)
+      // do ... end` declare a class as surely as the keyword does. Read as a
+      // call, their methods had no container and `Point.new(1, 2).dist` was
+      // labelled a call into a gem named Point.
+      if (node.type === 'assignment' && left?.type === 'constant' && right?.type === 'call') {
+        const recv = childByField(right, 'receiver');
+        const method = childByField(right, 'method');
+        const factory = recv?.type === 'constant' ? text(recv, src) : null;
+        if (['Struct', 'Class', 'Data'].includes(factory) && method && text(method, src) === 'new') {
+          const simpleName = text(left, src);
+          const nextNest = [...nest, simpleName];
+          const fqn = nextNest.join('::');
+          const args = argNodes(right);
+          const supertypes = [];
+          if (factory === 'Class' && args[0]?.type === 'constant') supertypes.push(text(args[0], src));
+          if (factory !== 'Class') supertypes.push(factory);
+          const id = addSymbol({
+            name: simpleName,
+            fqn,
+            kind: 'class',
+            container_fqn: nest.length ? nest.join('::') : null,
+            type_name: null,
+            signature: `class ${fqn}`,
+            arity: null,
+            supertypes,
+            modifiers: [],
+            annotations: [`${factory}.new`],
+            ...pos(node),
+          });
+          // A Struct's members are readers and writers, as attr_accessor.
+          if (factory !== 'Class') {
+            for (const arg of args) {
+              const member = arg.type === 'simple_symbol' ? symbolArgName(arg, src) : null;
+              if (!member) continue;
+              for (const name of [member, `${member}=`]) {
+                addSymbol({
+                  name,
+                  fqn: `${fqn}#${name}`,
+                  kind: 'method',
+                  container_fqn: fqn,
+                  type_name: null,
+                  signature: `${name}  # ${factory} member`,
+                  arity: name.endsWith('=') ? 1 : 0,
+                  supertypes: [],
+                  modifiers: ['generated'],
+                  annotations: [`${factory}.new`],
+                  generated: true,
+                  ...pos(arg),
+                });
+              }
+            }
+          }
+          const block = childByField(right, 'block');
+          const blockBody = block ? (childByField(block, 'body') ?? block) : null;
+          walkClassBody(blockBody, nextNest, id, false);
+          return;
+        }
+      }
+
       // `@rubygem = Rubygem.find(id)` is how a Rails controller says what the
       // ivar holds, and nothing else in the file ever will.
       if (left && right) {
         const model = modelTypeOf(right, src, childByField, argNodes, text);
         const name = text(left, src);
         if (/^@?[a-z_][\w]*$/.test(name)) {
-          locals.push({
-            // An ivar outlives the method, so it belongs to the class scope.
-            scopeTmpId: left.type === 'instance_variable' ? classScopeId : scopeId,
-            name,
+          // An ivar outlives the method, so it belongs to the class scope.
+          bind(left.type === 'instance_variable' ? classScopeId : scopeId, name, {
             type_name: model?.name ?? null,
             init_kind: model?.via ?? 'assigned',
           });
@@ -605,7 +873,11 @@ export function extractRuby(tree, src, ctx = {}) {
       const isCallMethod = p?.type === 'call' && sameNode(childByField(p, 'method'), node);
       const isAssignTarget = p?.type === 'assignment' && sameNode(childByField(p, 'left'), node);
       const isParam = p?.type === 'method_parameters' || p?.type === 'block_parameters';
-      if (!isCallMethod && !isAssignTarget && !isParam) {
+      // A name this scope binds -- a parameter, a local, a block variable --
+      // is a variable read, not a call. `def initialize(name); @name = name`
+      // was an edge to the `name` reader on every model with one.
+      const isBound = boundNames.get(scopeId)?.has(text(node, src)) ?? false;
+      if (!isCallMethod && !isAssignTarget && !isParam && !isBound) {
         refs.push({
           fromTmpId: scopeId,
           name: text(node, src),
@@ -619,7 +891,7 @@ export function extractRuby(tree, src, ctx = {}) {
 
     for (let i = 0; i < node.namedChildCount; i++) {
       const c = node.namedChild(i);
-      if (c) walk(c, nest, scopeId, inClassBody && node.type === 'body_statement', classScopeId);
+      if (c) walk(c, nest, scopeId, inClassBody && node.type === 'body_statement', classScopeId, singleton);
     }
   }
 

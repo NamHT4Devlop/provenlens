@@ -1,27 +1,39 @@
-import { existsSync, readFileSync, readdirSync, statSync, writeFileSync, rmSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync, lstatSync, writeFileSync, rmSync } from 'node:fs';
 import { join, resolve, relative, sep, isAbsolute } from 'node:path';
+import { execFileSync } from 'node:child_process';
 import ignore from 'ignore';
 import { langForPath } from './lang.js';
 
 export const INDEX_DIR = '.provenlens';
 export const DB_FILE = 'index.db';
 
-const ALWAYS_IGNORE = [
+/**
+ * Trees that are never this project's own code, even when git tracks them.
+ *
+ * A committed `node_modules` is a vendored install, not source, and git
+ * tracking it says nothing either way. The one signal that does is the
+ * repository's own `.gitignore` putting the tree back with a negation, which
+ * node-red does for `packages/node_modules` -- and that is honoured below.
+ */
+const DEPENDENCY_TREES = [
   '.git',
   '.provenlens',
   'node_modules',
   'vendor/bundle',
-  'target',
-  'build',
-  'dist',
-  'out',
-  'coverage',
-  'tmp',
   '.next',
   '.gradle',
   '.idea',
   '__pycache__',
 ];
+
+/**
+ * Build output, by name. Only an approximation of what git knows, so it is
+ * consulted only when git cannot be: matched at any depth, it also swallowed
+ * a Java package called `build` and a `src/build/` full of tracked source.
+ */
+const BUILD_OUTPUT = ['target', 'build', 'dist', 'out', 'coverage', 'tmp'];
+
+const ALWAYS_IGNORE = [...DEPENDENCY_TREES, ...BUILD_OUTPUT];
 
 /** Walks up from `start` looking for a directory that has been `init`-ed. */
 export function findProjectRoot(start = process.cwd()) {
@@ -64,7 +76,7 @@ export function dbPathFor(root) {
   return join(root, INDEX_DIR, DB_FILE);
 }
 
-function buildIgnore(root) {
+function buildIgnore(root, { always = ALWAYS_IGNORE } = {}) {
   const own = ignore();
   let hasOwn = false;
   const gitignore = join(root, '.gitignore');
@@ -76,7 +88,7 @@ function buildIgnore(root) {
       /* an unreadable .gitignore just means fewer exclusions */
     }
   }
-  const always = ignore().add(ALWAYS_IGNORE);
+  const alwaysRules = ignore().add(always);
 
   /**
    * Whether the repository has said, in its own .gitignore, that this path is
@@ -116,7 +128,7 @@ function buildIgnore(root) {
   return {
     ignores(path) {
       if (own.ignores(path)) return true;
-      if (!always.ignores(path)) return false;
+      if (!alwaysRules.ignores(path)) return false;
       return !claimedAsSource(path);
     },
   };
@@ -139,14 +151,95 @@ export function buildIgnoreFilter(root) {
 }
 
 /**
- * Walks the tree once, honouring .gitignore, and returns the repo-relative
- * paths `accept` says yes to. Binding plugins use it for XML and SQL, which
- * have no grammar but still wire the system together.
+ * What git says this tree's source is, or null when git cannot say.
+ *
+ * Tracked files, plus untracked ones git does not ignore -- a file an agent
+ * wrote a moment ago is source before anyone runs `git add`. Minus the files
+ * that are tracked only because somebody forced them past the ignore rules,
+ * which is how a built `dist/` gets committed and is not how source arrives.
+ *
+ * This is the authority the ignore rules below were approximating. The
+ * approximation matched a name at any depth, so a Java package called
+ * `org.springframework.boot.build` -- 295 tracked files -- was skipped as if
+ * it were compiler output, and every call into it was reported as proven to
+ * leave the repository. A `.gitignore` in a subdirectory was never read at
+ * all. git reads them all, and has the final say on both.
+ *
+ * Paths come back relative to `root` even when the root is a subdirectory of
+ * the repository, with forward slashes on every platform. Nothing here runs
+ * when the tree is not inside a repository, or git is not installed: then the
+ * rules stand, exactly as before.
  */
-export function walkFiles(root, accept, { maxBytes = 2_000_000 } = {}) {
-  const ig = buildIgnore(root);
-  const found = [];
+function gitSourceFiles(root) {
+  const run = (args) =>
+    execFileSync('git', ['-C', root, 'ls-files', '-z', '--exclude-standard', ...args], {
+      encoding: 'utf8',
+      maxBuffer: 512 * 1024 * 1024,
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 60_000,
+    })
+      .split('\0')
+      .filter(Boolean);
+  try {
+    const source = new Set(run(['--cached', '--others']));
+    for (const forced of run(['--cached', '--ignored'])) source.delete(forced);
+    return source;
+  } catch {
+    return null;
+  }
+}
 
+/**
+ * Walks the tree once and returns the repo-relative paths `accept` says yes
+ * to: git's view of the source when there is one, the ignore rules when there
+ * is not. Binding plugins use it for XML and SQL, which have no grammar but
+ * still wire the system together.
+ *
+ * A file over `maxBytes` is refused here, and reported through `oversized`
+ * so the caller can count it: refused silently, it was missing from every
+ * number the tool printed, and a call into it read as a call out of the repo.
+ */
+export function walkFiles(root, accept, { maxBytes = 2_000_000, oversized = null } = {}) {
+  const found = [];
+  const take = (rel, abs) => {
+    if (!accept(rel)) return;
+    let size;
+    try {
+      size = statSync(abs).size;
+    } catch {
+      return;
+    }
+    if (size > maxBytes) {
+      oversized?.push(rel);
+      return;
+    }
+    found.push(rel);
+  };
+
+  const fromGit = gitSourceFiles(root);
+  if (fromGit) {
+    // git has settled what is build output; a dependency tree is still a
+    // dependency tree unless the repository's .gitignore says otherwise.
+    const deps = buildIgnore(root, { always: DEPENDENCY_TREES });
+    for (const rel of fromGit) {
+      if (deps.ignores(rel)) continue;
+      // A symlink is skipped whatever it points at: `x.js -> ~/.ssh/id_rsa`
+      // in a repository cloned to read would otherwise be indexed and served
+      // back as source.
+      const abs = join(root, rel);
+      let entry;
+      try {
+        entry = lstatSync(abs);
+      } catch {
+        continue; // tracked, but no longer on disk
+      }
+      if (!entry.isFile()) continue;
+      take(rel, abs);
+    }
+    return found.sort();
+  }
+
+  const ig = buildIgnore(root);
   const visit = (dir) => {
     let entries;
     try {
@@ -155,28 +248,16 @@ export function walkFiles(root, accept, { maxBytes = 2_000_000 } = {}) {
       return;
     }
     for (const entry of entries) {
-      // A symlink is skipped whatever it points at. `x.js -> ~/.ssh/id_rsa` in
-      // a repository you cloned to read would otherwise be indexed and served
-      // back as source. Dirent already answers false to both isFile() and
-      // isDirectory() for one, so this line changes nothing today -- it is
-      // here so that the rule survives the day someone makes the walk follow
-      // links for a monorepo and does not notice what else that opens.
+      // Dirent already answers false to both isFile() and isDirectory() for a
+      // symlink; the line is here so the rule survives the day someone makes
+      // the walk follow links for a monorepo.
       if (entry.isSymbolicLink()) continue;
       const abs = join(dir, entry.name);
       const rel = relative(root, abs).split(sep).join('/');
       if (!rel || ig.ignores(entry.isDirectory() ? `${rel}/` : rel)) continue;
 
-      if (entry.isDirectory()) {
-        visit(abs);
-      } else if (entry.isFile()) {
-        if (!accept(rel)) continue;
-        try {
-          if (statSync(abs).size > maxBytes) continue;
-        } catch {
-          continue;
-        }
-        found.push(rel);
-      }
+      if (entry.isDirectory()) visit(abs);
+      else if (entry.isFile()) take(rel, abs);
     }
   };
 
@@ -306,4 +387,22 @@ export function acquireIndexLock(root) {
     }
   }
   throw new Error('could not take the index lock');
+}
+
+/**
+ * The lock, or null when another process holds it.
+ *
+ * For the callers that keep an index fresh in the background -- the MCP
+ * server, `serve`, the watcher -- a held lock is not an error to die on: the
+ * other run lands in the same file, and this one has only to wait its turn.
+ * Two MCP servers started on one repository used to race their first sync
+ * into a foreign-key failure; now the second sees the lock and stands aside.
+ */
+export function tryIndexLock(root) {
+  try {
+    return acquireIndexLock(root);
+  } catch (err) {
+    if (err?.code === 'PROVENLENS_LOCKED') return null;
+    throw err;
+  }
 }

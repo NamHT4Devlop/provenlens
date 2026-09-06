@@ -674,6 +674,110 @@ appeared with it. Lower number, more complete graph, every time.
 Re-measure any time with `./scripts/bench.js <repo> --detail`, which prints the miss buckets and
 the guessed links as well as the two headline figures.
 
+### A full review, and what it moved
+
+Every number above was produced before a line-by-line review of the whole tool, done with the
+same method as the rest of this README: read the code, write the smallest probe that would show a
+defect, run it through the real pipeline, and keep only what reproduced. It found about sixty
+defects. The seven in the core touched every language; the rest were in one extractor, resolver
+or binding plugin. Each is pinned by a test that carries the probe that found it, and the ten
+repositories below were measured before and after on the same machine, same checkouts, same day.
+
+Two of the defects were in the counting itself, and they matter more than any resolver fix
+because they change what every earlier number meant:
+
+- **An identifier read was a linked call.** The Ruby extractor records every bare identifier in a
+  method body in case it is an implicit-self call, and the resolver dropped the ones that matched
+  nothing -- variable reads, almost all of them -- without writing a row. A call site with no
+  unresolved row is what `status`, the MCP tools and the benchmark count as *linked*. sidekiq
+  reported 10,294 linked calls; 7,112 were identifier reads. **Every Ruby figure earlier in this
+  README carries that inflation**, including the 94.6% and 97.9% Ruby rows of the five- and
+  ten-thousand-repository tables, and the Rails rows of the forty-three. The honest-count column
+  below is what those runs would have said with the reads taken out; the sweeps themselves have
+  not been re-run, and until they are, their Ruby rows should be read as the ceiling of a number
+  that is lower.
+- **An annotation was a call site.** `@Value("...")`, `@Column(name = "...")` and every other
+  annotation carrying a string rode the ref table so the binding plugins could read it, and was
+  counted as a call that resolved. With four annotations and four library calls, `status` said
+  half the calls were linked and none were. Java figures were inflated by the share of such
+  annotations, which is small and is now zero.
+
+The rest, by group, with the probe that found each:
+
+- **Core.** Edges outlived their symbols (three rebuilds of express: 382, 764, 1146, 1528 edges
+  with nothing changed; `dead` hid a function after its last caller was deleted; `hotspots`
+  reported a caller that no longer existed). The Java test-file suffix was read case-blind, so
+  `Deposit.java`, `Credit.java`, `Commit.java`, `Audit.java` and `Unit.java` were tests: `affected`
+  listed a deposit as the test covering an account and `--fail-if-untested` passed with no test in
+  sight; quarkus has sixty such classes. The by-name skip list hid a Java package called `build`
+  (295 tracked files in spring-boot) and never read a nested `.gitignore`; discovery asks git now.
+  A tie at the top of a search was broken silently (`callers save` with three `save` methods). The
+  MCP server, `serve` and the watcher never took the index lock, and two sessions on one repository
+  raced their first sync into `FOREIGN KEY constraint failed`. `init` on an index built by an older
+  schema stamped the old tables with the new version and then crashed, as did `index` after it. A
+  file over the size cap vanished uncounted, and a call into it was reported as proven to leave.
+- **Bindings.** A Java class's annotations were discarded at extraction, so the class-level
+  `@RequestMapping` prefix was never applied and no Spring route was ever wired to a client; a bare
+  `@PostMapping` produced no route; `method = RequestMethod.POST` became `ANY`; `produces =
+  "application/json"` became the path. `kafkaTemplate.send("orders")` was wired to an
+  `@SqsListener("orders")`. A MyBatis statement inside `<!-- -->` was live. A GraphQL description
+  was a field and a multi-line argument list lost the real one. A gRPC service ended at the first
+  rpc with an option body. Rails routes carried no controller action and ignored `namespace`,
+  `only:` and `member`.
+- **Ruby.** The proof that a receiver is declared nowhere returned `null` and so never fired --
+  `response.body` in a spec became an edge to whichever class defined `body`. A class reopened in
+  a second file lost its ancestors, and `save` on the model fell from a declaration to a guess.
+  `class << self` methods were instance methods; a def outside any class had the fqn `null#name`;
+  `super(x)` produced a second, bogus ref; a parameter read by its bare name was an edge to the
+  reader of that name on every model; `obj.attr = v` resolved to the reader; `Struct.new` and
+  `Class.new` declared nothing; callback macros and scope lambdas were not read.
+- **TypeScript.** `const { data } = await client.get('/x')` and `const [s, setS] = useState(0)`
+  read nothing at all. `extends Base<User>` inherited User. An arrow-function field was a field,
+  a `= new Logger()` field had no type, an object-literal method was a class member, and an arrow
+  declared inside a function shadowed the module's export of the same name. A bare call's result
+  was typed as a member of the enclosing class. `export * as ns`, `import x = require`, `export =`,
+  `export { App as default }`, `export default function () {}`, a tsconfig that only `extends`
+  another, a `baseUrl` without `paths`, a package with only an `exports` map and a `.d.ts` module
+  path all resolved to a dependency.
+- **Java.** A static import of a project method was proven to leave the repository. `var v =
+  h.first(h.second())` was typed from `second`. Method references and `this(...)`/`super(...)`
+  produced no refs. Comments in an argument list were arguments (wrong overload) and a trailing
+  comment in an implements list was a supertype. A method's own type variable resolved to a real
+  class. Enum constants did not exist. `Helper.Inner.create()` and a fully qualified receiver were
+  "complex". javap's `Function<T, T>` was a return type called `T>`.
+- **Performance.** Every plugin sliced the file per statement for a line number; the Flyway join
+  was tables x types; the binding pass ran outside a transaction (2.7 s against 0.6 s); the
+  TypeScript resolver scanned every type per unresolved name (8,000 classes: 46.9 s) and every
+  module symbol per bare call (one file of 20,000 functions: 84 s); the Ruby member lookup was a
+  scan per ancestor (one generated class of 67,000 methods: three and a half minutes).
+
+| Repository | | before, as reported | before, on the honest count | **after** | floor after |
+|---|---|---|---|---|---|
+| express | JS | 89.5% | 89.5% | **89.5%** | 88.8% |
+| zod | TS | 75.7% | 75.7% | **76.3%** | 63.3% |
+| astro | TS | 81.3% | 81.3% | **82.3%** | 70.2% |
+| nx | TS | 95.6% | 95.6% | **97.7%** | 91.8% |
+| sidekiq | Ruby | 86.2% | 65.8% (7,112 identifier reads had been counted as linked) | **70.0%** | 58.4% |
+| rubygems.org | Rails | 88.6% | 75.5% (17,732 identifier reads had been counted as linked) | **80.9%** | 66.7% |
+| discourse | Rails | 78.7% | 51.1% (439,577 identifier reads had been counted as linked) | **60.8%** | 48.6% |
+| java-design-patterns | Java | 91.5% | 91.5% | **92.8%** | 91.6% |
+| spring-framework | Java | 93.6% | 93.6% (24 identifier reads had been counted as linked) | **93.4%** | 92.0% |
+| quarkus | Java | 85.6% | 85.6% | **85.4%** | 82.6% |
+| **all ten, weighted by calls** | | | 76.0% | **79.1%** | |
+
+Read the columns in order. The first is what the old code printed. The second is the same run with
+the counting defects removed, and is the only fair "before". The third is the new code. Where the
+third is below the first, nothing got worse: the number was wrong, and the second column says by
+how much. Where the third is above the second, the resolver got better, and the size of the gain
+is the size of the defects above on that repository -- spring-framework's, for instance, is mostly
+static imports and method references; discourse's is mostly `class << self`, reopened models and
+writers.
+
+The ten were chosen for spread rather than score: two tiny, three of the hardest TypeScript
+monorepos, the three Rails codebases with the widest gap between headline and floor, and three Java
+trees of very different size. Their weighted figure is what a user of the tool can expect on a
+repository they have not seen; the per-repository rows are what they will actually get.
+
 ### Why the last twenty-four will not reach 90%, and what was tried
 
 The obvious levers were pulled and measured, and most of them did nothing:
@@ -770,9 +874,17 @@ declaration used to hit the `files.path` UNIQUE constraint and abort the whole i
 later fixed where it belonged, at the insert, which now says `ON CONFLICT(path) DO NOTHING` and lets
 the project's own copy win. The guard outlived the thing it guarded.
 
-An **explicit negation** in the repository's own `.gitignore` now wins, and nothing else does; a
-repository that never mentions `build/` still has it skipped. The authority is the right one: git
-tracks what you wrote and does not track what you installed.
+An **explicit negation** in the repository's own `.gitignore` then won, and nothing else did; a
+repository that never mentioned `build/` still had it skipped. The authority was the right one --
+git tracks what you wrote and does not track what you installed -- and the review that followed
+took that sentence at its word. The by-name skip list matched at any depth, so a Java package called
+`build` was compiler output as far as the tool knew: **295 tracked files** in spring-boot, 52 in
+spring-framework, 33 in quarkus, and every call into them was reported as proven to leave the
+repository. A `.gitignore` in a subdirectory was never read at all. Discovery now asks git directly
+-- `git ls-files`, tracked plus untracked-not-ignored, minus anything forced past the ignore rules --
+and falls back to the rules only where there is no repository to ask. A committed dependency tree
+is still a dependency tree unless the repository's `.gitignore` puts it back, which is the node-red
+case above.
 
 | node-red | before | after |
 |---|---|---|
@@ -1355,7 +1467,7 @@ it automatically.
 yarn test
 ```
 
-284 tests across six fixture suites plus regression, security and multi-repo coverage:
+362 tests across ten fixture suites plus regression, security and multi-repo coverage:
 
 | Fixture | Simulates | The chain grep cannot follow |
 |---|---|---|
@@ -1364,7 +1476,15 @@ yarn test
 | `ts` | TS + JS: barrel files, tsconfig aliases, constructor DI | an import through `export *` before reaching the real class |
 | `bindings` | MyBatis, Camel, SQS, Kafka, Spring events, GraphQL, gRPC, Flyway | a Java producer → a Ruby Shoryuken worker, matched on queue name |
 | `vendored` | A repository that keeps its own source inside `packages/node_modules` | that the directory a project's `.gitignore` puts back is source, and a tree re-excluded after it is not |
+| `java2` | What a review found: static imports, `var` from a nested call, method references, `this(...)`/`super(...)`, enum constants, comments in argument lists | `import static Helper.compute; compute()` reaching the project's own method rather than "a library" |
+| `ruby2` | A model reopened in `lib/`, `class << self`, top-level defs, `super(x)`, writers, `Struct.new`, callbacks, scope lambdas | `u.save` on a reopened model still landing on `ApplicationRecord#save` as a declaration |
+| `ts2` | Destructuring, `extends Base<User>`, arrow fields, `super`, `for-of`, `export * as ns`, `import x = require`, tsconfig `extends`, `exports` maps, `.d.ts` | `const { data } = await client.get('/x')` reaching `Client#get` at all |
+| `bindings2` | Spring class-level `@RequestMapping`, `method = POST`, `produces`, Kafka multi-line topics, a MyBatis statement in a comment, Rails `namespace`/`only:`/`member`, gRPC option bodies | `GET /api/orders/{}` served by the method and called by the client, with the prefix applied |
 | all of `__fixtures__` | One repo containing all four languages | resolvers not wiping each other's graphs |
+
+`test/core-fixes.test.js`, `test/bindings-review.test.js`, `test/ruby-review.test.js`,
+`test/typescript-review.test.js` and `test/java-review.test.js` each pin one defect a full review
+found to the probe that found it; the section *A full review, and what it moved* above lists them.
 
 `test/regressions.test.js` locks down every bug that has been fixed: LIKE wildcards, scoring order,
 duplicate edge collapsing, file accounting on sync, the watcher's ignore rules, test detection, and
@@ -1461,6 +1581,19 @@ the second.
   UI, so on a shared Windows machine both inherit whatever the parent directory allows. Nothing
   else about the tool differs.
 - **The Ruby inflector** is simple and does not handle irregulars (`people`/`person`).
+- **Two files that name one module** — `same.ts` beside `same.js`, a dual-package `twin.mjs` and
+  `twin.cjs` — share one module path, so their types merge and a call in one can land in the
+  other. The review found it; it is left as it is because the right split (by extension, or by
+  `package.json` conditions) changes every fqn in such a repository, and none of the ten measured
+  ones has the shape.
+- **Three bindings are read from one side only.** A Camel route written in the XML DSL is not read
+  (the Java DSL is); an Express route's provider is the module that registered it rather than the
+  handler function, and `app.use('/api', router)` prefixes are not applied; a Spring `@EventListener`
+  on a supertype of the published event does not match. Each is a design gap rather than a defect,
+  and each is listed here so it is not mistaken for coverage.
+- **A file nested a few thousand levels deep** -- 2,000 chained `+` operands, 1,500 nested blocks
+  -- overflows the recursive walk and is counted as unparsable. Nothing written by hand comes
+  near it; generated data tables can. The file is reported, not lost silently.
 - **Annotation-style MyBatis** (`@Select` on the method) needs no binding — the SQL is already in
   the method.
 - **NestJS token DI** (`{ provide: 'X', useClass: Y }` matched to `@Inject('X')`) needs

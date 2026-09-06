@@ -13,7 +13,9 @@
 
 /** `src/domain/donation.ts` -> `src/domain/donation` */
 export function modulePathOf(filePath) {
-  return filePath.replace(/\.(tsx?|jsx?|mts|cts|mjs|cjs)$/, '');
+  // `types/api.d.ts` declares the module `types/api`, which is what an
+  // importer writes; keeping the `.d` made it a module nobody imported.
+  return filePath.replace(/\.d\.(ts|mts|cts)$/, '').replace(/\.(tsx?|jsx?|mts|cts|mjs|cjs)$/, '');
 }
 
 function text(node, src) {
@@ -352,6 +354,21 @@ export function extractTypeScript(tree, src, ctx = {}) {
   }
 
   function readImport(node) {
+    // `import CC = require('./cc')` keeps its source inside the require
+    // clause. It binds the module's whole value, like a default import of
+    // whatever `export =` named.
+    const requireClause = firstOfType(node, 'import_require_clause');
+    if (requireClause) {
+      const src2 = childByField(requireClause, 'source');
+      const nameNode = childByField(requireClause, 'name') ?? firstOfType(requireClause, 'identifier');
+      if (src2 && nameNode) {
+        imports.push({
+          fqn: unquote(src2), simple: text(nameNode, src), orig: '*',
+          is_wildcard: 1, is_static: 0, kind: 'import',
+        });
+      }
+      return;
+    }
     const source = childByField(node, 'source');
     if (!source) return;
     const spec = unquote(source);
@@ -412,13 +429,18 @@ export function extractTypeScript(tree, src, ctx = {}) {
     const clause = firstOfType(node, 'export_clause');
 
     if (!clause) {
+      // `export * as ns from './a'` exports one name that IS the module; it
+      // was recorded as `export *`, which spilled a's exports into this
+      // module and left `ns` itself undeclared.
+      const namespace = firstOfType(node, 'namespace_export');
+      const alias = namespace ? firstOfType(namespace, 'identifier') : null;
       imports.push({
         fqn: spec,
-        simple: null,
+        simple: alias ? text(alias, src) : null,
         orig: '*',
         is_wildcard: 1,
         is_static: 0,
-        kind: 'reexport-all',
+        kind: alias ? 'reexport' : 'reexport-all',
       });
       return true;
     }
@@ -446,6 +468,10 @@ export function extractTypeScript(tree, src, ctx = {}) {
       for (let i = 0; i < n.namedChildCount; i++) {
         const c = n.namedChild(i);
         if (!c) continue;
+        // `extends Base<User>` names one supertype. Reading into the type
+        // arguments made `User` one too, and every call on the class then
+        // found User's members with a declaration's confidence.
+        if (c.type === 'type_arguments') continue;
         if (c.type === 'type_identifier' || c.type === 'identifier') {
           const name = bareType(text(c, src));
           if (name) out.push(name);
@@ -536,9 +562,69 @@ export function extractTypeScript(tree, src, ctx = {}) {
     return { params: params.size ? params : null, returns: ret ? normalizeType(ret[1].trim()) : null };
   }
 
+  /**
+   * Every name a destructuring pattern binds, as a local of `ownerTmpId`.
+   * `holder` is the type of the value being taken apart, when known: each
+   * name then holds that type's member of the same name (or of the key it
+   * renames), which the resolver reads once the whole project is indexed.
+   */
+  function bindPattern(patt, ownerTmpId, holder, extra = {}) {
+    const visit = (n, memberOf) => {
+      if (!n) return;
+      if (n.type === 'identifier' || n.type === 'shorthand_property_identifier_pattern') {
+        const name = text(n, src);
+        locals.push({
+          scopeTmpId: ownerTmpId,
+          name,
+          type_name: null,
+          init_kind: memberOf ? 'member-of' : 'destructured',
+          init_path: memberOf ? `${memberOf}.${name}` : null,
+          ...extra,
+        });
+        return;
+      }
+      if (n.type === 'pair_pattern') {
+        const key = childByField(n, 'key');
+        const value = childByField(n, 'value');
+        const keyName = key ? text(key, src) : null;
+        if (value?.type === 'identifier') {
+          locals.push({
+            scopeTmpId: ownerTmpId,
+            name: text(value, src),
+            type_name: null,
+            init_kind: memberOf && keyName ? 'member-of' : 'destructured',
+            init_path: memberOf && keyName ? `${memberOf}.${keyName}` : null,
+            ...extra,
+          });
+        } else visit(value, null);
+        return;
+      }
+      if (n.type === 'object_assignment_pattern' || n.type === 'assignment_pattern') {
+        visit(childByField(n, 'left'), memberOf);
+        return;
+      }
+      if (n.type === 'rest_pattern') {
+        visit(n.namedChild(0), null);
+        return;
+      }
+      // An array pattern's elements have no member name to look up.
+      const nested = n.type === 'object_pattern' ? memberOf : null;
+      for (let i = 0; i < n.namedChildCount; i++) visit(n.namedChild(i), nested);
+    };
+    visit(patt, holder);
+  }
+
   function readParams(paramsNode, ownerTmpId, containerFqn, extra = {}, doc = null) {
     const params = [];
     if (!paramsNode) return params;
+    // `x => x.foo()` -- a single parameter with no parentheses is the bare
+    // identifier itself, not a list holding one.
+    if (paramsNode.type === 'identifier') {
+      const name = text(paramsNode, src);
+      params.push({ name, type: null });
+      if (ownerTmpId != null) locals.push({ scopeTmpId: ownerTmpId, name, type_name: null, type_args: null, ...extra });
+      return params;
+    }
 
     for (let i = 0; i < paramsNode.namedChildCount; i++) {
       const p = paramsNode.namedChild(i);
@@ -553,8 +639,19 @@ export function extractTypeScript(tree, src, ctx = {}) {
       const patt = isPlain
         ? (p.type === 'identifier' ? p : (childByField(p, 'left') ?? firstOfType(p, 'identifier')))
         : (childByField(p, 'pattern') ?? firstOfType(p, 'identifier'));
-      const name = patt ? text(patt, src) : null;
       const ann = isPlain ? null : (firstOfType(p, 'type_annotation') ?? childByField(p, 'type'));
+
+      // `({ items, store }: Props)` binds `items` and `store`, each the member
+      // of Props it is named for. Recorded as one local called `{ items,
+      // store }`, none of them was a name, and `store.save()` went by name.
+      if (patt && ['object_pattern', 'array_pattern'].includes(patt.type)) {
+        const holder = isPlain ? null : typeFromAnnotation(p, src);
+        params.push({ name: text(patt, src), type: holder });
+        if (ownerTmpId != null) bindPattern(patt, ownerTmpId, holder, extra);
+        continue;
+      }
+
+      const name = patt ? text(patt, src) : null;
       // An annotation in the source beats a comment; the comment is what a
       // .js file has instead of one, never in addition to it.
       const fromDoc = name ? (doc?.params?.get(name) ?? null) : null;
@@ -610,14 +707,48 @@ export function extractTypeScript(tree, src, ctx = {}) {
           walk(decl, typeStack, scopeId, true);
           return;
         }
+        // `export default function () {}` and `export default class {}` are
+        // values, not declarations, and neither had a name to become a symbol
+        // under -- so a module written that way exported nothing at all.
+        const value = childByField(node, 'value');
+        if (value && /^export\s+default\b/.test(text(node, src))) {
+          if (['function_expression', 'arrow_function', 'generator_function'].includes(value.type)) {
+            const named = childByField(value, 'name');
+            const id = addSymbol({
+              name: named ? text(named, src) : 'default',
+              fqn: `${modulePath}:${named ? text(named, src) : 'default'}`,
+              kind: 'function',
+              container_fqn: modulePath,
+              type_name: typeFromAnnotation(value, src) ?? inferredReturn(childByField(value, 'body'), src),
+              signature: named ? text(named, src) : 'default',
+              arity: 0,
+              supertypes: [],
+              modifiers: ['export', 'esm-default'],
+              annotations: [],
+              ...pos(node),
+            });
+            const params = readParams(childByField(value, 'parameters') ?? childByField(value, 'parameter'), id, null);
+            symbols[id].arity = params.length;
+            const body = childByField(value, 'body');
+            if (body) walk(body, typeStack, id, false);
+            return;
+          }
+          if (value.type === 'class') {
+            walk(value, typeStack, scopeId, true);
+            return;
+          }
+        }
         break;
       }
     }
 
-    if (['class_declaration', 'interface_declaration', 'abstract_class_declaration'].includes(node.type)) {
+    if (
+      ['class_declaration', 'interface_declaration', 'abstract_class_declaration'].includes(node.type) ||
+      (node.type === 'class' && exported)
+    ) {
       const nameNode = childByField(node, 'name');
-      if (!nameNode) return;
-      const simpleName = text(nameNode, src);
+      if (!nameNode && node.type !== 'class') return;
+      const simpleName = nameNode ? text(nameNode, src) : 'default';
       const fqn = `${modulePath}:${simpleName}`;
 
       // `@Controller('albums')` written above `export class` belongs to the
@@ -645,7 +776,7 @@ export function extractTypeScript(tree, src, ctx = {}) {
         signature: `${node.type === 'interface_declaration' ? 'interface' : 'class'} ${simpleName}`,
         arity: null,
         supertypes: heritage(node),
-        modifiers: exported ? ['export'] : [],
+        modifiers: exported ? (nameNode ? ['export'] : ['export', 'esm-default']) : [],
         annotations: decorators.map((d) => d.name),
         ...pos(node),
       });
@@ -675,12 +806,20 @@ export function extractTypeScript(tree, src, ctx = {}) {
       return;
     }
 
-    if (node.type === 'method_definition' || node.type === 'method_signature') {
+    if (['method_definition', 'method_signature', 'abstract_method_signature'].includes(node.type)) {
       const nameNode = childByField(node, 'name');
       if (!nameNode) return;
       const simpleName = text(nameNode, src);
-      const containerFqn = typeStack[typeStack.length - 1] ?? modulePath;
-      const isCtor = simpleName === 'constructor';
+      // A method written in an object literal belongs to that literal, not to
+      // whatever class the literal happens to sit inside: `build() { return {
+      // inner() {} } }` made `inner` a member of the class, and `this.inner()`
+      // elsewhere in it resolved with a declaration's confidence.
+      const inObject = node.parent?.type === 'object';
+      const scopeSymbol = symbols[scopeId];
+      const containerFqn = inObject
+        ? (scopeSymbol?.kind === 'file' ? modulePath : (scopeSymbol?.fqn ?? modulePath))
+        : (typeStack[typeStack.length - 1] ?? modulePath);
+      const isCtor = !inObject && simpleName === 'constructor';
       const doc = jsdocFor(node);
       const ret =
         typeFromAnnotation(node, src) ?? doc.returns ?? inferredReturn(childByField(node, 'body'), src);
@@ -689,15 +828,17 @@ export function extractTypeScript(tree, src, ctx = {}) {
       pendingDecorators = [];
       const id = addSymbol({
         name: simpleName,
-        fqn: `${containerFqn}#${simpleName}`,
-        kind: isCtor ? 'constructor' : 'method',
+        fqn: inObject
+          ? `${containerFqn}${scopeSymbol?.kind === 'file' ? ':' : '.'}${simpleName}`
+          : `${containerFqn}#${simpleName}`,
+        kind: isCtor ? 'constructor' : inObject ? 'function' : 'method',
         container_fqn: containerFqn,
         type_name: ret,
         type_args: elementFromAnnotation(node, src),
         signature: simpleName,
         arity: 0,
         supertypes: [],
-        modifiers: [],
+        modifiers: inObject ? ['object-member'] : node.type === 'abstract_method_signature' ? ['abstract'] : [],
         annotations: decorators.map((d) => d.name),
         ...pos(node),
       });
@@ -705,14 +846,15 @@ export function extractTypeScript(tree, src, ctx = {}) {
         refs.push({ fromTmpId: id, name: d.name, receiver: null, arity: null, str_args: d.strArgs, line: d.line, kind: 'annotation' });
       }
 
-      const params = readParams(childByField(node, 'parameters'), id, containerFqn, {}, doc);
+      const params = readParams(childByField(node, 'parameters'), id, inObject ? null : containerFqn, {}, doc);
       symbols[id].arity = params.length;
       symbols[id].signature =
         `${simpleName}(${params.map((p) => `${p.name}${p.type ? `: ${p.type}` : ''}`).join(', ')})` +
         (ret ? `: ${ret}` : '');
 
       const body = childByField(node, 'body');
-      if (body) walk(body, typeStack, id, false);
+      // An object literal's method does not see the class as `this`.
+      if (body) walk(body, inObject ? [] : typeStack, id, false);
       return;
     }
 
@@ -721,7 +863,45 @@ export function extractTypeScript(tree, src, ctx = {}) {
       const containerFqn = typeStack[typeStack.length - 1] ?? modulePath;
       if (nameNode) {
         const fieldName = text(nameNode, src);
-        const typeName = typeFromAnnotation(node, src);
+        const value = childByField(node, 'value');
+        const decorators = pendingDecorators;
+        pendingDecorators = [];
+
+        // `handleClick = () => { this.load() }` is a method in every way that
+        // matters: it has a body, and `this` inside it is the class. Read as
+        // a field, its calls were booked against the class itself, and a
+        // resolver looking for the class of a class found none.
+        if (value && ['arrow_function', 'function_expression'].includes(value.type)) {
+          const doc = jsdocFor(node);
+          const ret = typeFromAnnotation(value, src) ?? doc.returns ?? inferredReturn(childByField(value, 'body'), src);
+          const id = addSymbol({
+            name: fieldName,
+            fqn: `${containerFqn}#${fieldName}`,
+            kind: 'method',
+            container_fqn: containerFqn,
+            type_name: ret,
+            type_args: elementFromAnnotation(value, src),
+            signature: fieldName,
+            arity: 0,
+            supertypes: [],
+            modifiers: ['arrow-field'],
+            annotations: decorators.map((d) => d.name),
+            ...pos(node),
+          });
+          const params = readParams(childByField(value, 'parameters') ?? childByField(value, 'parameter'), id, null, {}, doc);
+          symbols[id].arity = params.length;
+          const body = childByField(value, 'body');
+          if (body) walk(body, typeStack, id, false);
+          return;
+        }
+
+        // `private readonly logger = new Logger()` -- the NestJS shape, where
+        // the initialiser is the only thing that ever says the field's type.
+        let typeName = typeFromAnnotation(node, src);
+        if (!typeName && value?.type === 'new_expression') {
+          const ctor = childByField(value, 'constructor');
+          if (ctor) typeName = bareType(text(ctor, src));
+        }
         addSymbol({
           name: fieldName,
           fqn: `${containerFqn}#${fieldName}`,
@@ -733,10 +913,9 @@ export function extractTypeScript(tree, src, ctx = {}) {
           arity: null,
           supertypes: [],
           modifiers: [],
-          annotations: [],
+          annotations: decorators.map((d) => d.name),
           ...pos(node),
         });
-        const value = childByField(node, 'value');
         if (value) walk(value, typeStack, scopeId, false);
       }
       return;
@@ -795,22 +974,32 @@ export function extractTypeScript(tree, src, ctx = {}) {
           if (ctor) typeName = bareType(text(ctor, src));
         }
 
-        // A top-level arrow function is a function, not a variable.
+        // An arrow function is a function, not a variable. At module level it
+        // is the module's; inside another function it belongs to that scope,
+        // and giving it the module's name made `const load = () => 3` inside
+        // one function shadow the exported `load` everyone else called.
         if (value && ['arrow_function', 'function_expression'].includes(value.type)) {
+          const owner = symbols[scopeId];
+          const nested = owner && owner.kind !== 'file';
+          const containerFqn = nested ? owner.fqn : modulePath;
+          const doc = jsdocFor(node.parent ?? node);
           const id = addSymbol({
             name: varName,
-            fqn: `${modulePath}:${varName}`,
+            fqn: nested ? `${containerFqn}.${varName}` : `${modulePath}:${varName}`,
             kind: 'function',
-            container_fqn: modulePath,
-            type_name: typeFromAnnotation(value, src),
+            container_fqn: containerFqn,
+            type_name: typeFromAnnotation(value, src) ?? doc.returns ?? inferredReturn(childByField(value, 'body'), src),
             signature: varName,
             arity: 0,
             supertypes: [],
-            modifiers: exported ? ['export'] : [],
+            modifiers: exported ? ['export'] : nested ? ['local'] : [],
             annotations: [],
             ...pos(node),
           });
-          const params = readParams(childByField(value, 'parameters'), id, null);
+          if (nested) {
+            locals.push({ scopeTmpId: scopeId, name: varName, type_name: null, init_kind: 'function' });
+          }
+          const params = readParams(childByField(value, 'parameters') ?? childByField(value, 'parameter'), id, null, {}, doc);
           symbols[id].arity = params.length;
           const body = childByField(value, 'body');
           if (body) walk(body, typeStack, id, false);
@@ -892,9 +1081,37 @@ export function extractTypeScript(tree, src, ctx = {}) {
             init_path: initPath,
           });
         }
+      } else if (nameNode && ['object_pattern', 'array_pattern'].includes(nameNode.type)) {
+        // `const { data } = await client.get('/x')` and `const [s, setS] =
+        // useState(0)`: the commonest declarations in modern TypeScript, and
+        // neither the call nor the names were read -- the declarator returned
+        // before walking anything.
+        if (value) walk(value, typeStack, scopeId, false);
+        if (scopeId != null) bindPattern(nameNode, scopeId, declaredType);
       }
 
       return;
+    }
+
+    // `for (const item of items)` binds `item` to one element of `items`,
+    // which nothing recorded; the call on it was then proven ambient.
+    if (node.type === 'for_in_statement' && scopeId != null) {
+      const left = childByField(node, 'left');
+      const right = childByField(node, 'right');
+      if (left?.type === 'identifier') {
+        const source = right && /^(?:this\.)?[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$/.test(text(right, src).trim())
+          ? text(right, src).trim()
+          : null;
+        locals.push({
+          scopeTmpId: scopeId,
+          name: text(left, src),
+          type_name: null,
+          init_kind: source ? 'element-of' : 'loop',
+          init_path: source,
+        });
+      } else if (left && ['object_pattern', 'array_pattern'].includes(left.type)) {
+        bindPattern(left, scopeId, null);
+      }
     }
 
     if (node.type === 'call_expression') {
@@ -951,6 +1168,9 @@ export function extractTypeScript(tree, src, ctx = {}) {
       // `new (resolveClass())()` and friends have no name to record.
       const ctorName = ctor ? bareType(text(ctor, src)) : null;
       if (ctorName) {
+        // Recorded by node, so `new X().m()` can link `m` back to the
+        // construction and know its receiver is an X.
+        callRefByNode.set(node.id, refs.length);
         refs.push({
           fromTmpId: scopeId,
           name: ctorName,
@@ -1071,20 +1291,37 @@ export function extractTypeScript(tree, src, ctx = {}) {
  * Run after the walk, like the CommonJS pass, so the symbol already exists.
  */
 function markEsmDefault(root, src, modulePath, symbols) {
+  const mark = (name, how) => {
+    const owner = symbols.find(
+      (sym) => sym.name === name && sym.container_fqn === modulePath && ['class', 'function', 'field'].includes(sym.kind),
+    );
+    if (owner) owner.modifiers = [...new Set([...(owner.modifiers ?? []), 'export', how])];
+  };
   for (let i = 0; i < root.namedChildCount; i++) {
     const node = root.namedChild(i);
     if (node?.type !== 'export_statement') continue;
-    // `export default` writes an anonymous `default` token; `export { x as
-    // default }` is a re-export and is read elsewhere.
-    if (!/^export\s+default\b/.test(text(node, src))) continue;
+    const written = text(node, src);
+    // `export = CC` is the CommonJS default, spelled the TypeScript way.
+    const assigned = /^export\s*=\s*([A-Za-z_$][\w$]*)\s*;?$/.exec(written);
+    if (assigned) {
+      mark(assigned[1], 'cjs-default');
+      continue;
+    }
+    // `export { App as default }` with no `from` names this module's own App.
+    if (!childByField(node, 'source')) {
+      const clause = firstOfType(node, 'export_clause');
+      for (const spec of clause ? namedChildrenOfType(clause, 'export_specifier') : []) {
+        const alias = childByField(spec, 'alias');
+        const nameNode = childByField(spec, 'name');
+        if (alias && nameNode && text(alias, src) === 'default') mark(text(nameNode, src), 'esm-default');
+      }
+    }
+    if (!/^export\s+default\b/.test(written)) continue;
     const decl = childByField(node, 'declaration') ?? childByField(node, 'value');
     const nameNode = decl ? childByField(decl, 'name') : null;
     const name = nameNode ? text(nameNode, src) : decl?.type === 'identifier' ? text(decl, src) : null;
     if (!name) continue;
-    const owner = symbols.find(
-      (sym) => sym.name === name && sym.container_fqn === modulePath && ['class', 'function'].includes(sym.kind),
-    );
-    if (owner) owner.modifiers = [...new Set([...(owner.modifiers ?? []), 'export', 'esm-default'])];
+    mark(name, 'esm-default');
   }
 }
 

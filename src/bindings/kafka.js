@@ -12,6 +12,8 @@
  * runs from whoever sends to whoever handles.
  */
 
+import { attributeStrings } from './text.js';
+
 /** Spring Kafka, and the Spring Cloud Stream spelling of the same contract. */
 const JAVA_LISTENERS = new Set(['@KafkaListener', '@StreamListener', '@KafkaHandler']);
 /** NestJS microservices: the Kafka transport reads these off a controller. */
@@ -44,7 +46,7 @@ export function topicName(value) {
  */
 const JS_TOPIC = /\b(subscribe|send|sendBatch|produce|publish)\s*\(\s*\{[^}]{0,200}?\btopic\s*:\s*['"`]([^'"`]+)['"`]/g;
 /** `topic :orders do ... end` inside a Karafka routing block. */
-const RUBY_KARAFKA_TOPIC = /^\s*topic\s+[:'"]([\w.-]+)['"]?\s*do/gm;
+const RUBY_KARAFKA_TOPIC = /^[ \t]*topic\s+[:'"]([\w.-]+)['"]?\s*do/gm;
 /** `produce_async(topic: 'orders', ...)` and its sync sibling. */
 const RUBY_KARAFKA_PRODUCE = /produce_(?:async|sync|many_async|many_sync)\s*\(?[^)\n]*topic:\s*['"]([^'"]+)['"]/g;
 
@@ -209,15 +211,9 @@ export default {
  * of the time" is exactly the kind of link the floor exists to strike off.
  */
 function topicsFromAnnotation(ctx, ref) {
-  const file = ctx.db.prepare('SELECT path FROM files WHERE id = ?').get(ref.file_id);
-  let text = '';
-  try {
-    const lines = ctx.readSource(file.path).split('\n');
-    text = lines.slice(Math.max(0, (ref.line ?? 1) - 1), (ref.line ?? 1) + 2).join(' ');
-  } catch {
-    return [];
-  }
-  const attr = /\btopics?\s*=\s*(\{[^}]*\}|"[^"]*")/.exec(text);
-  if (!attr) return [];
-  return [...attr[1].matchAll(/"([^"]+)"/g)].map((m) => topicName(m[1])).filter(Boolean);
+  // The extractor now carries the annotation's argument text on the ref, so
+  // the file is not re-read -- and not read three lines deep, which lost a
+  // `topics =` written on the fourth line and any array spanning lines.
+  const raw = ref.raw ?? '';
+  return attributeStrings(raw, ['topics', 'topic']).map(topicName).filter(Boolean);
 }

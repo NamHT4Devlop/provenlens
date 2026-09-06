@@ -1,0 +1,1 @@
+CREATE TABLE IF NOT EXISTS "public"."comments" (id BIGINT PRIMARY KEY);

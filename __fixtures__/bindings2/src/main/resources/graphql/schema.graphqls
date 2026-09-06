@@ -1,0 +1,19 @@
+type Query {
+  """
+  Returns: a page of orders
+  """
+  orders(
+    first: Int
+    after: String
+  ): [Order!]!
+  orderById(id: ID!): Order
+}
+
+type Order {
+  id: ID!
+  customer: Customer
+}
+
+type Customer {
+  id: ID!
+}

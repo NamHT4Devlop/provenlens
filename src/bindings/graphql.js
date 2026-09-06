@@ -31,7 +31,23 @@ export function coordinate(typeName, field) {
   return `${typeName}.${field}`;
 }
 
-const lineAt = (text, index) => text.slice(0, index).split('\n').length;
+import { attributeStrings } from './text.js';
+
+/**
+ * A schema with its descriptions blanked and its argument lists flattened,
+ * offsets preserved, so a field can be read one line at a time.
+ *
+ * `"""Returns: a page"""` is a description, and read as a line it looked
+ * like a field called `Returns`. An argument list spread over several lines
+ * -- `orders(\n first: Int\n after: String\n): [Order!]!` -- made `first` and
+ * `after` fields and lost `orders`, the only real one.
+ */
+function readable(text) {
+  const blank = (m) => m.replace(/[^\n]/g, ' ');
+  return text
+    .replace(/"""[\s\S]*?"""/g, blank)
+    .replace(/\([^()]*\)/g, (m) => m.replace(/\n/g, ' '));
+}
 
 export default {
   name: 'graphql',
@@ -42,7 +58,8 @@ export default {
   collect(ctx) {
     // --- The schema: every field becomes a symbol, and asks for a resolver --
     for (const file of ctx.files) {
-      for (const block of file.content.matchAll(TYPE_BLOCK)) {
+      const content = readable(file.content);
+      for (const block of content.matchAll(TYPE_BLOCK)) {
         const typeName = block[1];
         const body = block[2];
         const bodyStart = block.index + block[0].indexOf('{') + 1;
@@ -67,8 +84,8 @@ export default {
             kind: 'graphql-field',
             containerFqn: typeName,
             signature: clean.trim(),
-            startLine: lineAt(file.content, at),
-            endLine: lineAt(file.content, at),
+            startLine: file.lineAt(at),
+            endLine: file.lineAt(at),
             startByte: at,
             endByte: at + line.length,
             annotations: ['schema'],
@@ -78,7 +95,7 @@ export default {
             key,
             symbolId,
             fileId: file.id,
-            line: lineAt(file.content, at),
+            line: file.lineAt(at),
             detail: clean.trim(),
           });
         }
@@ -94,12 +111,13 @@ export default {
       )
       .all();
 
-    // The annotation's own arguments, by the line it sits on: str_args keeps
-    // the values and drops the attribute names, so `@SchemaMapping(typeName =
-    // "Order", field = "customer")` arrives as two anonymous strings.
-    const argsAt = new Map();
-    for (const ref of ctx.refs("r.kind = 'annotation' AND r.str_args IS NOT NULL")) {
-      argsAt.set(`${ref.file_id}:${ref.line}:${ref.name.replace(/^@/, '')}`, ref.strArgs);
+    // The annotation's own arguments, by the method it sits on. Keyed by line
+    // they were lost whenever another annotation came first: the method's
+    // start line is the first annotation's, and `@Deprecated` above
+    // `@QueryMapping("orderById")` left the override unread.
+    const argsOn = new Map();
+    for (const ref of ctx.refs("r.kind = 'annotation' AND r.from_symbol_id IS NOT NULL")) {
+      argsOn.set(`${ref.from_symbol_id}:${ref.name.replace(/^@/, '')}`, ref);
     }
 
     for (const method of annotated) {
@@ -111,18 +129,23 @@ export default {
       }
 
       for (const annotation of names) {
-        const args = argsAt.get(`${method.file_id}:${method.start_line}:${annotation}`) ?? [];
+        const ref = argsOn.get(`${method.id}:${annotation}`);
+        const args = ref?.strArgs ?? [];
         let key = null;
 
         if (SPRING_ROOTS[annotation]) {
           // @QueryMapping           -> Query.<method name>
           // @QueryMapping("byId")   -> Query.byId
-          key = coordinate(SPRING_ROOTS[annotation], args.find(Boolean) ?? method.name);
+          const [named] = ref?.raw != null ? attributeStrings(ref.raw, ['value', 'name', 'field']) : args;
+          key = coordinate(SPRING_ROOTS[annotation], named ?? method.name);
         } else if (annotation === 'SchemaMapping') {
-          // typeName and field, in source order. With only two strings and no
-          // attribute names, order is all there is -- and when just one is
-          // given it is the field, on a type the class declares elsewhere.
-          key = args.length >= 2 ? coordinate(args[0], args[1]) : null;
+          // typeName and field by name, whichever order they were written in:
+          // read positionally, `field = "customer", typeName = "Order"` became
+          // the coordinate `customer.Order`. A lone field belongs to a type
+          // the class declares elsewhere, and is left alone.
+          const typeName = ref?.raw != null ? attributeStrings(ref.raw, ['typeName'])[0] : args[0];
+          const field = ref?.raw != null ? attributeStrings(ref.raw, ['field', 'value'])[0] : args[1];
+          key = coordinate(typeName, field);
         } else if (NEST_ROOTS[annotation]) {
           key = coordinate(NEST_ROOTS[annotation], nestFieldName(ctx, method, annotation) ?? method.name);
         }

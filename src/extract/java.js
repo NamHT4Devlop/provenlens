@@ -67,6 +67,11 @@ function firstOfType(node, type) {
   return namedChildrenOfType(node, type)[0] ?? null;
 }
 
+/** Spring's route annotations, which mean something even with no argument. */
+const ROUTE_ANNOTATIONS = new Set([
+  'RequestMapping', 'GetMapping', 'PostMapping', 'PutMapping', 'DeleteMapping', 'PatchMapping',
+]);
+
 /**
  * Collects `@Foo` / `@Foo(...)` names from a `modifiers` node.
  * `withArgs` also returns the string literals each annotation was given, which
@@ -95,9 +100,21 @@ function readModifiers(node, src) {
         if (/\bchain\s*=\s*true/.test(raw)) annotations.push('Accessors.chain');
         if (/\bfluent\s*=\s*true/.test(raw)) annotations.push('Accessors.fluent');
       }
-      const strings = [...text(c, src).matchAll(/"([^"\\]*(?:\\.[^"\\]*)*)"/g)].map((m) => m[1]);
-      if (strings.length) {
-        annotationArgs.push({ name, strings, line: c.startPosition.row + 1 });
+      const raw = text(c, src);
+      const strings = [...raw.matchAll(/"([^"\\]*(?:\\.[^"\\]*)*)"/g)].map((m) => m[1]);
+      // The argument text travels too: `str_args` keeps the values and drops
+      // the attribute names, and `@GetMapping(produces = "application/json",
+      // value = "/list")` cannot be read without them. A route annotation is
+      // kept even with no argument at all -- `@PostMapping` alone serves the
+      // class prefix, and dropping it dropped the route.
+      if (strings.length || ROUTE_ANNOTATIONS.has(name)) {
+        const open = raw.indexOf('(');
+        annotationArgs.push({
+          name,
+          strings,
+          raw: open === -1 ? '' : raw.slice(open + 1, raw.lastIndexOf(')')),
+          line: c.startPosition.row + 1,
+        });
       }
     } else if (!c.isNamed) {
       modifiers.push(text(c, src));
@@ -143,7 +160,9 @@ function readSupertypes(node, src) {
     const list = firstOfType(n, 'type_list') ?? n;
     for (let i = 0; i < list.namedChildCount; i++) {
       const t = list.namedChild(i);
-      if (!t) continue;
+      // A trailing `// comment` inside the list is a named child of it, and
+      // became a supertype -- then the "external owner" of every bare call.
+      if (!t || t.type === 'line_comment' || t.type === 'block_comment') continue;
       const name = normalizeType(text(t, src));
       if (name) out.push(name);
     }
@@ -158,14 +177,24 @@ function paramList(paramsNode, src) {
     const p = paramsNode.namedChild(i);
     if (!p) continue;
     if (p.type !== 'formal_parameter' && p.type !== 'spread_parameter') continue;
-    const typeNode = childByField(p, 'type');
+    // `String... xs` has no `type` field: its type is the first named child
+    // that is neither the modifiers nor the declarator.
+    const typeNode =
+      childByField(p, 'type') ??
+      (p.type === 'spread_parameter'
+        ? [...Array(p.namedChildCount).keys()]
+            .map((i) => p.namedChild(i))
+            .find((c) => c && !['modifiers', 'variable_declarator', 'identifier'].includes(c.type))
+        : null);
     const nameNode = childByField(p, 'name') ?? firstOfType(p, 'variable_declarator');
+    const declarator = nameNode?.type === 'variable_declarator' ? childByField(nameNode, 'name') : nameNode;
+    const varargs = p.type === 'spread_parameter';
     params.push({
-      name: nameNode ? text(nameNode, src) : null,
+      name: declarator ? text(declarator, src) : null,
       type: typeNode ? normalizeType(text(typeNode, src)) : null,
       // Kept whole: `Consumer<Options>` is the only place a lambda's parameter
       // type is written down. Overload matching erases it again on read.
-      raw: typeNode ? text(typeNode, src).trim() : null,
+      raw: typeNode ? `${text(typeNode, src).trim()}${varargs ? '...' : ''}` : varargs ? '...' : null,
     });
   }
   return params;
@@ -176,15 +205,24 @@ function paramList(paramsNode, src) {
  * the spot; a bare name is left as-is for the resolver to look up in scope.
  * Anything more complex becomes null -- unknown, rather than guessed.
  */
-function argumentTokens(argsNode, src) {
-  if (!argsNode) return [];
+/**
+ * The arguments of a call, comments left out. tree-sitter files a `/* c *\/`
+ * between two arguments as a named child of the list, so `f(1 /* first *\/,
+ * 2)` counted three arguments and picked the three-argument overload.
+ */
+function argumentNodes(argsNode) {
   const out = [];
+  if (!argsNode) return out;
   for (let i = 0; i < argsNode.namedChildCount; i++) {
     const arg = argsNode.namedChild(i);
-    if (!arg) {
-      out.push(null);
-      continue;
-    }
+    if (arg && arg.type !== 'line_comment' && arg.type !== 'block_comment') out.push(arg);
+  }
+  return out;
+}
+
+function argumentTokens(argsNode, src) {
+  const out = [];
+  for (const arg of argumentNodes(argsNode)) {
     switch (arg.type) {
       case 'string_literal':
         out.push('!String');
@@ -227,9 +265,8 @@ function stringArgs(argsNode, src) {
   if (!argsNode) return null;
   const out = [];
   let any = false;
-  for (let i = 0; i < argsNode.namedChildCount; i++) {
-    const arg = argsNode.namedChild(i);
-    if (arg && arg.type === 'string_literal') {
+  for (const arg of argumentNodes(argsNode)) {
+    if (arg.type === 'string_literal') {
       out.push(text(arg, src).replace(/^["']|["']$/g, ''));
       any = true;
     } else out.push(null);
@@ -278,7 +315,7 @@ export function extractJava(tree, src) {
         if (!id) return;
         const raw = text(id, src);
         const isWildcard = text(node, src).includes('*');
-        const isStatic = text(node, src).trimStart().startsWith('import static');
+        const isStatic = /^import\s+static\b/.test(text(node, src).trimStart());
         imports.push({
           fqn: raw,
           simple: raw.split('.').pop(),
@@ -295,7 +332,7 @@ export function extractJava(tree, src) {
       const simpleName = text(nameNode, src);
       const nextStack = [...typeStack, simpleName];
       const fqn = [pkg, ...nextStack].filter(Boolean).join('.');
-      const { modifiers, annotations } = readModifiers(node, src);
+      const { modifiers, annotations, annotationArgs } = readModifiers(node, src);
       // The type variables this declaration introduces travel with it.
       modifiers.push(...readTypeParams(node, src));
 
@@ -312,6 +349,24 @@ export function extractJava(tree, src) {
         annotations,
         ...pos(node),
       });
+
+      // A class-level `@RequestMapping("/api/orders")` is the prefix of every
+      // route the class declares. Methods have always sent their annotations
+      // down the ref pipeline; types discarded theirs, so the prefix was never
+      // read and every Spring route in every repository was keyed without it.
+      for (const ann of annotationArgs) {
+        refs.push({
+          fromTmpId: id,
+          name: `@${ann.name}`,
+          receiver: null,
+          receiverRefTmp: null,
+          arity: ann.strings.length,
+          str_args: ann.strings,
+          arg_types: [ann.raw],
+          line: ann.line,
+          kind: 'annotation',
+        });
+      }
 
       // A record's header params are also fields -- and each one compiles to
       // an accessor of the same name. `Request(String name)` gives you
@@ -356,16 +411,28 @@ export function extractJava(tree, src) {
       return;
     }
 
-    if (node.type === 'method_declaration' || node.type === 'constructor_declaration') {
+    if (
+      ['method_declaration', 'constructor_declaration', 'compact_constructor_declaration',
+        'annotation_type_element_declaration'].includes(node.type)
+    ) {
+      // A record's compact constructor has the record's name; the grammar
+      // gives it none of its own.
       const nameNode = childByField(node, 'name');
-      if (!nameNode) return;
-      const simpleName = text(nameNode, src);
+      const simpleName = nameNode
+        ? text(nameNode, src)
+        : node.type === 'compact_constructor_declaration'
+          ? typeStack[typeStack.length - 1]
+          : null;
+      if (!simpleName) return;
       const containerFqn = [pkg, ...typeStack].filter(Boolean).join('.');
-      const isCtor = node.type === 'constructor_declaration';
+      const isCtor = node.type !== 'method_declaration' && node.type !== 'annotation_type_element_declaration';
       const params = paramList(childByField(node, 'parameters'), src);
       const retNode = childByField(node, 'type');
       const ret = retNode ? normalizeType(text(retNode, src)) : null;
       const { modifiers, annotations, annotationArgs } = readModifiers(node, src);
+      // `<T> void each(T item)` introduces T for this method alone; recorded
+      // like a class's, so `item.save()` is not linked to some class called T.
+      modifiers.push(...readTypeParams(node, src));
 
       const id = addSymbol({
         name: simpleName,
@@ -375,7 +442,7 @@ export function extractJava(tree, src) {
         type_name: ret,
         type_args: retNode ? genericArgOf(text(retNode, src)) : null,
         signature: `${isCtor ? '' : `${ret ?? 'void'} `}${simpleName}(${params
-          .map((p) => p.type ?? '?')
+          .map((p) => `${p.type ?? '?'}${p.raw?.endsWith('...') ? '...' : ''}`)
           .join(', ')})`,
         arity: params.length,
         params: params.map((p) => p.raw ?? p.type),
@@ -395,6 +462,9 @@ export function extractJava(tree, src) {
           receiverRefTmp: null,
           arity: ann.strings.length,
           str_args: ann.strings,
+          // For an annotation, the one "argument" is its whole argument list
+          // as written, attribute names included.
+          arg_types: [ann.raw],
           line: ann.line,
           kind: 'annotation',
         });
@@ -409,7 +479,7 @@ export function extractJava(tree, src) {
       return;
     }
 
-    if (node.type === 'field_declaration') {
+    if (node.type === 'field_declaration' || node.type === 'constant_declaration') {
       const containerFqn = [pkg, ...typeStack].filter(Boolean).join('.');
       const typeNode = childByField(node, 'type');
       const typeName = typeNode ? normalizeType(text(typeNode, src)) : null;
@@ -464,13 +534,21 @@ export function extractJava(tree, src) {
             initPath = written;
           }
         }
+        // The initialiser is walked first so the local can name the exact
+        // call its value came from. Matched by line instead, `var v =
+        // h.first(h.second())` took the LAST call on the line -- the inner
+        // argument -- and typed v as what second() returns.
+        if (value) walk(value, typeStack, scopeId);
         if (nameNode && scopeId != null) {
+          const initRefTmp =
+            value?.type === 'method_invocation' ? (callRefByNode.get(value.id) ?? null) : null;
           locals.push({
             scopeTmpId: scopeId,
             name: text(nameNode, src),
             type_name: typeName,
             type_args: typeNode ? genericArgOf(text(typeNode, src)) : null,
             line: node.startPosition.row + 1,
+            ownerRefTmp: typeName ? null : initRefTmp,
             init_kind: typeName
               ? null
               : value?.type === 'method_invocation'
@@ -481,7 +559,6 @@ export function extractJava(tree, src) {
             init_path: initPath,
           });
         }
-        if (value) walk(value, typeStack, scopeId);
       }
       return;
     }
@@ -492,14 +569,16 @@ export function extractJava(tree, src) {
     if (node.type === 'lambda_expression' && scopeId != null) {
       const params = childByField(node, 'parameters');
       if (params) {
-        const names =
+        // `(Helper hh) -> ...` writes the type down; keep it.
+        const entries =
           params.type === 'identifier'
-            ? [params]
+            ? [{ name: params, type: null }]
             : [
-                ...namedChildrenOfType(params, 'identifier'),
-                ...namedChildrenOfType(params, 'formal_parameter').map(
-                  (p) => childByField(p, 'name') ?? p,
-                ),
+                ...namedChildrenOfType(params, 'identifier').map((n) => ({ name: n, type: null })),
+                ...namedChildrenOfType(params, 'formal_parameter').map((p) => ({
+                  name: childByField(p, 'name') ?? p,
+                  type: childByField(p, 'type'),
+                })),
               ];
         // Which call this lambda was passed to. Its parameter holds one
         // element of whatever that call's receiver produces, and only the
@@ -508,13 +587,14 @@ export function extractJava(tree, src) {
         while (owner && owner.type !== 'method_invocation') owner = owner.parent;
         const ownerRefTmp = owner ? (callRefByNode.get(owner.id) ?? null) : null;
 
-        for (const n of names) {
+        for (const { name, type } of entries) {
+          const declared = type ? normalizeType(text(type, src)) : null;
           locals.push({
             scopeTmpId: scopeId,
-            name: text(n, src),
-            type_name: null,
-            ownerRefTmp,
-            init_kind: ownerRefTmp == null ? null : 'lambda',
+            name: text(name, src),
+            type_name: declared === 'var' ? null : declared,
+            ownerRefTmp: declared ? null : ownerRefTmp,
+            init_kind: declared || ownerRefTmp == null ? null : 'lambda',
           });
         }
       }
@@ -541,16 +621,19 @@ export function extractJava(tree, src) {
       }
     }
 
+    // `var` names no type anywhere it appears; stored literally it became a
+    // type called `var` that resolved by name to nothing, then by guess.
+    const declaredType = (typeNode) => {
+      const t = typeNode ? normalizeType(text(typeNode, src)) : null;
+      return t === 'var' ? null : t;
+    };
+
     if (node.type === 'resource' && scopeId != null) {
       // try (InputStream in = ...) declares `in` for the whole block.
       const nameNode = childByField(node, 'name');
       const typeNode = childByField(node, 'type');
       if (nameNode) {
-        locals.push({
-          scopeTmpId: scopeId,
-          name: text(nameNode, src),
-          type_name: typeNode ? normalizeType(text(typeNode, src)) : null,
-        });
+        locals.push({ scopeTmpId: scopeId, name: text(nameNode, src), type_name: declaredType(typeNode) });
       }
     }
 
@@ -558,12 +641,136 @@ export function extractJava(tree, src) {
       const typeNode = childByField(node, 'type');
       const nameNode = childByField(node, 'name');
       if (nameNode && scopeId != null) {
-        locals.push({
-          scopeTmpId: scopeId,
-          name: text(nameNode, src),
-          type_name: typeNode ? normalizeType(text(typeNode, src)) : null,
+        locals.push({ scopeTmpId: scopeId, name: text(nameNode, src), type_name: declaredType(typeNode) });
+      }
+    }
+
+    // `x instanceof Helper h` and `case Helper h ->` bind h to a Helper, in
+    // the very expression that says so.
+    if (node.type === 'instanceof_expression' && scopeId != null) {
+      const nameNode = childByField(node, 'name');
+      const typeNode = childByField(node, 'right');
+      if (nameNode?.type === 'identifier') {
+        locals.push({ scopeTmpId: scopeId, name: text(nameNode, src), type_name: declaredType(typeNode) });
+      }
+    }
+    if (node.type === 'type_pattern' && scopeId != null) {
+      const typeNode = node.namedChild(0);
+      const nameNode = node.namedChild(node.namedChildCount - 1);
+      if (nameNode?.type === 'identifier' && typeNode && typeNode !== nameNode) {
+        locals.push({ scopeTmpId: scopeId, name: text(nameNode, src), type_name: declaredType(typeNode) });
+      }
+    }
+
+    // `Helper::compute`, `this::work`, `Helper::new` -- a call written
+    // without its arguments. Nothing recorded them at all.
+    if (node.type === 'method_reference' && scopeId != null) {
+      const last = node.child(node.childCount - 1);
+      const object = node.namedChild(0);
+      if (last && object) {
+        const objectText = text(object, src);
+        if (last.type === 'new' || text(last, src) === 'new') {
+          refs.push({
+            fromTmpId: scopeId,
+            name: normalizeType(objectText),
+            receiver: null,
+            arity: null,
+            line: node.startPosition.row + 1,
+            kind: 'new',
+          });
+        } else if (last.type === 'identifier') {
+          refs.push({
+            fromTmpId: scopeId,
+            name: text(last, src),
+            receiver: objectText,
+            arity: null,
+            line: node.startPosition.row + 1,
+            kind: 'call',
+          });
+        }
+      }
+      return;
+    }
+
+    // `this(...)` and `super(...)` in a constructor call another constructor.
+    // `<init>` stands for the parent's name, which only the resolver knows.
+    if (node.type === 'explicit_constructor_invocation' && scopeId != null) {
+      const which = childByField(node, 'constructor');
+      const args = childByField(node, 'arguments');
+      const word = which ? text(which, src) : '';
+      if (word === 'this' || word === 'super') {
+        refs.push({
+          fromTmpId: scopeId,
+          name: word === 'this' ? (typeStack[typeStack.length - 1] ?? '<init>') : '<init>',
+          receiver: word,
+          arity: argumentNodes(args).length,
+          arg_types: argumentTokens(args, src),
+          line: node.startPosition.row + 1,
+          kind: 'call',
         });
       }
+      if (args) walk(args, typeStack, scopeId);
+      return;
+    }
+
+    // `RED("r") { ... }`: an enum constant is a field of the enum's type, its
+    // arguments call the enum's constructor, and a body is an anonymous
+    // subclass -- exactly what `new Color() { ... }` would be. Read as
+    // nothing, the constant did not exist and its body's methods landed on
+    // the enum itself under the same name.
+    if (node.type === 'enum_constant' && typeStack.length) {
+      const nameNode = childByField(node, 'name');
+      const enumFqn = [pkg, ...typeStack].filter(Boolean).join('.');
+      const enumName = typeStack[typeStack.length - 1];
+      if (nameNode) {
+        addSymbol({
+          name: text(nameNode, src),
+          fqn: `${enumFqn}#${text(nameNode, src)}`,
+          kind: 'field',
+          container_fqn: enumFqn,
+          type_name: enumName,
+          type_args: null,
+          signature: `${enumName} ${text(nameNode, src)}`,
+          arity: null,
+          supertypes: [],
+          modifiers: ['public', 'static', 'final'],
+          annotations: [],
+          ...pos(node),
+        });
+      }
+      const args = childByField(node, 'arguments');
+      if (args && scopeId != null) {
+        refs.push({
+          fromTmpId: scopeId,
+          name: enumName,
+          receiver: null,
+          arity: argumentNodes(args).length,
+          arg_types: argumentTokens(args, src),
+          line: node.startPosition.row + 1,
+          kind: 'new',
+        });
+        walk(args, typeStack, scopeId);
+      }
+      const body = childByField(node, 'body') ?? firstOfType(node, 'enum_body_declarations') ?? firstOfType(node, 'class_body');
+      if (body) {
+        anonymousCount += 1;
+        const fqn = `${enumFqn}.${anonymousCount}`;
+        const id = addSymbol({
+          name: `${anonymousCount}`,
+          fqn,
+          kind: 'class',
+          container_fqn: enumFqn,
+          type_name: null,
+          signature: `${nameNode ? text(nameNode, src) : enumName} { ... }`,
+          arity: null,
+          supertypes: [enumName],
+          modifiers: ['anonymous'],
+          annotations: [],
+          ...pos(node),
+        });
+        walk(body, [...typeStack, `${anonymousCount}`], id);
+      }
+      return;
     }
 
     if (node.type === 'method_invocation') {
@@ -591,7 +798,7 @@ export function extractJava(tree, src) {
           name: text(nameNode, src),
           receiver: objNode ? text(objNode, src) : null,
           receiverRefTmp,
-          arity: args ? args.namedChildCount : null,
+          arity: args ? argumentNodes(args).length : null,
           arg_types: argumentTokens(args, src),
           str_args: stringArgs(args, src),
           line: node.startPosition.row + 1,
@@ -613,7 +820,8 @@ export function extractJava(tree, src) {
           fromTmpId: scopeId,
           name: normalizeType(text(typeNode, src)),
           receiver: null,
-          arity: args ? args.namedChildCount : null,
+          arity: args ? argumentNodes(args).length : null,
+          arg_types: argumentTokens(args, src),
           line: node.startPosition.row + 1,
           kind: 'new',
         });

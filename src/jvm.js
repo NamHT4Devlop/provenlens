@@ -14,9 +14,9 @@
  * marked external, are never resolution targets, and never enter a count.
  */
 import { execFileSync } from 'node:child_process';
-import { existsSync, readdirSync, statSync } from 'node:fs';
-import { join } from 'node:path';
-import { homedir } from 'node:os';
+import { existsSync, readdirSync, statSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { join, delimiter } from 'node:path';
+import { homedir, tmpdir } from 'node:os';
 
 /**
  * Each javap run reopens the whole classpath, so the cost is per *invocation*
@@ -74,8 +74,10 @@ function readMember(line) {
   const name = call[1].split('.').pop();
   const before = text.slice(0, call.index).trim();
   // Everything before the name is modifiers, then optionally a type parameter
-  // list, then the return type. The last token of that is what it returns.
-  const returns = before.replace(/^.*>\s+/, '').split(/\s+/).pop() ?? '';
+  // list, then the return type. With every `<...>` group removed -- matched,
+  // not cut at the last `> `, which read `Function<T, T>` as a return type
+  // called `T>` -- the last token of that is what it returns.
+  const returns = lastTopLevelToken(before);
   if (!returns || returns === name) return null; // a constructor
 
   // Parameter types matter as much as the return type: `configure(Consumer<
@@ -83,6 +85,27 @@ function readMember(line) {
   // that shape is most of what a Spring test harness is made of.
   const params = splitTopLevel(call[2]);
   return { name, returns, arity: params.length, params };
+}
+
+/**
+ * The last whitespace-separated token, where whitespace inside `<...>` does
+ * not separate: `public static <T> java.util.function.Function<T, T>` ends in
+ * one token, the return type with its generics intact for splitGeneric.
+ */
+function lastTopLevelToken(text) {
+  const tokens = [];
+  let depth = 0;
+  let current = '';
+  for (const c of text) {
+    if (c === '<') depth++;
+    else if (c === '>') depth = Math.max(0, depth - 1);
+    if (/\s/.test(c) && depth === 0) {
+      if (current) tokens.push(current);
+      current = '';
+    } else current += c;
+  }
+  if (current) tokens.push(current);
+  return tokens.pop() ?? '';
 }
 
 /**
@@ -138,7 +161,19 @@ export const JAVA_CLASS_NAME = /^[A-Za-z_$][\w$]*(\.[A-Za-z_$][\w$]*)*$/;
 export function readSignatures(fqns, classpath, { run = execFileSync } = {}) {
   const safe = fqns.filter((n) => typeof n === 'string' && n.length <= 512 && JAVA_CLASS_NAME.test(n));
   if (!safe.length) return [];
-  const args = classpath ? ['-cp', classpath, ...safe] : [...safe];
+  let args = classpath ? ['-cp', classpath, ...safe] : [...safe];
+  // A classpath of a few thousand jars runs to half a megabyte, past the
+  // 128 KB one argument may hold on Linux; javap then never started, and
+  // nothing said so. javap reads its arguments from an @file, which has no
+  // such limit.
+  let argfileDir = null;
+  if (args.join(' ').length > 100_000) {
+    argfileDir = mkdtempSync(join(tmpdir(), 'provenlens-javap-'));
+    const file = join(argfileDir, 'args');
+    const quote = (a) => `"${a.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+    writeFileSync(file, args.map(quote).join('\n'));
+    args = [`@${file}`];
+  }
   let out;
   try {
     // `run` is injectable so a test can see what javap is asked to do. A test
@@ -153,6 +188,8 @@ export function readSignatures(fqns, classpath, { run = execFileSync } = {}) {
     // javap exits non-zero when any name is unknown, but still prints the
     // ones it did find, so its output is worth keeping.
     out = err.stdout ?? '';
+  } finally {
+    if (argfileDir) rmSync(argfileDir, { recursive: true, force: true });
   }
 
   const classes = [];
@@ -294,7 +331,9 @@ export function classpathFor(root) {
     }
   };
   for (const d of roots) walk(d, 0);
-  return jars.join(':');
+  // The platform's separator: Windows joins with `;`, and a drive letter has
+  // a colon of its own.
+  return jars.join(delimiter);
 }
 
 /**

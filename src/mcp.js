@@ -8,11 +8,11 @@ import { resolve, join, basename } from 'node:path';
 import { existsSync } from 'node:fs';
 import { openProject } from './db.js';
 import { explainSymbol } from './why.js';
-import { dbPathFor, discoverProjects, repoRelative, changedPath } from './project.js';
+import { dbPathFor, discoverProjects, repoRelative, changedPath, tryIndexLock } from './project.js';
 import { indexProject } from './indexer.js';
 import { watchProject } from './watch.js';
 import { formatExplore, formatImpact, formatAffected, formatWhy } from './format.js';
-import { searchSymbols, projectStats } from './query.js';
+import { searchSymbols, projectStats, bestMatch, ambiguityNote } from './query.js';
 
 const projects = new Map(); // root -> { db, watcher }
 
@@ -43,11 +43,20 @@ async function openOne(root) {
     projects.set(root, entry);
 
     // One sync on first touch, then a file watcher keeps it current, so answers
-    // stay fresh without rehashing the tree on every call.
-    try {
-      await indexProject(db, root, { full: false });
-    } catch (err) {
-      process.stderr.write(`provenlens: initial sync failed: ${err.message}\n`);
+    // stay fresh without rehashing the tree on every call. Under the index
+    // lock: a second session opening the same repository used to race this
+    // sync into a foreign-key failure, and now stands aside while it runs.
+    const release = tryIndexLock(root);
+    if (release) {
+      try {
+        await indexProject(db, root, { full: false });
+      } catch (err) {
+        process.stderr.write(`provenlens: initial sync failed: ${err.message}\n`);
+      } finally {
+        release();
+      }
+    } else {
+      process.stderr.write('provenlens: another process is indexing this project; reading what it writes\n');
     }
     entry.watcher = watchProject(db, root, {
       onSync: (stats) => process.stderr.write(`provenlens: reindexed ${stats.parsed} file(s)\n`),
@@ -156,8 +165,12 @@ async function callTool(name, args, defaultRoot) {
     case 'provenlens_why': {
       const all = await useProjects(args.projectPath, defaultRoot);
       for (const { db } of all) {
-        const [hit] = searchSymbols(db, args.symbol, { limit: 1 });
-        if (hit) return formatWhy(explainSymbol(db, hit.id));
+        const { hit, ties } = bestMatch(db, args.symbol);
+        if (!hit) continue;
+        // A tie is reported, not broken: an account of the wrong `save` reads
+        // exactly like an account of the right one.
+        if (ties.length) return ambiguityNote(args.symbol, ties);
+        return formatWhy(explainSymbol(db, hit.id));
       }
       return `No symbol matches "${args.symbol}".`;
     }
@@ -165,9 +178,10 @@ async function callTool(name, args, defaultRoot) {
     case 'provenlens_impact': {
       const all = await useProjects(args.projectPath, defaultRoot);
       for (const { root, db } of all) {
-        const matches = searchSymbols(db, args.symbol, { limit: 5 });
-        if (!matches.length) continue;
-        const body = formatImpact(db, matches[0].id);
+        const { hit, ties } = bestMatch(db, args.symbol);
+        if (!hit) continue;
+        if (ties.length) return ambiguityNote(args.symbol, ties);
+        const body = formatImpact(db, hit.id);
         return all.length > 1 ? `# repository: ${basename(root)}\n\n${body}` : body;
       }
       return `No symbol matches "${args.symbol}".`;

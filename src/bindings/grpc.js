@@ -13,8 +13,28 @@
 
 const PROTO_FILE = /\.proto$/i;
 
-/** `service OrderService { ... }` and its body. */
-const SERVICE_BLOCK = /\bservice\s+([A-Za-z_]\w*)\s*\{([\s\S]*?)\}/g;
+/** `service OrderService {` -- the body is read to its matching brace below. */
+const SERVICE_OPEN = /\bservice\s+([A-Za-z_]\w*)\s*\{/g;
+
+/**
+ * Each service with its whole body. A non-greedy match to the first `}` cut a
+ * service off at the first rpc carrying an option body -- grpc-gateway's
+ * `option (google.api.http) = { ... }` -- and every rpc after it vanished.
+ */
+function serviceBlocks(text) {
+  const out = [];
+  for (const open of text.matchAll(SERVICE_OPEN)) {
+    const start = open.index + open[0].length;
+    let depth = 1;
+    let i = start;
+    for (; i < text.length && depth > 0; i++) {
+      if (text[i] === '{') depth++;
+      else if (text[i] === '}') depth--;
+    }
+    out.push({ service: open[1], bodyStart: start, body: text.slice(start, i - 1) });
+  }
+  return out;
+}
 /** `rpc GetOrder (Req) returns (Res);` */
 const RPC_LINE = /\brpc\s+([A-Za-z_]\w*)\s*\(/g;
 
@@ -24,10 +44,19 @@ const RPC_LINE = /\brpc\s+([A-Za-z_]\w*)\s*\(/g;
  * grpc-java generates `OrderServiceGrpc.OrderServiceImplBase`, and both halves
  * name the service. Anything else is some other base class.
  */
-export function serviceFromBase(superName) {
+export function serviceFromBase(superName, imports = []) {
   if (!superName || typeof superName !== 'string') return null;
-  const match = /^([A-Za-z_]\w*)Grpc\.\1ImplBase$/.exec(superName.trim());
-  return match ? match[1] : null;
+  const name = superName.trim();
+  const qualified = /^([A-Za-z_]\w*)Grpc\.\1ImplBase$/.exec(name);
+  if (qualified) return qualified[1];
+  // `import ...OrderServiceGrpc.OrderServiceImplBase;` then `extends
+  // OrderServiceImplBase` -- the usual way it is written. The bare half
+  // names the service only when the import says the generated class is where
+  // it came from; `FooImplBase` from anywhere else is some other base.
+  const bare = /^([A-Za-z_]\w*)ImplBase$/.exec(name);
+  if (!bare) return null;
+  const fromGrpc = imports.some((fqn) => fqn.endsWith(`.${bare[1]}Grpc.${bare[1]}ImplBase`));
+  return fromGrpc ? bare[1] : null;
 }
 
 /** `Service/method`, lowercasing nothing: the wire is case-sensitive. */
@@ -44,8 +73,6 @@ export function rpcCoordinate(service, method) {
  */
 const lowerFirst = (s) => s.charAt(0).toLowerCase() + s.slice(1);
 
-const lineAt = (text, index) => text.slice(0, index).split('\n').length;
-
 export default {
   name: 'grpc',
   edgeKind: 'implemented-by',
@@ -58,11 +85,8 @@ export default {
 
     // --- The .proto: each rpc becomes a symbol and asks for an implementation
     for (const file of ctx.files) {
-      for (const block of file.content.matchAll(SERVICE_BLOCK)) {
-        const service = block[1];
-        const bodyStart = block.index + block[0].indexOf('{') + 1;
-
-        for (const rpc of block[2].matchAll(RPC_LINE)) {
+      for (const { service, bodyStart, body } of serviceBlocks(file.content)) {
+        for (const rpc of body.matchAll(RPC_LINE)) {
           const key = rpcCoordinate(service, rpc[1]);
           if (!key) continue;
           const at = bodyStart + rpc.index;
@@ -75,8 +99,8 @@ export default {
             kind: 'rpc-method',
             containerFqn: service,
             signature: `rpc ${rpc[1]}`,
-            startLine: lineAt(file.content, at),
-            endLine: lineAt(file.content, at),
+            startLine: file.lineAt(at),
+            endLine: file.lineAt(at),
             startByte: at,
             endByte: at + rpc[0].length,
             annotations: ['proto'],
@@ -87,7 +111,7 @@ export default {
             key,
             symbolId,
             fileId: file.id,
-            line: lineAt(file.content, at),
+            line: file.lineAt(at),
             detail: `rpc ${rpc[1]}`,
           });
         }
@@ -102,6 +126,7 @@ export default {
       )
       .all();
 
+    const importsOf = ctx.db.prepare('SELECT fqn FROM imports WHERE file_id = ?');
     for (const type of types) {
       let supers = [];
       try {
@@ -109,7 +134,8 @@ export default {
       } catch {
         continue;
       }
-      const service = supers.map(serviceFromBase).find(Boolean);
+      const imports = importsOf.all(type.file_id).map((r) => r.fqn);
+      const service = supers.map((sup) => serviceFromBase(sup, imports)).find(Boolean);
       if (!service) continue;
 
       const methods = ctx.db

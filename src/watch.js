@@ -10,10 +10,12 @@
 import { watch, realpathSync } from 'node:fs';
 import { langForPath } from './lang.js';
 import { indexProject } from './indexer.js';
-import { buildIgnoreFilter } from './project.js';
+import { buildIgnoreFilter, tryIndexLock } from './project.js';
 
 const DEBOUNCE_MS = 400;
 const POLL_MS = 5000;
+/** How long to wait when another process is indexing before looking again. */
+const LOCK_RETRY_MS = 2000;
 
 export function watchProject(db, root, { onSync } = {}) {
   let timer = null;
@@ -25,6 +27,14 @@ export function watchProject(db, root, { onSync } = {}) {
       pending = true;
       return;
     }
+    // Another process -- a second MCP server, a `sync` typed in a shell -- may
+    // be writing this index right now. Its result lands in the same file, so
+    // this run waits for it rather than racing it into a half-written graph.
+    const release = tryIndexLock(root);
+    if (!release) {
+      schedule('waiting for another indexer', LOCK_RETRY_MS);
+      return;
+    }
     running = true;
     try {
       const stats = await indexProject(db, root, { full: false });
@@ -32,6 +42,7 @@ export function watchProject(db, root, { onSync } = {}) {
     } catch (err) {
       process.stderr.write(`provenlens: sync failed: ${err.message}\n`);
     } finally {
+      release();
       running = false;
       if (pending) {
         pending = false;
@@ -40,9 +51,9 @@ export function watchProject(db, root, { onSync } = {}) {
     }
   }
 
-  function schedule(reason) {
+  function schedule(reason, delay = DEBOUNCE_MS) {
     clearTimeout(timer);
-    timer = setTimeout(() => sync(reason), DEBOUNCE_MS);
+    timer = setTimeout(() => sync(reason), delay);
   }
 
   const isIgnored = buildIgnoreFilter(root);
