@@ -45,6 +45,20 @@ export function serverEntry() {
   return { command: BIN, args: ['mcp'] };
 }
 
+/**
+ * Keeps the previous file as .bak before it is rewritten. A plain copy that
+ * tolerates absence, rather than existsSync followed by copyFileSync: between
+ * the check and the copy the file can change, which is a race CodeQL flags
+ * and, for a config the user owns, one worth not having.
+ */
+function keepBackup(file) {
+  try {
+    copyFileSync(file, `${file}.bak`);
+  } catch (err) {
+    if (err?.code !== 'ENOENT') throw err;
+  }
+}
+
 function readJson(file) {
   if (!existsSync(file)) return {};
   try {
@@ -85,8 +99,66 @@ export function applyInstall(targetName) {
   config[target.key].provenlens = serverEntry();
 
   mkdirSync(dirname(target.file), { recursive: true });
-  if (existsSync(target.file)) copyFileSync(target.file, `${target.file}.bak`);
+  keepBackup(target.file);
   writeFileSync(target.file, `${JSON.stringify(config, null, 2)}\n`);
+  return plan;
+}
+
+/**
+ * The hook entries for Claude Code's settings.json. Absolute path to the bin,
+ * for the same reason the MCP entry uses one: a hook runs from whatever
+ * directory the agent is in, with whatever PATH the desktop app inherited.
+ */
+export function hookEntries() {
+  const entry = serverEntry();
+  const command = entry.command === 'node' ? `node "${entry.args[0]}" hook` : `"${entry.command}" hook`;
+  return {
+    // After every file edit: what it reaches and which tests cover it, shown
+    // to Claude via exit 2 + stderr -- the documented channel for PostToolUse.
+    PostToolUse: [
+      {
+        matcher: 'Edit|Write|MultiEdit|NotebookEdit',
+        hooks: [{ type: 'command', command, timeout: 20, statusMessage: 'provenlens: blast radius' }],
+      },
+    ],
+    // On a new session in an indexed repository: one paragraph saying the
+    // index is there and how to use it, as context rather than as a notice.
+    SessionStart: [
+      { hooks: [{ type: 'command', command, timeout: 10, statusMessage: 'provenlens' }] },
+    ],
+  };
+}
+
+const HOOK_SETTINGS = join(homedir(), '.claude', 'settings.json');
+
+/** True when a hook array already carries one of ours. */
+const hasOurs = (list) =>
+  (list ?? []).some((group) => (group.hooks ?? []).some((h) => /provenlens(\.js)?"? hook$/.test(h.command ?? '')));
+
+export function planHooks() {
+  const config = readJson(HOOK_SETTINGS);
+  const wanted = hookEntries();
+  const missing = Object.keys(wanted).filter((event) => !hasOurs(config.hooks?.[event]));
+  return {
+    file: HOOK_SETTINGS,
+    action: !existsSync(HOOK_SETTINGS) ? 'create' : missing.length ? 'update' : 'unchanged',
+    events: missing,
+    entries: wanted,
+  };
+}
+
+/** Appends our hook groups to the events that lack one; touches nothing else. */
+export function applyHooks() {
+  const plan = planHooks();
+  if (plan.action === 'unchanged') return plan;
+  const config = readJson(HOOK_SETTINGS);
+  config.hooks ??= {};
+  for (const event of plan.events) {
+    config.hooks[event] = [...(config.hooks[event] ?? []), ...plan.entries[event]];
+  }
+  mkdirSync(dirname(HOOK_SETTINGS), { recursive: true });
+  keepBackup(HOOK_SETTINGS);
+  writeFileSync(HOOK_SETTINGS, `${JSON.stringify(config, null, 2)}\n`);
   return plan;
 }
 
