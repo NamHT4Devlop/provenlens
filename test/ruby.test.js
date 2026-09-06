@@ -122,6 +122,9 @@ describe('resolution', () => {
       '(self).render',
       '(self).render',
       '(self).validates',
+      // The `where` inside `scope :recent, -> { where(...) }`: the lambda is
+      // the scope's body, and `where` lives in ActiveRecord.
+      '(self).where',
       'Donation.all',
       'Rails.logger',
       'Rails.logger.info',

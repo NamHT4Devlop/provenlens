@@ -49,6 +49,9 @@ function outcomeOf(row) {
     if (row.reason === 'external:not-reachable-from-scope') {
       return { tier: 'proof', label: 'proven to leave: nothing in scope here declares it' };
     }
+    if (row.reason === 'external:receiver-not-declared') {
+      return { tier: 'proof', label: 'proven to leave: the receiver is declared nowhere here' };
+    }
     if (row.owner) return { tier: 'proof', label: `proven to leave: it belongs to ${row.owner}` };
     return { tier: 'proof', label: 'proven to leave this repository' };
   }

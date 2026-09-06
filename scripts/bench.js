@@ -63,7 +63,8 @@ const byEvidence = db
   .prepare(
     `SELECT CASE
               WHEN owner IN ('js-runtime', 'jdk-runtime', 'Kernel') THEN 'runtime built-in (assumed)'
-              WHEN reason = 'external:not-in-project' THEN 'name declared nowhere (proven)'
+              WHEN reason IN ('external:not-in-project', 'external:receiver-not-declared')
+                THEN 'name declared nowhere (proven)'
               WHEN owner IS NOT NULL THEN 'named library (proven)'
               ELSE 'other'
             END AS evidence,

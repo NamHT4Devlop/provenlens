@@ -30,6 +30,15 @@ const RUBY_CORE = new Set([
   'define_method', 'method', 'methods', 'extend', 'display', 'exit', 'at_exit',
 ]);
 
+/**
+ * The proof that a receiver is declared nowhere in this repository. Returned
+ * as a value that is TRUE: it used to be `{ external: null }`, which the
+ * caller tested for truth, so the proof never fired and the call fell through
+ * to the by-name guess it was there to prevent -- `response.body` in a spec
+ * became an edge to whichever class happened to define `body`.
+ */
+const RECEIVER_NOT_DECLARED = 'receiver-not-declared';
+
 export function resolveRuby(db) {
   const types = new Map(); // fqn -> { fqn, symbol_id, kind, supertypes, file_id }
   for (const row of db
@@ -51,7 +60,7 @@ export function resolveRuby(db) {
     bySimpleName.get(simple).push(fqn);
   }
 
-  const membersByContainer = new Map(); // fqn -> [symbol rows]
+  const membersByContainer = new Map(); // fqn -> Map name -> [symbol rows]
   const typeIdByFqn = new Map();
   for (const row of db
     .prepare(
@@ -65,26 +74,20 @@ export function resolveRuby(db) {
       continue;
     }
     if (!row.container_fqn) continue;
-    if (!membersByContainer.has(row.container_fqn)) membersByContainer.set(row.container_fqn, []);
-    membersByContainer.get(row.container_fqn).push(row);
+    if (!membersByContainer.has(row.container_fqn)) membersByContainer.set(row.container_fqn, new Map());
+    const byName = membersByContainer.get(row.container_fqn);
+    if (!byName.has(row.name)) byName.set(row.name, []);
+    byName.get(row.name).push(row);
   }
+  /** The members of one container carrying one name; a map lookup, not a scan. */
+  const membersNamed = (fqn, name) => membersByContainer.get(fqn)?.get(name) ?? [];
 
   const methodsByName = new Map();
-  for (const list of membersByContainer.values()) {
-    for (const m of list) {
-      if (!methodsByName.has(m.name)) methodsByName.set(m.name, []);
-      methodsByName.get(m.name).push(m);
+  for (const byName of membersByContainer.values()) {
+    for (const [name, list] of byName) {
+      if (!methodsByName.has(name)) methodsByName.set(name, []);
+      methodsByName.get(name).push(...list);
     }
-  }
-
-  const localsByScope = new Map();
-  for (const row of db.prepare('SELECT scope_symbol_id, name, type_name, init_kind FROM locals').all()) {
-    if (row.scope_symbol_id == null) continue;
-    if (!localsByScope.has(row.scope_symbol_id)) localsByScope.set(row.scope_symbol_id, new Map());
-    localsByScope.get(row.scope_symbol_id).set(row.name, {
-      type: row.type_name,
-      init: row.init_kind,
-    });
   }
 
   const symbolById = new Map();
@@ -92,6 +95,26 @@ export function resolveRuby(db) {
     .prepare('SELECT id, name, kind, container_fqn, fqn, modifiers FROM symbols')
     .all()) {
     symbolById.set(row.id, row);
+  }
+
+  const localsByScope = new Map();
+  // An instance variable belongs to the class, and a class can be spread over
+  // several files. Keyed by the class's name rather than by whichever file's
+  // symbol the assignment sat under, so `@c = Consumer.new` in one file types
+  // `@c.go` in another.
+  const ivarsByClass = new Map(); // class fqn -> Map name -> local
+  for (const row of db.prepare('SELECT scope_symbol_id, name, type_name, init_kind FROM locals').all()) {
+    if (row.scope_symbol_id == null) continue;
+    const local = { type: row.type_name, init: row.init_kind };
+    if (!localsByScope.has(row.scope_symbol_id)) localsByScope.set(row.scope_symbol_id, new Map());
+    localsByScope.get(row.scope_symbol_id).set(row.name, local);
+    const scope = symbolById.get(row.scope_symbol_id);
+    if (row.name.startsWith('@') && scope && ['class', 'module'].includes(scope.kind) && scope.fqn) {
+      if (!ivarsByClass.has(scope.fqn)) ivarsByClass.set(scope.fqn, new Map());
+      const known = ivarsByClass.get(scope.fqn);
+      // A typed assignment beats an untyped one, whichever file holds it.
+      if (!known.has(row.name) || (row.type_name && !known.get(row.name).type)) known.set(row.name, local);
+    }
   }
 
   /** Ruby constants live in one global namespace, so a simple name usually suffices. */
@@ -162,7 +185,7 @@ export function resolveRuby(db) {
     }
 
     const fromSymbol = symbolById.get(ref.from_symbol_id);
-    const enclosingClassId = typeIdByFqn.get(fromSymbol?.container_fqn) ?? null;
+    const enclosingClassId = typeIdByFqn.get(enclosingTypeOf(fromSymbol)) ?? null;
     const info = receiverInfo(ref, fromSymbol, enclosingClassId, depth + 1);
     const result = info?.type
       ? (findMember(info.type, ref.name, info.classMethod) ??
@@ -173,14 +196,21 @@ export function resolveRuby(db) {
   }
 
   function findMember(typeFqn, name, wantClassMethod) {
+    const wanted = wantClassMethod ? 'class_method' : 'method';
     for (const t of typeChain(typeFqn)) {
-      const hit = (membersByContainer.get(t.fqn) ?? []).find(
-        (m) => m.name === name && (wantClassMethod ? m.kind === 'class_method' : m.kind === 'method'),
-      );
+      const hit = membersNamed(t.fqn, name).find((m) => m.kind === wanted);
       if (hit) return hit;
     }
     return null;
   }
+
+  /**
+   * A def outside any class is a private method on Object, and Ruby reaches
+   * it from any bare call once the receiver's own ancestors are exhausted.
+   * The spec helper `def build_user` at the top of a file is the everyday
+   * case; none of them ever resolved.
+   */
+  const topLevelMember = (name) => membersNamed('Object', name).find((m) => m.kind === 'method') ?? null;
 
   /**
    * What a recorded local is worth as a receiver type.
@@ -218,7 +248,10 @@ export function resolveRuby(db) {
    * Returns { type, via } or null (unknown) / undefined (external, stop trying).
    */
   function receiverInfo(ref, fromSymbol, enclosingClassId, depth = 0) {
-    const enclosing = fromSymbol?.container_fqn ?? null;
+    // A call written in a class body -- `validate do ... end`, a callback
+    // macro's target -- is made by the class, so its enclosing type is the
+    // class itself and not the namespace the class sits in.
+    const enclosing = enclosingTypeOf(fromSymbol);
     const raw = ref.receiver;
 
     // `donor.donations.first` -- carry the inner call's declared type forward.
@@ -237,9 +270,7 @@ export function resolveRuby(db) {
     // link it to itself.
     if (raw === 'super') {
       for (const t of typeChain(enclosing).slice(1)) {
-        if ((membersByContainer.get(t.fqn) ?? []).some((m) => m.name === ref.name)) {
-          return { type: t.fqn, via: 'super' };
-        }
+        if (membersNamed(t.fqn, ref.name).length) return { type: t.fqn, via: 'super' };
       }
       // No ancestor in this repository declares it, so `super` leaves the
       // repository -- Ruby always has one more ancestor, and eventually
@@ -252,8 +283,11 @@ export function resolveRuby(db) {
     }
 
     if (!raw || raw === 'self') {
+      // Inside a class method, a bare name is the class method of that name
+      // first -- that is what Ruby dispatches to -- and an instance method
+      // only as the fallback the caller applies.
       const isSingleton = JSON.parse(fromSymbol?.modifiers || '[]').includes('singleton');
-      return { type: enclosing, via: 'self-chain', classMethod: isSingleton && !!raw };
+      return { type: enclosing, via: 'self-chain', classMethod: isSingleton };
     }
 
     // `new(a, b).record` inside a class method -- the idiomatic Ruby service object.
@@ -273,7 +307,8 @@ export function resolveRuby(db) {
 
     const local =
       localsByScope.get(ref.from_symbol_id)?.get(raw) ??
-      (enclosingClassId != null ? localsByScope.get(enclosingClassId)?.get(raw) : null);
+      (enclosingClassId != null ? localsByScope.get(enclosingClassId)?.get(raw) : null) ??
+      (raw.startsWith('@') && enclosing ? ivarsByClass.get(enclosing)?.get(raw) : null);
     if (local) {
       const typed = localType(local);
       if (typed) return typed;
@@ -309,10 +344,17 @@ export function resolveRuby(db) {
     // recorded, which is why parameters and plain assignments are locals now:
     // without them this would fire on `def deliver(donor)` and be wrong.
     if (!local && !reader && !methodsByName.has(raw)) {
-      return { external: null };
+      return { external: RECEIVER_NOT_DECLARED };
     }
 
     return null;
+  }
+
+  /** The type a symbol's code runs in: the class for a class-body call, else its container. */
+  function enclosingTypeOf(fromSymbol) {
+    if (!fromSymbol) return null;
+    if (['class', 'module'].includes(fromSymbol.kind)) return fromSymbol.fqn ?? null;
+    return fromSymbol.container_fqn ?? null;
   }
 
   const CONFIDENCE = {
@@ -367,8 +409,13 @@ export function resolveRuby(db) {
   };
   /** A call into a gem or Ruby core: expected, not a miss. */
   const insertExternal = (refId, owner) => {
-    insertRow.run(refId, owner ? `external:${owner}` : 'external', 1, owner ?? null);
-    refOutcome.set(refId, { external: true, owner });
+    if (owner === RECEIVER_NOT_DECLARED) {
+      insertRow.run(refId, 'external:receiver-not-declared', 1, null);
+      refOutcome.set(refId, { external: true, owner: null });
+    } else {
+      insertRow.run(refId, owner ? `external:${owner}` : 'external', 1, owner ?? null);
+      refOutcome.set(refId, { external: true, owner });
+    }
     stats.external++;
   };
   /**
@@ -432,11 +479,12 @@ export function resolveRuby(db) {
     }
 
     const fromSymbol = symbolById.get(ref.from_symbol_id);
-    const enclosingClassId = typeIdByFqn.get(fromSymbol?.container_fqn) ?? null;
+    const enclosingClassId = typeIdByFqn.get(enclosingTypeOf(fromSymbol)) ?? null;
 
     // Bare `new(...)` inside a class method instantiates the enclosing class.
-    if (ref.kind === 'call' && ref.name === 'new' && !ref.receiver) {
-      const enclosing = fromSymbol?.container_fqn;
+    // With no parentheses it arrives as a bare identifier, and is the same call.
+    if (['call', 'ident_call'].includes(ref.kind) && ref.name === 'new' && !ref.receiver) {
+      const enclosing = enclosingTypeOf(fromSymbol);
       const target = enclosing && types.get(enclosing);
       if (target) {
         insertEdge.run(ref.from_symbol_id, target.symbol_id, 'instantiates', 1.0, 'direct', ref.line);
@@ -502,6 +550,18 @@ export function resolveRuby(db) {
         continue;
       }
 
+      // A bare call the class and its ancestors do not answer may be a def
+      // at the top of a file: a private method on Object, which is the last
+      // ancestor of everything.
+      if (!ref.receiver) {
+        const top = topLevelMember(ref.name);
+        if (top) {
+          insertEdge.run(ref.from_symbol_id, top.id, 'calls', CONFIDENCE['self-chain'], 'self-chain', ref.line);
+          stats.direct++;
+          continue;
+        }
+      }
+
       // Type known, method absent: it comes from a gem ancestor such as
       // ActiveRecord::Base, which is where `all` and `sum` actually live.
       // Bare identifiers are excluded: most are local reads, not calls.
@@ -532,6 +592,14 @@ export function resolveRuby(db) {
     // project shares this name is simply not in scope here. This is the common
     // case in a spec file, where `expect`, `it` and `context` come from RSpec.
     if (!ref.receiver) {
+      // Code outside any class -- a spec file, a script -- still reaches a
+      // def at the top of a file.
+      const top = topLevelMember(ref.name);
+      if (top) {
+        insertEdge.run(ref.from_symbol_id, top.id, 'calls', CONFIDENCE['self-chain'], 'self-chain', ref.line);
+        stats.direct++;
+        continue;
+      }
       // A bare identifier is either a local read or a self call. Either way,
       // by this point self has been searched, so a global name match could only
       // land on something out of scope -- always the wrong edge.
