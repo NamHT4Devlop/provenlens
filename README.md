@@ -1589,8 +1589,13 @@ to see the real tree.
 
 ### Pinned versions
 
-`web-tree-sitter@0.25.10` + `tree-sitter-wasms@0.1.13`. Runtime 0.26 **cannot load** 0.1.13
-grammars (an ABI error at `Language.load`). Both are pinned to exact versions, which doubles as a
+`web-tree-sitter@0.25.10` + `tree-sitter-wasms@0.1.13`. Runtimes 0.26 and 0.27 **cannot load**
+0.1.13 grammars: their loader requires a `dylink.0` custom section in the grammar wasm, and every
+0.1.13 grammar carries the older `dylink` section, so `Language.load` throws for all four languages
+(with an empty message -- the suite reports only that tests "did not finish"). Dependabot's
+0.27 pull request failed seven checks on that; it stays closed until a tree-sitter-wasms built for
+the new ABI exists, and the two are grouped so they are only ever tried as a pair. Both are pinned
+to exact versions, which doubles as a
 supply-chain measure: `yarn.lock` is committed with integrity hashes, so
 `yarn install --frozen-lockfile` reproduces the same tree every time and fails loudly rather than
 silently resolving something new.
