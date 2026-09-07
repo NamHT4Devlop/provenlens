@@ -14,7 +14,46 @@ and file reads.
 It runs **100% offline**. No API calls, no telemetry, no network egress of any kind, and **nothing
 to compile** — `node:sqlite` ships inside Node 22+, and the grammars are WASM.
 
-**Contents** — [What is different](#what-is-different-about-this-one) · [Setup](#setup) ·
+## Quick start
+
+Five commands, on a machine with Node 22+ and Yarn 1. Each is one of the numbered steps under
+[Setup](#setup), which says what every line does and what to do when it does not.
+
+```bash
+git clone https://github.com/NamHT4Devlop/provenlens.git ~/provenlens && cd ~/provenlens && yarn install
+```
+
+```bash
+ln -sf ~/provenlens/bin/provenlens.js ~/.local/bin/provenlens && provenlens --version
+```
+
+```bash
+echo '.provenlens/' >> "$(git config --global core.excludesfile || echo ~/.config/git/ignore)"
+```
+
+```bash
+cd /path/to/your/repo && provenlens init .
+```
+
+```bash
+provenlens explore "SomeClassOrMethod"
+```
+
+The first indexes a repository once into `.provenlens/` at its root -- a cache, never committed,
+which the third line keeps out of every repository on the machine. The last is the one command
+worth remembering: source, callers, callees, bindings and blast radius in one answer. To have
+Claude Code use it on its own, one more:
+
+```bash
+provenlens install claude-user --hooks
+```
+
+That registers the MCP server and the two hooks ([step 9](#9-optional--wire-it-into-claude-code)
+shows exactly what it writes, and it leaves a `.bak`). Then `provenlens status` in any indexed
+repository says how much of it the graph could link, and [Reading the numbers
+honestly](#reading-the-numbers-honestly) says what that number means.
+
+**Contents** — [Quick start](#quick-start) · [What is different](#what-is-different-about-this-one) · [Setup](#setup) ·
 [Languages](#languages) · [Framework bindings](#framework-bindings) ·
 [Reading the numbers honestly](#reading-the-numbers-honestly) · [Commands](#commands) ·
 [Using it from Claude Code](#using-it-from-claude-code) · [Architecture](#architecture) ·
