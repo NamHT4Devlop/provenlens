@@ -501,13 +501,19 @@ export function extractRuby(tree, src, ctx = {}) {
       const isSingleton = node.type === 'singleton_method' || singleton;
 
       const params = [];
+      // As written, sigils kept: `save(*args)` says it takes any number of
+      // arguments, and a reader asking whether a three-argument call could be
+      // this method needs the star. The bound name below drops it.
+      const written = [];
       const paramsNode = childByField(node, 'parameters');
       if (paramsNode) {
         for (let i = 0; i < paramsNode.namedChildCount; i++) {
           const p = paramsNode.namedChild(i);
           if (!p) continue;
+          const raw = text(p, src).split(/[:=]/)[0].trim();
+          written.push(raw);
           // `&block`, `*rest` and `**opts` bind names too.
-          params.push(text(p, src).split(/[:=]/)[0].replace(/^[*&]+/, '').trim());
+          params.push(raw.replace(/^[*&]+/, '').trim());
         }
       }
 
@@ -517,7 +523,7 @@ export function extractRuby(tree, src, ctx = {}) {
         kind: isSingleton ? 'class_method' : 'method',
         container_fqn: containerFqn,
         type_name: returnedTypeOf(childByField(node, 'body')),
-        signature: `${isSingleton ? 'self.' : ''}${simpleName}(${params.join(', ')})`,
+        signature: `${isSingleton ? 'self.' : ''}${simpleName}(${written.join(', ')})`,
         arity: params.length,
         supertypes: [],
         modifiers: isSingleton ? ['singleton'] : [],

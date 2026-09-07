@@ -21,6 +21,7 @@ import { dirname } from 'node:path';
 import { openProject } from './db.js';
 import { findProjectRoot, dbPathFor, changedPath } from './project.js';
 import { affectedBy, projectStats } from './query.js';
+import { candidateTestsFor } from './unlinked.js';
 
 const FILE_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
 /** Names shown per list. Enough to act on; small enough not to drown the reply. */
@@ -70,6 +71,12 @@ export function afterEdit(db, root, filePath) {
       ? `  covered by ${tests.length} test(s): ${few(tests, (t) => t.fqn ?? t.name)}`
       : '  covered by: no existing test reaches this — decide whether the change needs one',
   );
+  // Tests the graph could not link but which call a changed name on an
+  // untyped receiver. Said as what it is: probable, unproven.
+  const maybe = candidateTestsFor(db, changed);
+  if (maybe.length) {
+    lines.push(`  maybe covered by ${maybe.length} test file(s) calling these names on untyped receivers: ${few(maybe, (m) => m.file)}`);
+  }
   lines.push('  (provenlens_impact <name> for the full radius; index is as of the last sync)');
   return lines.join('\n');
 }

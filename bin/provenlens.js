@@ -28,6 +28,7 @@ import {
   topHubs,
 } from '../src/query.js';
 import { formatExplore, formatNode, formatImpact, formatRelations, formatAffected, toMermaid, formatPath, pathLines, symbolLabel, formatWhy } from '../src/format.js';
+import { candidateCallersOf, candidateTestsFor } from '../src/unlinked.js';
 import { IMPLEMENTED_LANGUAGES } from '../src/extract/index.js';
 import { BINDING_LANGS } from '../src/bindings/index.js';
 import { openWorkspace, locateSymbol, pathAcross } from '../src/workspace.js';
@@ -285,6 +286,10 @@ program
       onlyCertain: !opts.public,
     });
 
+    const heldByName = report.nameHeldBack
+      ? `${report.nameHeldBack} name(s) not shown because a call site nobody could link shares ` +
+        `their name — the graph cannot say they are unreached. --public shows them.`
+      : '';
     if (!report.candidates.length) {
       if (report.publicHeldBack) {
         console.log(
@@ -292,14 +297,20 @@ program
             `inside this repository, which in a library is what an API looks like — ` +
             `run with --public to read them.`,
         );
-      } else {
+      } else if (!heldByName) {
         console.log('nothing unreached — every method and function has a caller, a binding or an entry-point marker');
+      } else {
+        console.log('nothing certain.');
       }
+      if (heldByName) console.log(heldByName);
       return;
     }
     console.log(`${report.total} unreached, showing ${report.candidates.length}:\n`);
     for (const c of report.candidates) {
-      console.log(`${c.confidence === 'high' ? '  ' : '? '}${c.file_path}:${c.start_line}  ${c.fqn}`);
+      const shared = c.unlinkedSameName
+        ? `  (${c.unlinkedSameName} unlinked call site(s) share this name)`
+        : '';
+      console.log(`${c.confidence === 'high' ? '  ' : '? '}${c.file_path}:${c.start_line}  ${c.fqn}${shared}`);
     }
     // The list is exactly as good as the graph behind it, so say how good that is.
     const pct = report.refs ? ((report.unresolved / report.refs) * 100).toFixed(1) : '0.0';
@@ -308,13 +319,17 @@ program
         `(${pct}%) went unresolved, and an unresolved call looks exactly like no call at all. ` +
         `Reflection, a template naming a helper, and dispatch by string do too.`,
     );
-    console.log('Lines marked ? are public or exported — something outside this repository may call them.');
+    console.log(
+      'Lines marked ? are public or exported — something outside this repository may call them — ' +
+        'or share a name with a call the graph could not link.',
+    );
     if (report.publicHeldBack) {
       console.log(
         `${report.publicHeldBack} public or exported name(s) not shown — in a library those are the API. ` +
           `Use --public to see them.`,
       );
     }
+    if (heldByName) console.log(heldByName);
     if (report.namedInTemplate) {
       console.log(
         `${report.namedInTemplate} more were left off because a template or config file names them.`,
@@ -635,11 +650,25 @@ program
     const { project, hit } = pickAcross(useScope(), name);
     if (opts.json) {
       const { levels, totalSymbols, totalFiles } = impactOf(project.db, hit.id);
+      const unlinked = candidateCallersOf(project.db, hit);
       return emitJson({
         symbol: publicSymbol(hit),
         totalSymbols,
         totalFiles,
         levels: levels.map((level) => (level ?? []).map(publicSymbol)),
+        // Same-named call sites the graph could not link: candidates, listed
+        // apart from the levels and never counted in totalSymbols.
+        unlinked: {
+          total: unlinked.total,
+          inTests: unlinked.inTests,
+          sites: unlinked.sites.map((s) => ({
+            file: s.file_path,
+            line: s.line,
+            receiver: s.receiver,
+            reason: s.reason,
+            from: s.from_fqn,
+          })),
+        },
       });
     }
     console.log(formatImpact(project.db, hit.id));
@@ -677,12 +706,18 @@ program
     // break? A diff that only touches tests passes by definition.
     const production = r.changed.filter((s) => !isTestPath(s.file_path));
     const untested = opts.failIfUntested && production.length > 0 && r.tests.length === 0;
+    // Tests that call a changed name on something the resolver could not
+    // type. They do not lift the gate -- an unlinked call is not proof -- but
+    // a gate that fails with twelve of them in view is read differently from
+    // one that fails with none.
+    const testCandidates = candidateTestsFor(db, r.changed);
 
     if (opts.json) {
       emitJson({
         changed: r.changed.map(publicSymbol),
         reached: r.reached.map(publicSymbol),
         tests: r.tests.map(publicSymbol),
+        testCandidates,
         missingFiles: r.missingFiles,
         ...(opts.failIfUntested ? { untested } : {}),
       });
@@ -694,6 +729,14 @@ program
       process.stderr.write(
         `affected: ${production.length} changed production symbol(s) and no test reaches any of them.\n`,
       );
+      if (testCandidates.length) {
+        process.stderr.write(
+          `affected: ${testCandidates.length} test file(s) call a changed name on a receiver the index ` +
+            `could not type — read them before trusting this gate: ` +
+            `${testCandidates.slice(0, 5).map((t) => t.file).join(', ')}` +
+            `${testCandidates.length > 5 ? ', …' : ''}\n`,
+        );
+      }
       process.exit(2);
     }
   });

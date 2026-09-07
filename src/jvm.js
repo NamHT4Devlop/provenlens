@@ -88,6 +88,28 @@ function readMember(line) {
 }
 
 /**
+ * `public static final java.io.PrintStream out;` -> { name: 'out', type: 'java.io.PrintStream' }
+ *
+ * A field is a hop in a receiver chain the same way a return type is:
+ * `System.out.println(...)` starts at a type javap knows and steps through
+ * a field it also prints. Without the field the chain stopped at `out` as
+ * "complex", and every println in the repository was a miss -- 422 of them
+ * in quarkus, booked as unresolved rather than as the library call they are.
+ */
+function readField(line) {
+  const text = line.trim().replace(/;$/, '');
+  if (!text || text.includes('(') || text.startsWith('static {')) return null;
+  if (text.includes(' class ') || text.includes(' interface ') || text.includes(' enum ')) return null;
+  const parts = text.split(/\s+/);
+  if (parts.length < 2) return null;
+  const name = parts.pop();
+  if (!/^[A-Za-z_$][\w$]*$/.test(name)) return null;
+  const type = lastTopLevelToken(parts.join(' '));
+  if (!type || /^(public|protected|private|static|final|volatile|transient)$/.test(type)) return null;
+  return { name, type };
+}
+
+/**
  * The last whitespace-separated token, where whitespace inside `<...>` does
  * not separate: `public static <T> java.util.function.Function<T, T>` ends in
  * one token, the return type with its generics intact for splitGeneric.
@@ -197,13 +219,18 @@ export function readSignatures(fqns, classpath, { run = execFileSync } = {}) {
   for (const line of out.split('\n')) {
     const header = /^(?:[\w\s]*\s)?(?:class|interface|enum|@interface)\s+([\w$.]+)/.exec(line);
     if (header && !line.startsWith(' ')) {
-      current = { fqn: header[1], members: [] };
+      current = { fqn: header[1], members: [], fields: [] };
       classes.push(current);
       continue;
     }
     if (!current || !line.startsWith(' ')) continue;
     const member = readMember(line);
-    if (member) current.members.push(member);
+    if (member) {
+      current.members.push(member);
+      continue;
+    }
+    const field = readField(line);
+    if (field) current.fields.push(field);
   }
   return classes;
 }
@@ -282,10 +309,15 @@ export function unresolvedImports(db) {
     nested.push(`java.util.${outer}$${inner}`);
   }
 
-  // Appended after the cap, not folded into it, so they never displace an import.
-  return [...new Set([...wanted, ...implicit, ...nested])]
-    .slice(0, MAX_TYPES)
-    .concat(JAVA_LANG);
+  // Appended after the cap, not folded into it, so they never displace an
+  // import. De-duplicated AFTER the append: `String` arrives twice when the
+  // project declares a String local -- once as an implicit candidate, once
+  // from the list -- and javap prints it twice, and the second row hit the
+  // UNIQUE path in `files`. That threw, indexJvm's caller swallowed it, and
+  // every class after the duplicate was lost: System, Math, Thread, the
+  // boxed numbers. Every `System.out.println` in quarkus was a miss for it.
+  const capped = [...new Set([...wanted, ...implicit, ...nested])].slice(0, MAX_TYPES);
+  return [...new Set([...capped, ...JAVA_LANG])];
 }
 
 /**
@@ -360,6 +392,11 @@ export function indexJvm(db, root) {
   );
 
   const stats = { types: 0, members: 0 };
+  // javap answers once per name it was given, so a name given twice comes
+  // back twice; the second copy must not reach the UNIQUE path column.
+  const written = new Set(
+    db.prepare("SELECT path FROM files WHERE path LIKE 'jvm:%'").all().map((r) => r.path),
+  );
   for (let i = 0; i < wanted.length; i += BATCH) {
     const batch = wanted.slice(i, i + BATCH);
     let classes;
@@ -370,6 +407,8 @@ export function indexJvm(db, root) {
     }
 
     for (const cls of classes) {
+      if (written.has(`jvm:${cls.fqn}`)) continue;
+      written.add(`jvm:${cls.fqn}`);
       // The owning artefact is not knowable from javap, so the package root
       // stands in: it is what an unresolved call would have been blamed on.
       const owner = cls.fqn.split('.').slice(0, 3).join('.');
@@ -391,6 +430,14 @@ export function indexJvm(db, root) {
           fileId, m.name, `${cls.fqn}#${m.name}`, 'method', cls.fqn, erased, arg,
           `${m.returns} ${m.name}(${(m.params ?? []).join(', ')})  // from the classpath`,
           m.arity, JSON.stringify(m.params ?? []),
+        );
+        stats.members++;
+      }
+      for (const fld of cls.fields ?? []) {
+        const { erased, arg } = splitGeneric(fld.type);
+        insertSymbol.run(
+          fileId, fld.name, `${cls.fqn}#${fld.name}`, 'field', cls.fqn, erased, arg,
+          `${fld.type} ${fld.name}  // from the classpath`, null, null,
         );
         stats.members++;
       }
