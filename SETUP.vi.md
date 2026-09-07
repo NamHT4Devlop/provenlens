@@ -274,8 +274,9 @@ Chỉ file có nội dung thay đổi được đọc lại. Để việc đó t
 provenlens sync -w
 ```
 
-để một watcher chạy trong terminal đó. Khi provenlens được nâng cấp và schema đổi, lệnh kế tiếp tự
-dựng lại index và báo `reset (older schema)`.
+để một watcher chạy trong terminal đó. Khi provenlens được nâng cấp và schema đổi, lệnh kế tiếp
+trong repo đó dừng lại với `index was built by an older version and has been reset. Run provenlens
+index.`; chạy lệnh đó và index được dựng lại từ đầu.
 
 ---
 
@@ -336,8 +337,8 @@ cd ~/provenlens && git pull && yarn install --frozen-lockfile
 ```
 
 `--frozen-lockfile` từ chối dịch các phiên bản đã ghim; nếu nó lỗi thì lockfile và `package.json`
-không khớp, và việc an toàn là đọc lý do trước khi ép. Index dựng bằng schema cũ tự dựng lại ở lệnh
-kế tiếp.
+không khớp, và việc an toàn là đọc lý do trước khi ép. Nếu bản nâng cấp đổi schema của index, lệnh
+kế tiếp trong mỗi repo đã index sẽ yêu cầu chạy `provenlens index`; chạy một lần cho mỗi repo.
 
 ---
 
@@ -366,7 +367,8 @@ Rồi xóa `~/provenlens` và symlink. Không có gì khác được ghi ở đ�
 | `command not found: provenlens` | Thiếu symlink hoặc `~/.local/bin` không trong PATH | Bước 3; `ls -l ~/.local/bin/provenlens` và `echo $PATH` cho biết cái nào |
 | `Cannot find module 'node:sqlite'` | Node cũ hơn 22 | Bước 1 |
 | `no .provenlens/ found here, in any parent, or one level down` | Repo này chưa từng được index | `cd` vào, `provenlens init .` |
-| `another provenlens is indexing this repository` | Một `sync -w` hoặc phiên Claude đang giữ lock | Đợi, hoặc dừng watcher |
+| `another provenlens index is running on this project (pid N)` | Một `sync -w`, một `serve` hoặc phiên Claude đang giữ lock của index | Đợi, hoặc dừng tiến trình đó |
+| `index was built by an older version and has been reset. Run provenlens index.` | Bạn đã nâng cấp provenlens và schema đổi | `provenlens index` trong repo đó |
 | Lỗi `Language.load` hoặc ABI | `web-tree-sitter` lệch khỏi 0.25.10 | `cd ~/provenlens && yarn install --frozen-lockfile` |
 | `resolution:` thấp hơn hẳn số README nêu cho ngôn ngữ đó | Chưa cài dependency, hoặc repo chủ yếu là Ruby/JS không kiểu | `provenlens doctor` nói là cái nào |
 | `EADDRINUSE` từ `serve` | Cổng 7777 bị chiếm | `provenlens serve -p 7800` |

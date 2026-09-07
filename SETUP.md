@@ -280,7 +280,8 @@ provenlens sync -w
 ```
 
 leaves a watcher running in that terminal. When provenlens itself is upgraded and its schema
-changes, the next command rebuilds the index automatically and says `reset (older schema)`.
+changes, the next command in that repository stops with `index was built by an older version and
+has been reset. Run provenlens index.` -- run that, and the index is rebuilt from scratch.
 
 ---
 
@@ -341,8 +342,9 @@ cd ~/provenlens && git pull && yarn install --frozen-lockfile
 ```
 
 `--frozen-lockfile` refuses to move the pinned versions; if it fails, the lockfile and
-`package.json` disagree and the safe thing is to read why before forcing it. Indexes built with an
-older schema rebuild themselves on the next command.
+`package.json` disagree and the safe thing is to read why before forcing it. If the upgrade changed
+the index schema, the next command in each indexed repository asks you to run `provenlens index`;
+run it once per repository.
 
 ---
 
@@ -371,7 +373,8 @@ Then delete `~/provenlens` and the symlink. Nothing else was written anywhere.
 | `command not found: provenlens` | The symlink is missing or `~/.local/bin` is not on PATH | Step 3; `ls -l ~/.local/bin/provenlens` and `echo $PATH` say which |
 | `Cannot find module 'node:sqlite'` | Node is older than 22 | Step 1 |
 | `no .provenlens/ found here, in any parent, or one level down` | This repository was never indexed | `cd` into it, `provenlens init .` |
-| `another provenlens is indexing this repository` | A `sync -w` or a Claude session holds the index lock | Wait for it, or stop the watcher |
+| `another provenlens index is running on this project (pid N)` | A `sync -w`, a `serve` or a Claude session holds the index lock | Wait for it, or stop that process |
+| `index was built by an older version and has been reset. Run provenlens index.` | You upgraded provenlens and its schema changed | `provenlens index` in that repository |
 | A `Language.load` or ABI error | `web-tree-sitter` moved off 0.25.10 | `cd ~/provenlens && yarn install --frozen-lockfile` |
 | `resolution:` far below what the README shows for the language | Dependencies not installed, or the repository is mostly untyped Ruby/JS | `provenlens doctor` says which |
 | `EADDRINUSE` from `serve` | Port 7777 is taken | `provenlens serve -p 7800` |
