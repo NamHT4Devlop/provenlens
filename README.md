@@ -16,8 +16,9 @@ to compile** — `node:sqlite` ships inside Node 22+, and the grammars are WASM.
 
 ## Quick start
 
-Five commands, on a machine with Node 22+ and Yarn 1. Each is one of the numbered steps under
-[Setup](#setup), which says what every line does and what to do when it does not.
+**New here? [SETUP.md](SETUP.md) is the step-by-step guide** -- what to type, what you should see,
+what to do when you do not -- from a bare machine to Claude Code using the graph on its own.
+(*Tiếng Việt: [SETUP.vi.md](SETUP.vi.md).*) The five commands below are the short form of it.
 
 ```bash
 git clone https://github.com/NamHT4Devlop/provenlens.git ~/provenlens && cd ~/provenlens && yarn install
@@ -92,6 +93,9 @@ an agent that cannot tell.
 ---
 
 ## Setup
+
+The same steps as [SETUP.md](SETUP.md), with the reasoning behind each. Read that file to get
+running; read this to understand what you ran.
 
 ### 1. Requirements
 
