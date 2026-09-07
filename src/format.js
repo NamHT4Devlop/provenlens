@@ -7,8 +7,38 @@ import {
   impactOf,
   getSymbol,
 } from './query.js';
+import { candidateCallersOf, candidateTestsFor, unlinkedReason } from './unlinked.js';
 
 const loc = (s) => `${s.file_path}:${s.start_line}`;
+
+/**
+ * The call sites that share this symbol's name and never became an edge.
+ *
+ * Listed under every answer about a symbol's callers, after the edges and
+ * apart from them. `callers perform_async` on sidekiq used to say "one" with
+ * 87 same-named call sites unresolved and nothing in the answer about them;
+ * an answer that reads complete and is not is the one failure this tool is
+ * built to avoid. Nothing here is counted as a caller anywhere else.
+ */
+function unlinkedSection(db, sym, { maxFiles = 12, maxLines = 6 } = {}) {
+  const c = candidateCallersOf(db, sym);
+  if (!c.total) return [];
+  const tests = c.inTests ? `, ${c.inTests} in tests` : '';
+  const out = [
+    `### Unlinked call sites named \`${sym.name}\` (${c.total}${tests}) — candidates by name, not edges`,
+  ];
+  for (const f of c.files.slice(0, maxFiles)) {
+    const shown = f.lines.slice(0, maxLines).join(', ');
+    const more = f.lines.length > maxLines ? `, +${f.lines.length - maxLines} more` : '';
+    out.push(`- ${f.file}:${shown}${more} — ${f.reasons.map(unlinkedReason).join('; ')}`);
+  }
+  if (c.files.length > maxFiles) out.push(`- … ${c.files.length - maxFiles} more file(s)`);
+  out.push(
+    'None of these is proven to call it. Read them before concluding nothing else does; `why` explains each.',
+    '',
+  );
+  return out;
+}
 
 function label(s) {
   const ann = JSON.parse(s.annotations || '[]');
@@ -125,6 +155,7 @@ export function formatExplore(db, root, query, { maxMatches = 3, maxLines = 120 
       }
       out.push('');
     }
+    out.push(...unlinkedSection(db, sym));
 
     const callees = calleesOf(db, sym.id).filter((c) => CALL_KINDS.includes(c.edge_kind));
     if (callees.length) {
@@ -179,7 +210,8 @@ export function formatNode(db, root, symbolId, { maxLines = 400 } = {}) {
 
   out.push(`### Callers (${callers.length})`);
   for (const c of callers) out.push(`- ${c.fqn} — ${loc(c)}${kindNote(c)}${confidenceNote(c)}`);
-  out.push('', `### Callees (${callees.length})`);
+  out.push('', ...unlinkedSection(db, sym));
+  out.push(`### Callees (${callees.length})`);
   for (const c of callees) out.push(`- ${c.fqn} — ${loc(c)}${kindNote(c)}${confidenceNote(c)}`);
 
   return out.join('\n');
@@ -210,6 +242,8 @@ export function formatRelations(db, symbolId, direction) {
         ? 'Nothing calls this symbol — it is a leaf or an entry point.'
         : 'This symbol calls nothing that is indexed.',
     );
+    // "Nothing" is exactly when the sites the graph could not link matter most.
+    if (direction === 'callers') out.push('', ...unlinkedSection(db, sym));
     return out.join('\n');
   }
 
@@ -227,7 +261,10 @@ export function formatRelations(db, symbolId, direction) {
     for (const c of other) {
       out.push(`- ${c.edge_kind}: ${c.fqn} — ${loc(c)}${confidenceNote(c)}`);
     }
+    out.push('');
   }
+
+  if (direction === 'callers') out.push(...unlinkedSection(db, sym));
 
   return out.join('\n');
 }
@@ -277,6 +314,19 @@ export function formatAffected(db, relPaths, { maxDepth = 4 } = {}) {
   }
   for (const t of tests) out.push(`- ${t.fqn ?? t.name} — ${loc(t)}`);
 
+  // The tests the graph could not prove reach the change, but which call one
+  // of the changed names on something it could not type. On a Rails model
+  // that is most of them.
+  const maybe = candidateTestsFor(db, changed);
+  if (maybe.length) {
+    out.push('', `### Tests that may cover it by name (${maybe.length} file(s), unlinked — candidates, not edges)`);
+    for (const m of maybe.slice(0, 12)) {
+      const lines = m.lines.slice(0, 6).join(', ') + (m.lines.length > 6 ? `, +${m.lines.length - 6} more` : '');
+      out.push(`- ${m.file}:${lines} — calls ${m.names.map((n) => `\`${n}\``).join(', ')} on an untyped receiver`);
+    }
+    if (maybe.length > 12) out.push(`- … ${maybe.length - 12} more file(s)`);
+  }
+
   return out.join('\n');
 }
 
@@ -300,7 +350,10 @@ export function formatImpact(db, symbolId) {
     out.push('');
   });
 
-  if (!totalSymbols) out.push('Nothing calls this symbol — it is a leaf or an entry point.');
+  if (!totalSymbols) out.push('Nothing calls this symbol — it is a leaf or an entry point.', '');
+  // Depth one only: a candidate is a place to read, and following it further
+  // would be carrying a guess through the graph.
+  out.push(...unlinkedSection(db, sym));
   return out.join('\n');
 }
 

@@ -71,7 +71,9 @@ const TOOLS = [
     description:
       'Explore an area of the codebase in one call: returns the matching symbols\' verbatim ' +
       'line-numbered source, who calls them, what they call, and their blast radius. ' +
-      'Prefer this over grep/read loops. Query with a symbol name, Type#method, or a short phrase.',
+      'Prefer this over grep/read loops. Query with a symbol name, Type#method, or a short phrase. ' +
+      'A section "Unlinked call sites named X" lists same-named calls the index could not link, ' +
+      'with file and line: candidates to read, never counted as callers.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -108,7 +110,9 @@ const TOOLS = [
     name: 'provenlens_impact',
     description:
       'Blast radius for a symbol: every caller that transitively reaches it, by depth. ' +
-      'Use before changing or deleting a method to see what breaks.',
+      'Use before changing or deleting a method to see what breaks. Ends with the same-named ' +
+      'call sites the index could not link (file:line) — read those too; they are candidates, ' +
+      'not edges, and are not in the totals.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -123,7 +127,9 @@ const TOOLS = [
     description:
       'Given the files a change touches, return the symbols in them, everything that ' +
       'transitively reaches those symbols, and the existing tests that already cover them. ' +
-      'Use after editing, or on the output of `git diff --name-only`, to decide what to re-test.',
+      'Use after editing, or on the output of `git diff --name-only`, to decide what to re-test. ' +
+      'Also lists tests that call a changed name on an untyped receiver — probable coverage the ' +
+      'index could not prove.',
     inputSchema: {
       type: 'object',
       properties: {

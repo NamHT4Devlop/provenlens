@@ -113,7 +113,7 @@ const CALLED_BY_FRAMEWORK = [
 ];
 
 /** Ruby and JS names that a runtime, not the source, is expected to call. */
-const RUNTIME_NAMES = new Set([
+export const RUNTIME_NAMES = new Set([
   'initialize', 'main', 'call', 'to_s', 'inspect', 'each', 'method_missing',
   'respond_to_missing?', 'included', 'extended', 'inherited', 'up', 'down',
   'change', 'constructor', 'render', 'toString', 'valueOf', 'default',
@@ -185,6 +185,30 @@ export function deadCode(db, root, { limit = 50, includeTests = false, onlyCerta
   // Only pay for the template scan when there is something to rule out.
   const templateWords = rows.length && root ? namesInTemplates(root) : new Set();
 
+  // A call site with this name that never became an edge. The resolver
+  // declined to draw it -- `thing.save` with `thing` untyped and two `save`
+  // methods declared -- and a declined edge is indistinguishable from no
+  // call. On a Rails model that is most of its callers, so a method with
+  // one of these is not something the graph can call unreached. A call whose
+  // receiver WAS typed and lacked the member is not one: that call is known
+  // to be somebody else's.
+  const unlinkedNamed = db.prepare(
+    `SELECT COUNT(*) AS n
+       FROM unresolved u JOIN refs r ON r.id = u.ref_id JOIN files f ON f.id = r.file_id
+      WHERE u.external = 0 AND f.external = 0 AND r.name = ? AND r.kind != 'annotation'
+        AND f.lang IN (?, ?, ?)
+        AND (u.reason IS NULL OR u.reason NOT LIKE 'no-such-%')`,
+  );
+  // A TypeScript call cannot reach a Ruby method: only the symbol's own
+  // language family counts, padded to the three slots the statement has.
+  const family = (lang) => {
+    const langs = ['typescript', 'tsx', 'javascript'].includes(lang)
+      ? ['typescript', 'tsx', 'javascript']
+      : [lang];
+    while (langs.length < 3) langs.push(langs[0]);
+    return langs;
+  };
+
   const candidates = [];
   let namedInTemplate = 0;
   for (const row of rows) {
@@ -196,11 +220,16 @@ export function deadCode(db, root, { limit = 50, includeTests = false, onlyCerta
       namedInTemplate++;
       continue;
     }
+    const unlinkedSameName = unlinkedNamed.get(row.name, ...family(row.lang)).n;
     // A private helper nothing calls is the strongest case there is: nothing
     // outside the file could be calling it, so the graph has seen everything
     // there is to see. A public one may simply be somebody else's API --
     // sinatra has 225 of those, and every one is a working entry point.
-    candidates.push({ ...row, confidence: isPublic(row) ? 'medium' : 'high' });
+    candidates.push({
+      ...row,
+      unlinkedSameName,
+      confidence: unlinkedSameName || isPublic(row) ? 'medium' : 'high',
+    });
   }
 
   candidates.sort((a, b) => (a.confidence === b.confidence ? 0 : a.confidence === 'high' ? -1 : 1));
@@ -210,6 +239,7 @@ export function deadCode(db, root, { limit = 50, includeTests = false, onlyCerta
   // 225 working entry points as suspects is worse than printing none.
   const certain = candidates.filter((c) => c.confidence === 'high');
   const shown = onlyCertain ? certain : candidates;
+  const heldBack = onlyCertain ? candidates.filter((c) => c.confidence !== 'high') : [];
 
   // How much this repository could not resolve is how much this list is worth.
   const unresolved = db
@@ -220,8 +250,11 @@ export function deadCode(db, root, { limit = 50, includeTests = false, onlyCerta
   return {
     candidates: shown.slice(0, limit),
     total: shown.length,
-    // How many were held back for being reachable from outside the repository.
-    publicHeldBack: onlyCertain ? candidates.length - certain.length : 0,
+    // How many were held back for being reachable from outside the repository,
+    // and how many because an unlinked call site shares their name. A name
+    // with both is counted once, under the graph's own gap.
+    publicHeldBack: heldBack.filter((c) => !c.unlinkedSameName).length,
+    nameHeldBack: heldBack.filter((c) => c.unlinkedSameName).length,
     namedInTemplate,
     unresolved,
     refs,

@@ -1233,17 +1233,17 @@ a convention. No amount of engineering turns that into a declaration, because Ru
 | `provenlens status` | Coverage, resolution quality, binding counts |
 | `provenlens doctor` | **Why this repo reads as it does, and what would change it** — checks dependencies, JDK and jars against what the code imports |
 | `provenlens query <name>` | Find symbols by name |
-| `provenlens explore <name>` | Source + call paths + bindings + blast radius, in one shot |
+| `provenlens explore <name>` | Source + call paths + bindings + blast radius, in one shot — and the same-named call sites it could not link, as candidates |
 | `provenlens node <name>` | One symbol in full, with callers and callees |
-| `provenlens callers <name>` / `callees <name>` | One direction of the relationship |
-| `provenlens impact <name>` | Blast radius |
+| `provenlens callers <name>` / `callees <name>` | One direction of the relationship; `callers` ends with the unlinked call sites that share the name |
+| `provenlens impact <name>` | Blast radius, then the unlinked same-named call sites at depth one |
 | `provenlens why <name>` | **Which of this symbol's links rest on a declaration, and which on a convention** — plus the calls it makes that never resolved |
 | `provenlens hotspots` | **What the most other code depends on** — read this before changing anything |
-| `provenlens dead [--public]` | Methods nothing reaches, with framework entry points and template-named symbols already ruled out |
+| `provenlens dead [--public]` | Methods nothing reaches, with framework entry points, template-named symbols and names an unlinked call shares already ruled out |
 | `provenlens cycles` | Files that depend on each other, directly or the long way round |
 | `provenlens routes [-m <text>]` | **Every HTTP route the repo serves and who calls it** — Spring, NestJS, Express and Rails |
 | `provenlens path <from> <to>` | **Shortest directed chain** between two symbols, hop by hop — across repositories when a binding bridges them |
-| `provenlens affected [files...] [--fail-if-untested]` | What changed files reach, and **which tests already cover it**; the flag exits 2 when nothing does — a CI gate |
+| `provenlens affected [files...] [--fail-if-untested]` | What changed files reach, **which tests already cover it**, and which tests call a changed name on a receiver it could not type; the flag exits 2 when nothing proven does — a CI gate |
 | `provenlens export [name] [-f json\|mermaid]` | The graph around a symbol as JSON or a **Mermaid diagram** ready for a README or PR |
 | `provenlens install [target] [--hooks]` | Register the MCP server with an agent, and with `--hooks` the Claude Code hooks that report blast radius after every edit (`--dry-run` to preview) |
 | `provenlens hook` | What those hooks run: reads a Claude Code event on stdin, reports what the edited file reaches |
@@ -1280,6 +1280,9 @@ the cost of a false positive is a deleted function:
   than printing them as suspects. `--public` shows them.
 - **Every report prints how many calls went unresolved**, because an unresolved call is
   indistinguishable from no call, and the list is worth exactly what that number says.
+- **A name that an unlinked call shares is held back.** `thing.save` with `thing` untyped and two
+  `save` methods declared is recorded as ambiguous, not drawn; both `save` methods then look
+  unreached, and neither is listed as certain. The report says how many were held back this way.
 
 **`cycles` — what depends on itself the long way round.** Between *files*, which is the level a
 dependency cycle is actually felt at: two modules that each import the other cannot be understood,
@@ -1465,6 +1468,10 @@ Two rules. Check before trusting: run `provenlens_status` once — a stale or th
 than none, because it looks authoritative. Say when you fell back: no index, or a language it does
 not cover, means grep, and the answer must say so — a grep hit is not a resolved call.
 
+An answer's *Unlinked call sites named X* section lists same-named calls the index could not
+link, with file and line. They are candidates to read, not callers: never report one as a
+caller, and never conclude nothing else calls a symbol while that section is non-empty.
+
 If there is no `.provenlens/` directory, skip provenlens entirely. Do not run `provenlens init`
 unprompted; it walks the whole tree, and indexing is the user's decision.
 ```
@@ -1519,6 +1526,61 @@ to some arbitrary `map` method in the repo is inventing an edge, not inferring o
 Plugin-generated symbols (SQL statements, routes, migrations) are marked `generated`, and `explore`
 says so explicitly: *"derived, not written in this file"*.
 
+### The call sites an answer used to leave out
+
+The graph never gains a guessed edge, and that rule has a cost the earlier sections put a number
+on: a third of the in-repo calls on a Rails codebase are `thing.save` with `thing` untyped, and
+the resolver records each as `ambiguous-name` rather than draw it to one of the `save` methods.
+Until this section, that was the end of it. `callers perform_async` on sidekiq answered *nothing
+calls this* while 87 call sites named `perform_async` sat unresolved -- 81 of them in tests -- and
+nothing in the answer said so. A declined edge read exactly like no call.
+
+Now every answer about a symbol's callers ends with them:
+
+```
+# Callers of Sidekiq::Job::ClassMethods#perform_async
+lib/sidekiq/job.rb:298
+
+Nothing calls this symbol — it is a leaf or an entry point.
+
+### Unlinked call sites named `perform_async` (87, 81 in tests) — candidates by name, not edges
+- lib/active_job/queue_adapters/sidekiq_adapter.rb:70 — receiver untyped, and this name is declared in more than one place
+- lib/sidekiq/job.rb:261 — receiver is the result of another call
+- myapp/app/controllers/job_controller.rb:6, 23, 29 — receiver untyped, and this name is declared in more than one place
+- test/client_test.rb:193, 201, 215, 219, 223, 232, +12 more — receiver untyped, and this name is declared in more than one place
+- … 4 more file(s)
+None of these is proven to call it. Read them before concluding nothing else does; `why` explains each.
+```
+
+A candidate is a call site with the same name, an argument count the declaration accepts
+(`save(*args)` takes three; `save()` does not), in a language that can reach it, whose receiver
+the resolver could not type. A call whose receiver *was* typed and lacked the member is not one:
+that call is known to be somebody else's. Production files come first, tests after, and the
+reason is the resolver's own, worded for a reader.
+
+What it is not: an edge. Nothing here is counted in `status`, in `why`, in a blast radius total or
+in the benchmark, and `impact` lists candidates at depth one only, because following one further
+would be carrying a guess through the graph. The same list reaches every surface: `explore`,
+`node`, `impact` (`--json` adds `unlinked`), the MCP tools, and `affected`, which after the tests it
+can prove reach a change lists *tests that may cover it by name* (`--json`: `testCandidates`) and
+names them on stderr when `--fail-if-untested` fails -- the gate still fails, since an unlinked
+call is not proof, but it fails with the twelve specs in view. That automatic list skips a name
+the repository declares in more than three places and any generated symbol: every test calls
+`id` or `name` on something, and on rubygems.org those two alone put 73 test files under one
+model, which says nothing about which of them covers the change. `callers id` still lists them
+all. The Claude Code hook adds a *maybe covered by* line for the same reason, and `dead` holds
+back any name an unlinked call shares -- 188 of them on rubygems.org, none of which it can now
+call unreached.
+
+Two Java defects surfaced while measuring this, both in how the JDK is read. javap prints a
+class's fields and the index skipped them, so `System.out.println` stopped at `out` as "complex":
+421 misses in quarkus, now booked as the `java.io.PrintStream` library calls they are, 746 fewer
+in-repo misses on that repository. And a `java.lang` name the project also used as a local type
+was asked of javap twice -- once as an implicit candidate, once from the fixed list -- so it came
+back twice, the second copy hit the UNIQUE path column, and the exception was swallowed with every
+class after it: `System`, `Math`, `Thread`, the boxed numbers. A three-file program that declared a
+`String` lost thirty-eight of forty-one JDK classes to it.
+
 ### Why walk the AST by hand instead of using tree-sitter queries
 
 Query strings break **silently** when a grammar changes version — they still run, they just return
@@ -1544,7 +1606,7 @@ it automatically.
 yarn test
 ```
 
-362 tests across ten fixture suites plus regression, security and multi-repo coverage:
+377 tests across eleven fixture suites plus regression, security and multi-repo coverage:
 
 | Fixture | Simulates | The chain grep cannot follow |
 |---|---|---|
@@ -1557,6 +1619,7 @@ yarn test
 | `ruby2` | A model reopened in `lib/`, `class << self`, top-level defs, `super(x)`, writers, `Struct.new`, callbacks, scope lambdas | `u.save` on a reopened model still landing on `ApplicationRecord#save` as a declaration |
 | `ts2` | Destructuring, `extends Base<User>`, arrow fields, `super`, `for-of`, `export * as ns`, `import x = require`, tsconfig `extends`, `exports` maps, `.d.ts` | `const { data } = await client.get('/x')` reaching `Client#get` at all |
 | `bindings2` | Spring class-level `@RequestMapping`, `method = POST`, `produces`, Kafka multi-line topics, a MyBatis statement in a comment, Rails `namespace`/`only:`/`member`, gRPC option bodies | `GET /api/orders/{}` served by the method and called by the client, with the prefix applied |
+| `unlinked` | `thing.save` with `thing` untyped and two `save` methods; a spec calling `record.save(1, 2, 3)`; a TypeScript `thing.run(1)` against `run(x)` and `run()`; `id` declared four times | that a declined edge is listed as a candidate with its file and line, by arity and language, and never counted |
 | all of `__fixtures__` | One repo containing all four languages | resolvers not wiping each other's graphs |
 
 `test/core-fixes.test.js`, `test/bindings-review.test.js`, `test/ruby-review.test.js`,
