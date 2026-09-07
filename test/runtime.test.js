@@ -23,7 +23,8 @@ const BIN = join(ROOT, 'bin', 'provenlens.js');
 describe('the binary on a plain node', () => {
   test('starts with a shebang every env understands', () => {
     for (const file of ['bin/provenlens.js', 'scripts/bench.js']) {
-      const first = readFileSync(join(ROOT, file), 'utf8').split('\n')[0];
+      // A Windows checkout ends the line in CRLF; the shebang is the same.
+      const first = readFileSync(join(ROOT, file), 'utf8').split(/\r?\n/)[0];
       assert.equal(first, '#!/usr/bin/env node', `${file}: ${first}`);
     }
   });
