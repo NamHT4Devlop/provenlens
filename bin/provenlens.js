@@ -1,5 +1,15 @@
-#!/usr/bin/env -S node --no-warnings
+#!/usr/bin/env node
+// First, so it runs before the module that loads sqlite: see src/quiet.js.
+import '../src/quiet.js';
 import { ensureHeadroom } from '../src/heap.js';
+import { sqliteAvailable, sqliteUnavailableMessage } from '../src/db.js';
+
+// A Node too old to have node:sqlite gets one sentence, not a stack trace,
+// and gets it before anything is re-executed or opened.
+if (!sqliteAvailable()) {
+  process.stderr.write(`${sqliteUnavailableMessage()}\n`);
+  process.exit(1);
+}
 
 // V8's own cap is what a large repository dies against, and only a fresh
 // process can raise it. The modules below are hoisted and have already been

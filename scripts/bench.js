@@ -1,4 +1,4 @@
-#!/usr/bin/env -S node --no-warnings
+#!/usr/bin/env node
 /**
  * Index a repository and report how much of its call graph was resolved.
  *
@@ -7,6 +7,7 @@
  * The number that matters is IN-REPO RESOLUTION. Raw "resolved %" is dominated
  * by calls into libraries, which no amount of work on this tool can link.
  */
+import '../src/quiet.js';
 import { ensureHeadroom } from '../src/heap.js';
 
 // The CLI gives an indexing run half the machine's memory. This script measures

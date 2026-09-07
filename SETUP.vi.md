@@ -21,11 +21,13 @@ Mở terminal và chạy:
 node -v
 ```
 
-**Phải thấy** `v22.x.x` hoặc cao hơn (`v24.13.0` là bản dùng để viết tài liệu này).
+**Phải thấy** `v22.13.0` hoặc cao hơn (`v24.13.0` là bản dùng để viết tài liệu này).
 
-**Nếu không:** provenlens cần Node 22 trở lên vì nó dùng `node:sqlite`, thứ chỉ có từ Node 22. Cài
-bản LTS hiện tại từ <https://nodejs.org>, hoặc nếu dùng nvm thì `nvm install 22`. Bản cũ hơn sẽ
-lỗi ngay lệnh đầu với `Cannot find module 'node:sqlite'`.
+**Nếu không:** provenlens cần Node 22.13 trở lên vì nó dùng `node:sqlite`, thứ Node 22.5 đưa ra
+sau một cờ thí nghiệm và 22.13 mới bỏ cờ. Cài bản LTS hiện tại từ <https://nodejs.org>, hoặc nếu
+dùng nvm thì `nvm install 22`: lệnh này đặt một bản 22 mới cạnh Node sẵn có của máy, không thay
+thế nó. Bản cũ hơn dừng ngay lệnh đầu với đúng một câu: `provenlens needs Node.js 22.13 or newer:
+node:sqlite is not available in Node 20.x.x`.
 
 ```bash
 yarn --version
@@ -106,16 +108,15 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc
 link`: hai lệnh đó cài vào thư mục bin của đúng phiên bản Node đang chạy, nên đổi phiên bản Node là
 lệnh biến mất không báo. Symlink vào `~/.local/bin` sống qua việc đó.
 
-**Nếu thấy** dòng kiểu `ExperimentalWarning: SQLite is an experimental feature`: bạn đã chạy
-trực tiếp `node ~/provenlens/bin/provenlens.js`. Qua symlink thì cảnh báo được tắt; nếu buộc phải
-gọi node, thêm `--no-warnings`.
+Symlink chạy trên mọi bản Linux, dù coreutils cũ đến đâu: script mở đầu bằng
+`#!/usr/bin/env node` thuần, và tự tắt dòng báo *experimental feature* của Node.
 
 **Windows:** không có bước symlink. Hoặc chạy mọi lệnh dạng
 `node C:\path\to\provenlens\bin\provenlens.js ...`, hoặc tạo file `provenlens.cmd` ở một thư mục
 trong PATH với nội dung đúng như sau:
 
 ```
-@node --no-warnings "C:\path\to\provenlens\bin\provenlens.js" %*
+@node "C:\path\to\provenlens\bin\provenlens.js" %*
 ```
 
 ---
@@ -330,6 +331,24 @@ chung. `-p 7800` nếu cổng bị chiếm.
 
 ---
 
+## Trên một máy cũ
+
+Project bạn index cũ bao nhiêu cũng được. provenlens không bao giờ chạy Java, Ruby, Bundler, Maven,
+Gradle hay npm; nó đọc file nguồn như text bằng grammar tree-sitter, và hai chương trình duy nhất
+nó gọi là `git` và, khi có, `javap`. Codebase Java 8, app Rails Ruby 2.5, cây JavaScript thời
+jQuery: đều được đọc như nhau. Thứ mà *máy chạy provenlens* cần thì ngắn hơn ta tưởng:
+
+| Trên máy | Quan trọng? | Điều gì xảy ra |
+|---|---|---|
+| Node cũ hơn 22.13 | **Có** | Lệnh đầu dừng lại với câu ở Bước 1. `nvm install 22` sửa được mà không đụng Node của hệ thống. |
+| Linux cũ (Ubuntu 18.04, CentOS 7) | Không | Symlink ở Bước 3 chạy được; không gì ở đây cần coreutils mới. |
+| Không có JDK, hoặc JDK cũ hơn jar của project | Không, với việc chạy | Câu trả lời Java dựa vào javap để đọc JDK và jar phụ thuộc. Không có javap, hoặc javap không đọc được class file mới hơn, thì các kiểu đó được giả định thay vì chứng minh, và `provenlens doctor` báo dưới `[MISSING]`. JDK 11 trở lên là đủ cho class của chính JDK. |
+| Project chưa từng build trên máy này | Không, với việc chạy | Jar phụ thuộc được đọc từ `~/.m2` và `~/.gradle`; nếu chưa lần build nào đặt chúng ở đó, `doctor` liệt kê cái thiếu và số Java thấp hơn cho tới khi có. |
+| Ruby cũ, chưa cài gem | Không | Không đọc gì từ bản Ruby cài trên máy. Quy ước Rails được đọc từ source. |
+| Project TypeScript chưa có `node_modules` | Không, với việc chạy | Kiểu từ dependency lấy từ file `.d.ts` của chúng; không có thì số TypeScript thấp hơn, và `doctor` nói thiếu gói nào. |
+
+---
+
 ## Cập nhật provenlens
 
 ```bash
@@ -365,7 +384,7 @@ Rồi xóa `~/provenlens` và symlink. Không có gì khác được ghi ở đ�
 | Bạn thấy | Nghĩa là | Làm thế này |
 |---|---|---|
 | `command not found: provenlens` | Thiếu symlink hoặc `~/.local/bin` không trong PATH | Bước 3; `ls -l ~/.local/bin/provenlens` và `echo $PATH` cho biết cái nào |
-| `Cannot find module 'node:sqlite'` | Node cũ hơn 22 | Bước 1 |
+| `provenlens needs Node.js 22.13 or newer` | Node cũ hơn 22.13 (22.5 tới 22.12 còn giấu `node:sqlite` sau cờ) | Bước 1; `nvm install 22` |
 | `no .provenlens/ found here, in any parent, or one level down` | Repo này chưa từng được index | `cd` vào, `provenlens init .` |
 | `another provenlens index is running on this project (pid N)` | Một `sync -w`, một `serve` hoặc phiên Claude đang giữ lock của index | Đợi, hoặc dừng tiến trình đó |
 | `index was built by an older version and has been reset. Run provenlens index.` | Bạn đã nâng cấp provenlens và schema đổi | `provenlens index` trong repo đó |

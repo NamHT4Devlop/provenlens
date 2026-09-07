@@ -12,7 +12,7 @@ calls this, what this calls, and what breaks if you change it — instead of a d
 and file reads.
 
 It runs **100% offline**. No API calls, no telemetry, no network egress of any kind, and **nothing
-to compile** — `node:sqlite` ships inside Node 22+, and the grammars are WASM.
+to compile** — `node:sqlite` ships inside Node 22.13+, and the grammars are WASM.
 
 ## Quick start
 
@@ -101,7 +101,7 @@ running; read this to understand what you ran.
 
 | | Why |
 |---|---|
-| **Node.js 22 or newer** | provenlens uses `node:sqlite`, which only exists from Node 22. Nothing else is needed — no compiler, no native modules, no database server. |
+| **Node.js 22.13 or newer** | provenlens uses `node:sqlite`, which Node 22.5 shipped behind a flag and 22.13 unflagged. An older Node is told so in one sentence and stops. Nothing else is needed — no compiler, no native modules, no database server. |
 | **Yarn 1.22 (Classic)** | The package manager this project is set up for; `packageManager` in `package.json` pins it. |
 | macOS, Linux or Windows | All three run the whole test suite on every pull request and all three gate a merge: Node 22 and 24 on Linux, 24 on macOS and on Windows. Nothing is compiled, so nothing is platform-specific to build. |
 
@@ -111,7 +111,7 @@ Check what you have:
 node -v && yarn --version
 ```
 
-If Node prints anything below `v22`, upgrade it first — every other step will fail otherwise.
+If Node prints anything below `v22.13`, upgrade it first — every other step will fail otherwise.
 If yarn is missing:
 
 ```bash
@@ -400,7 +400,7 @@ clone, since it is the clone that knows what it wrote.
 | Symptom | Cause and fix |
 |---|---|
 | `zsh: command not found: provenlens` | The symlink is missing, or `~/.local/bin` is not on your PATH. Run `ls -l ~/.local/bin/provenlens` and `echo $PATH` to see which. |
-| `Cannot find module 'node:sqlite'` | Node is older than 22. Check `node -v`, then upgrade. |
+| `provenlens needs Node.js 22.13 or newer` | Node is older than 22.13, or is 22.5–22.12 where `node:sqlite` was still behind a flag. Check `node -v`, then upgrade — `nvm install 22` installs the current 22 beside whatever is there. |
 | `no index — run: provenlens init` | That repository has never been indexed. `cd` into it and run `provenlens init .`. |
 | A `Language.load` / ABI error on first run | Something upgraded `web-tree-sitter` past 0.25.10. Run `yarn install --frozen-lockfile` to restore the pinned versions — see [Pinned versions](#pinned-versions). |
 | `EADDRINUSE` from `provenlens serve` | Port 7777 is already taken, most likely by an earlier `serve`. Use `provenlens serve -p 7800`, or stop the old one. |
@@ -1654,7 +1654,7 @@ it automatically.
 yarn test
 ```
 
-377 tests across eleven fixture suites plus regression, security and multi-repo coverage:
+383 tests across eleven fixture suites plus regression, security and multi-repo coverage:
 
 | Fixture | Simulates | The chain grep cannot follow |
 |---|---|---|
