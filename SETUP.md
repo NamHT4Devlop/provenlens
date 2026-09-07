@@ -22,11 +22,14 @@ Open a terminal and run:
 node -v
 ```
 
-**You should see** `v22.x.x` or higher (`v24.13.0` is what this guide was written on).
+**You should see** `v22.13.0` or higher (`v24.13.0` is what this guide was written on).
 
-**If not:** provenlens needs Node 22 or newer because it uses `node:sqlite`, which only exists
-from 22. Install the current LTS from <https://nodejs.org> or, if you use nvm, `nvm install 22`.
-Anything older fails at the first command with `Cannot find module 'node:sqlite'`.
+**If not:** provenlens needs Node 22.13 or newer because it uses `node:sqlite`, which Node 22.5
+shipped behind a flag and 22.13 made available without one. Install the current LTS from
+<https://nodejs.org> or, if you use nvm, `nvm install 22` -- that puts a current 22 beside whatever
+Node the machine already has, without replacing it. Anything older stops at the first command with
+one sentence: `provenlens needs Node.js 22.13 or newer: node:sqlite is not available in Node
+20.x.x`.
 
 ```bash
 yarn --version
@@ -108,16 +111,15 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc
 install into the bin directory of the Node version you happen to be running, so switching Node
 versions makes the command silently disappear. A symlink into `~/.local/bin` survives that.
 
-**If you see** a line like `ExperimentalWarning: SQLite is an experimental feature`: you ran
-`node ~/provenlens/bin/provenlens.js` directly. Through the symlink the warning is switched off;
-if you must call node yourself, add `--no-warnings`.
+The symlink works on any Linux, however old its coreutils: the script starts with the plain
+`#!/usr/bin/env node`, and switches Node's *experimental feature* notice off itself.
 
 **Windows:** there is no symlink step. Either run every command as
 `node C:\path\to\provenlens\bin\provenlens.js ...`, or create a file `provenlens.cmd` somewhere on
 your PATH containing exactly:
 
 ```
-@node --no-warnings "C:\path\to\provenlens\bin\provenlens.js" %*
+@node "C:\path\to\provenlens\bin\provenlens.js" %*
 ```
 
 ---
@@ -335,6 +337,25 @@ browse them together. `-p 7800` if the port is taken.
 
 ---
 
+## On an older machine
+
+The projects you index can be as old as they like. provenlens never runs Java, Ruby, Bundler,
+Maven, Gradle or npm; it reads source files as text with tree-sitter grammars, and the only
+programs it executes are `git` and, when present, `javap`. A Java 8 codebase, a Ruby 2.5 Rails
+app, a jQuery-era JavaScript tree: all parse the same way. What the machine *running provenlens*
+needs is shorter than it looks:
+
+| On the machine | Matters? | What happens |
+|---|---|---|
+| Node older than 22.13 | **Yes** | The first command stops with the sentence from Step 1. `nvm install 22` fixes it without touching the system Node. |
+| Old Linux (Ubuntu 18.04, CentOS 7) | No | The symlink from Step 3 works; nothing here needs a recent coreutils. |
+| No JDK, or a JDK older than the project's jars | No, for running | Java answers lean on javap to read the JDK and dependency jars. Without javap, or with one that cannot read a newer class file, those types are assumed rather than proven, and `provenlens doctor` says so under `[MISSING]`. Any JDK 11+ is enough for the JDK's own classes. |
+| The project never built on this machine | No, for running | Dependency jars are read from `~/.m2` and `~/.gradle`; if no build ever put them there, `doctor` lists what is missing and the Java number sits lower until one does. |
+| Old Ruby, no gems installed | No | Nothing from a Ruby installation is read. Rails conventions are read from the source. |
+| TypeScript project without `node_modules` | No, for running | Types from dependencies come from their `.d.ts` files; without them the TypeScript number sits lower, and `doctor` says which packages. |
+
+---
+
 ## Updating provenlens
 
 ```bash
@@ -371,7 +392,7 @@ Then delete `~/provenlens` and the symlink. Nothing else was written anywhere.
 | You see | It means | Do this |
 |---|---|---|
 | `command not found: provenlens` | The symlink is missing or `~/.local/bin` is not on PATH | Step 3; `ls -l ~/.local/bin/provenlens` and `echo $PATH` say which |
-| `Cannot find module 'node:sqlite'` | Node is older than 22 | Step 1 |
+| `provenlens needs Node.js 22.13 or newer` | Node is older than 22.13 (22.5–22.12 had `node:sqlite` behind a flag) | Step 1; `nvm install 22` |
 | `no .provenlens/ found here, in any parent, or one level down` | This repository was never indexed | `cd` into it, `provenlens init .` |
 | `another provenlens index is running on this project (pid N)` | A `sync -w`, a `serve` or a Claude session holds the index lock | Wait for it, or stop that process |
 | `index was built by an older version and has been reset. Run provenlens index.` | You upgraded provenlens and its schema changed | `provenlens index` in that repository |

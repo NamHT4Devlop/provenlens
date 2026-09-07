@@ -1,6 +1,39 @@
-import { DatabaseSync } from 'node:sqlite';
+import { createRequire } from 'node:module';
 import { mkdirSync, rmSync, existsSync, chmodSync } from 'node:fs';
 import { dirname } from 'node:path';
+
+/**
+ * `node:sqlite` shipped in Node 22.5 behind a flag and lost the flag in
+ * 22.13. On anything older a static `import` of it fails while the module
+ * graph is still being linked -- before a single line of this program has
+ * run -- with `No such built-in module: node:sqlite`, and nothing can say
+ * what that means. Loading it through `require` turns a link-time failure
+ * into a value this module can check, and every entry point checks it
+ * first, so a machine with Node 22.12 is told to upgrade in one sentence.
+ */
+const require = createRequire(import.meta.url);
+let DatabaseSync = null;
+let sqliteError = null;
+try {
+  ({ DatabaseSync } = require('node:sqlite'));
+} catch (err) {
+  sqliteError = err;
+}
+
+export const NODE_REQUIREMENT = 'Node.js 22.13 or newer';
+
+/** True when this Node can open an index at all. */
+export function sqliteAvailable() {
+  return DatabaseSync !== null;
+}
+
+/** The one sentence to print when it cannot. */
+export function sqliteUnavailableMessage(version = process.versions.node) {
+  return (
+    `provenlens needs ${NODE_REQUIREMENT}: node:sqlite is not available in Node ${version}. ` +
+    'Install a newer Node (for example `nvm install 22`) and run this again.'
+  );
+}
 
 /** Bump whenever the schema changes: the index is a cache, so it is rebuilt. */
 export const SCHEMA_VERSION = 9;
@@ -194,6 +227,12 @@ CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
 `;
 
 export function openDb(dbPath, { create = false } = {}) {
+  if (!DatabaseSync) {
+    const err = new Error(sqliteUnavailableMessage());
+    err.code = 'PROVENLENS_NODE_TOO_OLD';
+    err.cause = sqliteError;
+    throw err;
+  }
   // Owner-only, to match the token guarding the HTTP API: a world-readable
   // index would hand any other local user the very data that token protects.
   if (create) mkdirSync(dirname(dbPath), { recursive: true, mode: 0o700 });

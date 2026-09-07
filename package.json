@@ -7,7 +7,7 @@
     "provenlens": "./bin/provenlens.js"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=22.13.0"
   },
   "packageManager": "yarn@1.22.22",
   "scripts": {
