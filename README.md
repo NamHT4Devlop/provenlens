@@ -1564,8 +1564,13 @@ would be carrying a guess through the graph. The same list reaches every surface
 `node`, `impact` (`--json` adds `unlinked`), the MCP tools, and `affected`, which after the tests it
 can prove reach a change lists *tests that may cover it by name* (`--json`: `testCandidates`) and
 names them on stderr when `--fail-if-untested` fails -- the gate still fails, since an unlinked
-call is not proof, but it fails with the twelve specs in view. The Claude Code hook adds a *maybe
-covered by* line for the same reason, and `dead` holds back any name an unlinked call shares.
+call is not proof, but it fails with the twelve specs in view. That automatic list skips a name
+the repository declares in more than three places and any generated symbol: every test calls
+`id` or `name` on something, and on rubygems.org those two alone put 73 test files under one
+model, which says nothing about which of them covers the change. `callers id` still lists them
+all. The Claude Code hook adds a *maybe covered by* line for the same reason, and `dead` holds
+back any name an unlinked call shares -- 188 of them on rubygems.org, none of which it can now
+call unreached.
 
 Two Java defects surfaced while measuring this, both in how the JDK is read. javap prints a
 class's fields and the index skipped them, so `System.out.println` stopped at `out` as "complex":

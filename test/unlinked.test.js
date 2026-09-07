@@ -78,15 +78,24 @@ describe('candidates by name', () => {
     assert.equal(unlinkedReason('something-new'), 'something-new');
   });
 
+  const symbolsIn = (path) =>
+    db
+      .prepare(`SELECT s.*, f.path AS file_path, f.lang FROM symbols s JOIN files f ON f.id = s.file_id WHERE f.path = ?`)
+      .all(path);
+
   test('a changed model lists the specs that call its names on an untyped receiver', () => {
-    const changed = db
-      .prepare(`SELECT s.*, f.path AS file_path, f.lang FROM symbols s JOIN files f ON f.id = s.file_id WHERE f.path = 'lib/order.rb'`)
-      .all();
-    const maybe = candidateTestsFor(db, changed);
+    const maybe = candidateTestsFor(db, symbolsIn('lib/order.rb'));
     assert.equal(maybe.length, 1);
     assert.equal(maybe[0].file, 'spec/order_spec.rb');
     assert.deepEqual(maybe[0].names, ['save']);
     assert.deepEqual(maybe[0].lines, [6]);
+  });
+
+  test('a name declared everywhere is skipped by the automatic list, not by callers', () => {
+    // `record.id` in the spec, with `id` declared four times: every test calls
+    // `id` on something, so it says nothing about which change it covers.
+    assert.deepEqual(candidateTestsFor(db, symbolsIn('lib/many.rb')), []);
+    assert.equal(candidateCallersOf(db, one('Alpha#id')).total, 1);
   });
 
   test('every answer about callers carries the section, apart from the edges', () => {

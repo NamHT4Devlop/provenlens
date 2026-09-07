@@ -134,12 +134,23 @@ export function candidateCallersOf(db, symbol) {
  * exactly the call the resolver declines.
  *
  * Names a runtime calls on its own (`toString`, `to_s`, `initialize`) are
- * skipped: every test in the repository calls one of those on something.
+ * skipped, and so is a name the repository declares in more than a few
+ * places: every test calls `id` or `name` on something, and on rubygems.org
+ * those two alone put 73 test files under one model. A column attribute or
+ * any other generated symbol is skipped for the same reason -- it is not a
+ * thing this change wrote. `callers` on the symbol itself still lists them.
  */
+const UBIQUITOUS = 3;
 export function candidateTestsFor(db, changedSymbols) {
+  const declaredTimes = db.prepare(
+    `SELECT COUNT(*) AS n FROM symbols s JOIN files f ON f.id = s.file_id
+      WHERE f.external = 0 AND s.name = ? AND s.kind != 'file'`,
+  );
+  const generated = (sym) => /generated|schema-column/.test(sym.modifiers ?? '');
   const byFile = new Map();
   for (const sym of changedSymbols) {
     if (sym.kind === 'file' || RUNTIME_NAMES.has(sym.name) || isTestPath(sym.file_path)) continue;
+    if (generated(sym) || declaredTimes.get(sym.name).n > UBIQUITOUS) continue;
     for (const f of candidateCallersOf(db, sym).files) {
       if (!f.is_test) continue;
       if (!byFile.has(f.file)) byFile.set(f.file, { file: f.file, names: [], lines: [] });
