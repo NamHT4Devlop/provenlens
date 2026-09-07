@@ -1606,7 +1606,7 @@ it automatically.
 yarn test
 ```
 
-362 tests across ten fixture suites plus regression, security and multi-repo coverage:
+377 tests across eleven fixture suites plus regression, security and multi-repo coverage:
 
 | Fixture | Simulates | The chain grep cannot follow |
 |---|---|---|
@@ -1619,6 +1619,7 @@ yarn test
 | `ruby2` | A model reopened in `lib/`, `class << self`, top-level defs, `super(x)`, writers, `Struct.new`, callbacks, scope lambdas | `u.save` on a reopened model still landing on `ApplicationRecord#save` as a declaration |
 | `ts2` | Destructuring, `extends Base<User>`, arrow fields, `super`, `for-of`, `export * as ns`, `import x = require`, tsconfig `extends`, `exports` maps, `.d.ts` | `const { data } = await client.get('/x')` reaching `Client#get` at all |
 | `bindings2` | Spring class-level `@RequestMapping`, `method = POST`, `produces`, Kafka multi-line topics, a MyBatis statement in a comment, Rails `namespace`/`only:`/`member`, gRPC option bodies | `GET /api/orders/{}` served by the method and called by the client, with the prefix applied |
+| `unlinked` | `thing.save` with `thing` untyped and two `save` methods; a spec calling `record.save(1, 2, 3)`; a TypeScript `thing.run(1)` against `run(x)` and `run()`; `id` declared four times | that a declined edge is listed as a candidate with its file and line, by arity and language, and never counted |
 | all of `__fixtures__` | One repo containing all four languages | resolvers not wiping each other's graphs |
 
 `test/core-fixes.test.js`, `test/bindings-review.test.js`, `test/ruby-review.test.js`,
