@@ -19,6 +19,8 @@ to compile** — `node:sqlite` ships inside Node 22.13+, and the grammars are WA
 **New here? [SETUP.md](SETUP.md) is the step-by-step guide** -- what to type, what you should see,
 what to do when you do not -- from a bare machine to Claude Code using the graph on its own.
 (*Tiếng Việt: [SETUP.vi.md](SETUP.vi.md).*) The five commands below are the short form of it.
+Cannot clone it where you need it? [STRUCTURE.md](STRUCTURE.md) lists every file and what it is, and
+`scripts/scaffold-provenlens.sh` creates the tree empty -- 43 files are enough to run it.
 
 ```bash
 git clone https://github.com/NamHT4Devlop/provenlens.git ~/provenlens && cd ~/provenlens && yarn install
@@ -1654,7 +1656,7 @@ it automatically.
 yarn test
 ```
 
-383 tests across eleven fixture suites plus regression, security and multi-repo coverage:
+386 tests across eleven fixture suites plus regression, security and multi-repo coverage:
 
 | Fixture | Simulates | The chain grep cannot follow |
 |---|---|---|
