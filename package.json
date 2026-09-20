@@ -15,7 +15,7 @@
   },
   "dependencies": {
     "commander": "15.0.0",
-    "ignore": "7.0.8",
+    "ignore": "7.0.9",
     "tree-sitter-wasms": "0.1.13",
     "web-tree-sitter": "0.25.10"
   },
