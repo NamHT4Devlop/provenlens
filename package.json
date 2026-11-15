@@ -14,8 +14,8 @@
     "test": "node --test --no-warnings \"test/*.test.js\""
   },
   "dependencies": {
-    "commander": "15.0.0",
-    "ignore": "7.0.8",
+    "commander": "15.1.0",
+    "ignore": "7.0.14",
     "tree-sitter-wasms": "0.1.13",
     "web-tree-sitter": "0.25.10"
   },
